@@ -1,0 +1,6 @@
+# Default owner for everything. Narrow these down as contributors join.
+*                         @Aniket-lodh
+
+# Queue semantics and the spec require maintainer review.
+/packages/queue-core/     @Aniket-lodh
+/docs/decisions/          @Aniket-lodh

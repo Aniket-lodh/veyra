@@ -1,0 +1,36 @@
+name: Feature request
+description: Propose a change. Queue-semantics changes need a spec change first.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Veyra is conservative by design. Please read the project principles in `CLAUDE.md`
+        before proposing work. Changes to enqueue, dequeue, ack, nack, lease, retry, timeout,
+        cancel, or dead-letter behavior must start as a `packages/queue-core/SPEC.md` change.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do, and what gets in the way?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: Keep it short. Humans must review and trim AI-generated text (see AI_POLICY.md).
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: This does not add a message bus, Kubernetes, or a new top-level service (these need an ADR).
+          required: true
+        - label: If this changes queue semantics, I have read `packages/queue-core/SPEC.md` and plan to update it first.
+          required: true

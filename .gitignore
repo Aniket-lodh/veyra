@@ -1,0 +1,87 @@
+# --- secrets / local env ---
+.env
+.env.*
+!.env.example
+!**/.env.example
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# --- editors / IDE ---
+.idea/
+*.iml
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.vscode copy/
+*.code-workspace
+
+# --- Cursor / local agent noise (keep project rules tracked) ---
+.cursor/
+!.cursor/rules/
+!.cursor/rules/**
+
+# --- logs & temp ---
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+*.bak
+
+# --- soak / chaos / stress artifacts ---
+soak-logs/
+soak-logs/*
+
+# --- Go ---
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+/bin/
+/dist/
+# Module / workspace local caches (rarely appear; safe to ignore)
+vendor/
+
+# --- Node / frontend (pnpm + Vite) ---
+node_modules/
+dist/
+dist-ssr/
+coverage/
+.vite/
+*.local
+.turbo/
+.eslintcache
+.stylelintcache
+*.tsbuildinfo
+
+# Package-manager debug logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# --- Docker / compose local overrides ---
+docker-compose.override.yml
+**/docker-compose.override.yml
+
+# --- coverage / profiling ---
+*.coverprofile
+coverage.out
+coverage.html
+profile.out
+cpu.prof
+mem.prof
+
+# --- testcontainers / local DB dumps ---
+*.sql.gz
+*.dump

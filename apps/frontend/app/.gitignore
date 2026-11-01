@@ -1,0 +1,3 @@
+# Frontend-local extras. Root .gitignore covers node_modules, dist, logs, env.
+*.local
+.env.sentry-build-plugin

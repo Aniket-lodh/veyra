@@ -1,0 +1,546 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Veyra API",
+    "description": "Public + admin API for Veyra, a Postgres-as-queue job orchestration system. Schemas mirror the frozen frontend contract in apps/frontend/app/src/lib/fake-data.ts; design rationale lives in docs/architecture/database-schema.md.",
+    "version": "0.1.0"
+  },
+  "servers": [
+    { "url": "http://localhost:8008", "description": "Local development" }
+  ],
+  "tags": [
+    { "name": "system", "description": "Liveness and readiness." },
+    { "name": "jobs", "description": "Enqueue and inspect jobs. The canonical surface of the queue." },
+    { "name": "debug (temporary)", "description": "Dev-only routes that drive the queue lifecycle (claim / succeed / fail) until the worker process exists. Removed together with internal/jobs/debug_handler.go. Do NOT integrate against these — they are not part of the API contract." }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": ["system"],
+        "summary": "Liveness probe",
+        "description": "Returns 200 when the process is running and the database connection is up. Used by container orchestrators.",
+        "responses": {
+          "200": {
+            "description": "Service is healthy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["status", "database"],
+                  "properties": {
+                    "status":   { "type": "string", "example": "ok" },
+                    "database": { "type": "string", "example": "connected" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/jobs": {
+      "post": {
+        "tags": ["jobs"],
+        "summary": "Enqueue a job",
+        "description": "Inserts a new job into the queue. The server generates the ULID id and all timestamps; callers cannot set them. If `idempotencyKey` is supplied and already exists for the same queue, the existing job is returned silently (idempotent retry).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateJobRequest" },
+              "examples": {
+                "minimal": {
+                  "summary": "Minimum required fields",
+                  "value": {
+                    "handler": "send_welcome_email",
+                    "queue":   "default",
+                    "payload": { "userId": 42 }
+                  }
+                },
+                "full": {
+                  "summary": "All optional fields specified",
+                  "value": {
+                    "handler":        "process_invoice",
+                    "queue":          "billing",
+                    "payload":        { "invoiceId": "inv_123", "amountCents": 9999 },
+                    "priority":       7,
+                    "maxAttempts":    5,
+                    "backoff":        { "kind": "exponential", "baseSeconds": 60, "capSeconds": 7200 },
+                    "scheduledFor":   "2026-06-01T12:00:00Z",
+                    "idempotencyKey": "invoice-inv_123"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Job created (or existing job returned for idempotent retry)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Job" }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Error" } }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Error" } }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": ["jobs"],
+        "summary": "List jobs",
+        "description": "Returns jobs ordered by enqueue time, newest first. Pagination is limit/offset; filtering (status, queue) is not in this cut.",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "integer", "minimum": 0, "maximum": 200, "default": 50 },
+            "description": "Maximum number of jobs to return. Capped at 200."
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "integer", "minimum": 0, "default": 0 },
+            "description": "Number of jobs to skip."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Page of jobs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["jobs", "limit", "offset"],
+                  "properties": {
+                    "jobs": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/Job" }
+                    },
+                    "limit":  { "type": "integer" },
+                    "offset": { "type": "integer" }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid query parameter",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Error" } }
+            }
+          }
+        }
+      }
+    },
+    "/jobs/{id}": {
+      "get": {
+        "tags": ["jobs"],
+        "summary": "Get a job by id",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "minLength": 26, "maxLength": 26 },
+            "description": "ULID of the job (26-char Crockford base32)."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The job",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Job" } }
+            }
+          },
+          "404": {
+            "description": "No job with that id",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Error" } }
+            }
+          }
+        }
+      }
+    },
+    "/internal/debug/claim": {
+      "post": {
+        "tags": ["debug (temporary)"],
+        "summary": "Claim the next runnable job (dev only)",
+        "description": "Drives Repository.ClaimNextJob: selects one runnable job (status='queued' + visible, OR status='running' + lease expired) with FOR UPDATE SKIP LOCKED. Usually transitions the row to status='running' with a 30s lease and inserts a new job_attempts row. **Exception (SPEC §1.5.2):** if the selected candidate is a reclaim with `attempt >= max_attempts` (budget already exhausted), the dequeue dead-letters the row in place — `status='dead_lettered'`, `error.class='AttemptBudgetExhausted'` — and returns null instead of a Job. This DLQ-side-effect is silent from the caller's perspective; check the server logs for `queue.dequeue.dlq_on_reclaim` to see when it fires. Semantics: packages/queue-core/SPEC.md §1.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/DebugClaimRequest" },
+              "examples": {
+                "default": {
+                  "summary": "Default-queue subscriber",
+                  "value": { "workerId": "w-test-01", "queues": ["default"] }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Either the claimed job, or JSON `null`. Null has two possible meanings: no runnable candidate matched the worker's queues, **or** a budget-exhausted reclaim candidate was dead-lettered in place (see endpoint description). The caller cannot distinguish; the worker's correct response in both cases is to poll again.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/JobOrNull" }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure (missing workerId or empty queues array)",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/internal/debug/succeed": {
+      "post": {
+        "tags": ["debug (temporary)"],
+        "summary": "Ack the active attempt of a job (dev only)",
+        "description": "Drives Repository.MarkJobSucceeded. Guards in order: job exists → caller owns the row and status='running' → lease has not expired. On success, closes the active job_attempts row (outcome='succeeded') and transitions the job to status='succeeded' with completed_at set and the lease cleared. Semantics: packages/queue-core/SPEC.md §2.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/DebugSucceedRequest" },
+              "examples": {
+                "noResult": {
+                  "summary": "Success without a result payload",
+                  "value": { "workerId": "w-test-01", "jobId": "01HRX7K9P3FN8YBE7Q1S5W2V0M" }
+                },
+                "withResult": {
+                  "summary": "Success with a result payload",
+                  "value": {
+                    "workerId": "w-test-01",
+                    "jobId":    "01HRX7K9P3FN8YBE7Q1S5W2V0M",
+                    "result":   { "deliveredTo": "alice@example.com", "messageId": "abc-123" }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The succeeded job",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Job" } } }
+          },
+          "400": { "description": "Validation failure", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "404": { "description": "ErrJobNotFound — no job with that id", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "409": {
+            "description": "Lease guard failed. `error` is either `lease lost` (another worker owns the row, or status is no longer running) or `lease expired` (caller still owns the row but lease_expires_at has passed).",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LeaseGuardError" } } }
+          },
+          "500": { "description": "Internal error", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/internal/debug/fail": {
+      "post": {
+        "tags": ["debug (temporary)"],
+        "summary": "Nack the active attempt of a job (dev only)",
+        "description": "Drives Repository.MarkJobFailed. Same guard ordering as /internal/debug/succeed. On success, closes the active job_attempts row (outcome='failed' with error_class/error_message) and either dead-letters the job (when jobs.attempt >= jobs.max_attempts) or transitions it to status='failed' with next_retry_at=NULL for the future retries module to schedule. Semantics: packages/queue-core/SPEC.md §3.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/DebugFailRequest" },
+              "examples": {
+                "minimal": {
+                  "summary": "Minimum required error fields",
+                  "value": {
+                    "workerId": "w-test-01",
+                    "jobId":    "01HRX7K9P3FN8YBE7Q1S5W2V0M",
+                    "error":    { "class": "BoomError", "message": "kaboom" }
+                  }
+                },
+                "full": {
+                  "summary": "All error fields supplied",
+                  "value": {
+                    "workerId": "w-test-01",
+                    "jobId":    "01HRX7K9P3FN8YBE7Q1S5W2V0M",
+                    "error": {
+                      "class":      "SmtpTimeout",
+                      "message":    "connection to smtp.example.com timed out after 30s",
+                      "stackTrace": "smtp.go:42 in Dial\nmailer.go:108 in Send",
+                      "occurredAt": "2026-05-23T10:15:00Z"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The failed-or-dead-lettered job. Inspect `status` to distinguish: `failed` (retryable, waiting on scheduling) vs `dead-lettered` (terminal, attempt budget exhausted).",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Job" } } }
+          },
+          "400": { "description": "Validation failure (missing workerId/jobId, missing error.class or error.message)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "404": { "description": "ErrJobNotFound — no job with that id", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "409": {
+            "description": "Lease guard failed (same two cases as /internal/debug/succeed).",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LeaseGuardError" } } }
+          },
+          "500": { "description": "Internal error", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "required": ["error"],
+        "properties": {
+          "error": { "type": "string", "example": "handler is required" }
+        }
+      },
+      "JobStatus": {
+        "type": "string",
+        "description": "The seven-value status surfaced by the API. 'scheduled' is derived (status='queued' AND scheduledFor in the future); 'dead-lettered' is the storage value 'dead_lettered' renamed for display. See docs/architecture/database-schema.md → 'Status mapping'.",
+        "enum": [
+          "queued",
+          "scheduled",
+          "running",
+          "succeeded",
+          "failed",
+          "dead-lettered",
+          "cancelled"
+        ]
+      },
+      "BackoffStrategy": {
+        "description": "Discriminated union of retry strategies. The `kind` field selects which variant; the other fields are populated accordingly.",
+        "oneOf": [
+          { "$ref": "#/components/schemas/ExponentialBackoff" },
+          { "$ref": "#/components/schemas/FixedBackoff" }
+        ],
+        "discriminator": {
+          "propertyName": "kind",
+          "mapping": {
+            "exponential": "#/components/schemas/ExponentialBackoff",
+            "fixed":       "#/components/schemas/FixedBackoff"
+          }
+        }
+      },
+      "ExponentialBackoff": {
+        "type": "object",
+        "required": ["kind", "baseSeconds", "capSeconds"],
+        "properties": {
+          "kind":        { "type": "string", "enum": ["exponential"] },
+          "baseSeconds": { "type": "integer", "minimum": 1, "example": 30 },
+          "capSeconds":  { "type": "integer", "minimum": 1, "example": 3600 }
+        }
+      },
+      "FixedBackoff": {
+        "type": "object",
+        "required": ["kind", "seconds"],
+        "properties": {
+          "kind":    { "type": "string", "enum": ["fixed"] },
+          "seconds": { "type": "integer", "minimum": 1, "example": 60 }
+        }
+      },
+      "JobError": {
+        "type": "object",
+        "description": "Structured error from a failed attempt. Persisted on the job and shown in the operator UI.",
+        "required": ["class", "message", "stackTrace", "occurredAt"],
+        "properties": {
+          "class":      { "type": "string", "example": "SmtpTimeout" },
+          "message":    { "type": "string", "example": "connection to smtp.example.com timed out after 30s" },
+          "stackTrace": { "type": "string" },
+          "occurredAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "AttemptOutcome": {
+        "type": "string",
+        "enum": ["succeeded", "failed", "timeout", "cancelled", "lease-lost"]
+      },
+      "JobAttempt": {
+        "type": "object",
+        "required": [
+          "attemptNumber", "workerId", "startedAt",
+          "endedAt", "durationMs", "outcome",
+          "errorClass", "errorMessage"
+        ],
+        "properties": {
+          "attemptNumber": { "type": "integer", "minimum": 1 },
+          "workerId":      { "type": "string" },
+          "startedAt":     { "type": "string", "format": "date-time" },
+          "endedAt":       { "type": "string", "format": "date-time", "nullable": true },
+          "durationMs":    { "type": "integer", "nullable": true },
+          "outcome":       { "allOf": [{ "$ref": "#/components/schemas/AttemptOutcome" }], "nullable": true },
+          "errorClass":    { "type": "string", "nullable": true },
+          "errorMessage":  { "type": "string", "nullable": true }
+        }
+      },
+      "CreateJobRequest": {
+        "type": "object",
+        "required": ["handler", "queue", "payload"],
+        "properties": {
+          "handler": {
+            "type": "string",
+            "description": "Handler name that workers match against to execute this job.",
+            "example": "send_welcome_email"
+          },
+          "queue": {
+            "type": "string",
+            "description": "Queue name the job is enqueued into.",
+            "example": "default"
+          },
+          "payload": {
+            "description": "Arbitrary JSON the handler will receive. Opaque to the queue.",
+            "example": { "userId": 42 }
+          },
+          "priority": {
+            "type": "integer", "minimum": 0, "maximum": 9, "default": 5,
+            "description": "Higher = sooner. Single digit by design."
+          },
+          "maxAttempts": {
+            "type": "integer", "minimum": 1, "default": 3,
+            "description": "Per-job retry ceiling."
+          },
+          "backoff": {
+            "allOf": [{ "$ref": "#/components/schemas/BackoffStrategy" }],
+            "description": "Retry strategy. Defaults to exponential(30s base, 1h cap) when omitted."
+          },
+          "scheduledFor": {
+            "type": "string", "format": "date-time",
+            "description": "Earliest moment the job becomes runnable. Defaults to now() at insert time."
+          },
+          "idempotencyKey": {
+            "type": "string", "nullable": true,
+            "description": "When set, a re-POST with the same (queue, idempotencyKey) returns the existing job instead of creating a duplicate."
+          }
+        }
+      },
+      "Job": {
+        "type": "object",
+        "description": "API view of a job. Field names and the seven-value status enum match the frozen frontend contract.",
+        "required": [
+          "id", "handler", "queue", "status", "priority", "idempotencyKey",
+          "payload", "result", "error",
+          "attempt", "maxAttempts", "backoff",
+          "enqueuedAt", "scheduledFor", "startedAt",
+          "completedAt", "cancelledAt", "deadLetteredAt",
+          "currentWorkerId", "leaseExpiresAt", "nextRetryAt",
+          "attempts"
+        ],
+        "properties": {
+          "id":             { "type": "string", "description": "ULID, 26 chars.", "example": "01HRX7K9P3FN8YBE7Q1S5W2V0M" },
+          "handler":        { "type": "string" },
+          "queue":          { "type": "string" },
+          "status":         { "$ref": "#/components/schemas/JobStatus" },
+          "priority":       { "type": "integer", "minimum": 0, "maximum": 9 },
+          "idempotencyKey": { "type": "string", "nullable": true },
+
+          "payload": { "description": "Echo of the payload supplied at enqueue." },
+          "result":  { "description": "Set after a successful attempt; null otherwise.", "nullable": true },
+          "error":   { "allOf": [{ "$ref": "#/components/schemas/JobError" }], "nullable": true },
+
+          "attempt":     { "type": "integer", "minimum": 0 },
+          "maxAttempts": { "type": "integer", "minimum": 1 },
+          "backoff":     { "$ref": "#/components/schemas/BackoffStrategy" },
+
+          "enqueuedAt":     { "type": "string", "format": "date-time" },
+          "scheduledFor":   { "type": "string", "format": "date-time", "nullable": true },
+          "startedAt":      { "type": "string", "format": "date-time", "nullable": true },
+          "completedAt":    { "type": "string", "format": "date-time", "nullable": true },
+          "cancelledAt":    { "type": "string", "format": "date-time", "nullable": true },
+          "deadLetteredAt": { "type": "string", "format": "date-time", "nullable": true },
+
+          "currentWorkerId": { "type": "string", "nullable": true },
+          "leaseExpiresAt":  { "type": "string", "format": "date-time", "nullable": true },
+          "nextRetryAt":     { "type": "string", "format": "date-time", "nullable": true },
+
+          "attempts": {
+            "type": "array",
+            "description": "Per-attempt history. Empty array until the job_attempts table lands (migration 000002).",
+            "items": { "$ref": "#/components/schemas/JobAttempt" }
+          }
+        }
+      },
+      "JobOrNull": {
+        "description": "The claim response: either a Job (one was claimed) or JSON null (nothing was runnable). nullable on a $ref is expressed via allOf in OpenAPI 3.0.",
+        "allOf": [{ "$ref": "#/components/schemas/Job" }],
+        "nullable": true
+      },
+      "JobErrorInput": {
+        "type": "object",
+        "description": "Worker-supplied error payload accepted by /internal/debug/fail. Class and message are required; stackTrace may be omitted; occurredAt defaults to the server's current time when omitted or zero.",
+        "required": ["class", "message"],
+        "properties": {
+          "class":      { "type": "string", "example": "SmtpTimeout" },
+          "message":    { "type": "string", "example": "connection to smtp.example.com timed out after 30s" },
+          "stackTrace": { "type": "string" },
+          "occurredAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "DebugClaimRequest": {
+        "type": "object",
+        "required": ["workerId", "queues"],
+        "properties": {
+          "workerId": {
+            "type": "string",
+            "description": "Caller's ephemeral runtime id (fresh per process boot — see SPEC §1.5). Stored on the claimed row as current_worker_id.",
+            "example": "w-test-01"
+          },
+          "queues": {
+            "type": "array",
+            "description": "Queue names the worker is subscribed to. Capability is passed as a parameter — the dequeue path never joins the workers table.",
+            "minItems": 1,
+            "items": { "type": "string" },
+            "example": ["default"]
+          }
+        }
+      },
+      "DebugSucceedRequest": {
+        "type": "object",
+        "required": ["workerId", "jobId"],
+        "properties": {
+          "workerId": { "type": "string", "description": "Must match jobs.current_worker_id for the lease guard to pass.", "example": "w-test-01" },
+          "jobId":    { "type": "string", "description": "ULID of the job being acked.",                                    "example": "01HRX7K9P3FN8YBE7Q1S5W2V0M" },
+          "result":   { "description": "Arbitrary JSON stored on jobs.result. Omit or send null to leave the column NULL." }
+        }
+      },
+      "DebugFailRequest": {
+        "type": "object",
+        "required": ["workerId", "jobId", "error"],
+        "properties": {
+          "workerId": { "type": "string", "description": "Must match jobs.current_worker_id for the lease guard to pass.", "example": "w-test-01" },
+          "jobId":    { "type": "string", "description": "ULID of the job being nacked.",                                  "example": "01HRX7K9P3FN8YBE7Q1S5W2V0M" },
+          "error":    { "$ref": "#/components/schemas/JobErrorInput" }
+        }
+      },
+      "LeaseGuardError": {
+        "type": "object",
+        "description": "Returned with status 409 when the Ack/Nack guard rejects a write. `error` distinguishes the two cases; `detail` is the full wrapped error string (debug aid, not for branching).",
+        "required": ["error"],
+        "properties": {
+          "error":  { "type": "string", "enum": ["lease lost", "lease expired"] },
+          "detail": { "type": "string" }
+        }
+      }
+    }
+  }
+}

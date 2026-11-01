@@ -1,0 +1,11 @@
+go 1.25.4
+
+use (
+	./apps/api
+	./apps/worker
+	./packages/queue-core
+	// Workload test fixture (not a product service). Standalone stdlib-only
+	// module; built in Docker without this go.work. Listed here only so root
+	// `go build ./...` / `go vet ./...` stay green.
+	./scripts/stress/unstable-receiver
+)
