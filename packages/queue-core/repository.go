@@ -239,22 +239,25 @@ func buildListFilters(p ListParams) (string, []any) {
 //
 //  1. SELECT ... FOR UPDATE SKIP LOCKED a single candidate matching either
 //     `status='queued' AND scheduled_for <= now()` (fresh) or
-//     `status='running' AND lease_expires_at <= now()` (reclaim), filtered to
-//     queues the caller is subscribed to.
+//     `status='running' AND lease_expires_at + grace <= now()` (reclaim),
+//     filtered to queues and handlers the caller is subscribed to.
 //  2. If the candidate was running, close its in-flight job_attempts row
 //     (outcome='lease_lost', ended_at=now()).
 //  3. UPDATE jobs to set status='running', current_worker_id, lease_expires_at
 //     (now() + 30s), attempt+1, and started_at on first claim only.
 //  4. INSERT a new job_attempts row for the new attempt.
 //
-// Capability filtering is done with `queue = ANY($1)` — the workers table is
-// never joined. See SPEC §1.2 and feedback_no_workers_join_in_dequeue.
-func (r *Repository) ClaimNextJob(ctx context.Context, workerID string, queues []string) (*Job, error) {
+// Capability filtering is done with `queue = ANY($1)` and `handler = ANY($3)`.
+// The workers table is never joined. See SPEC §1.2.
+func (r *Repository) ClaimNextJob(ctx context.Context, workerID string, queues, handlers []string) (*Job, error) {
 	if workerID == "" {
 		return nil, errors.New("queuecore.Repository.ClaimNextJob: workerID is required")
 	}
 	if len(queues) == 0 {
 		return nil, errors.New("queuecore.Repository.ClaimNextJob: queues must be non-empty")
+	}
+	if len(handlers) == 0 {
+		return nil, errors.New("queuecore.Repository.ClaimNextJob: handlers must be non-empty")
 	}
 
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
@@ -278,6 +281,7 @@ func (r *Repository) ClaimNextJob(ctx context.Context, workerID string, queues [
 		SELECT id, status::text, attempt, max_attempts, current_worker_id
 		FROM jobs
 		WHERE queue = ANY($1)
+		  AND handler = ANY($3)
 		  AND (
 		      (status = 'queued'  AND scheduled_for                                    <= now())
 		   OR (status = 'running' AND lease_expires_at + make_interval(secs => $2)     <= now())
@@ -293,13 +297,14 @@ func (r *Repository) ClaimNextJob(ctx context.Context, workerID string, queues [
 		priorMaxAttempts int
 		priorWorkerIDPtr *string
 	)
-	err = tx.QueryRow(ctx, selectCandidateSQL, queues, ReclaimGraceSeconds).
+	err = tx.QueryRow(ctx, selectCandidateSQL, queues, ReclaimGraceSeconds, handlers).
 		Scan(&candidateID, &priorStatusStr, &priorAttempt, &priorMaxAttempts, &priorWorkerIDPtr)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			slog.DebugContext(ctx, "queue.dequeue.no_candidate",
 				"workerId", workerID,
 				"queues", queues,
+				"handlers", handlers,
 			)
 			return nil, nil
 		}

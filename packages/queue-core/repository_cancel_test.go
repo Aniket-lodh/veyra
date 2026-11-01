@@ -275,7 +275,7 @@ func mustCreateCancelJob(t *testing.T, ctx context.Context, repo *queuecore.Repo
 
 func mustClaimCancel(t *testing.T, ctx context.Context, repo *queuecore.Repository, wantID string) *queuecore.Job {
 	t.Helper()
-	j, err := repo.ClaimNextJob(ctx, cancelTestWorker, []string{cancelTestQueue})
+	j, err := repo.ClaimNextJob(ctx, cancelTestWorker, []string{cancelTestQueue}, []string{cancelTestHandler})
 	if err != nil {
 		t.Fatalf("ClaimNextJob: %v", err)
 	}

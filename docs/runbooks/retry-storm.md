@@ -6,7 +6,7 @@ growing or downstream is being hammered.
 
 **Symptoms (what the user sees):**
 
-- The dashboard's "Failed + DLQ" KPI is climbing fast.
+- The dashboard's DLQ and failed counts are climbing fast.
 - A specific queue's `inFlight` is at ceiling and stays there.
 - Workers are claiming jobs as fast as they finish; throughput is high
   but goodput (succeeded-per-minute) is low.

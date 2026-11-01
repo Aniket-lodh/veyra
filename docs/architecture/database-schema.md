@@ -53,7 +53,7 @@ A row in `jobs` represents the lifetime of a unit of work. It is created on `Enq
   Job IDs are ULIDs because they are k-sortable: appended to an index, they cluster by insertion time, which means "scan the last N jobs" is cheap. They are also recognizable in logs and the operator UI (`01HRX7K9P3FN8YBE7`). We do *not* use a `BIGSERIAL` because IDs are exposed externally (in URLs, in webhook payloads) and a guessable integer is a footgun. We do not use `UUIDv4` because it does not sort. Stored as `TEXT` for MVP simplicity; a future migration may switch to a 16-byte binary column if index size becomes a concern.
 
 - **`handler` — `TEXT NOT NULL`.**
-  The handler name decides *what code runs*. The dequeue query matches it against the **worker's** set of supported handlers — passed as a query parameter on every dequeue call, never JOINed from the `workers` table. Cardinality is low (tens of handlers, not thousands), so `TEXT` is fine and the partial index `(queue, handler, priority DESC, scheduled_for ASC) WHERE status='queued'` doubles as a handler filter.
+  The handler name decides *what code runs*. The dequeue query filters by handler. A worker passes the handlers it can run as a query parameter (SPEC §1.2), never as a JOIN against `workers`. Cardinality is low (tens of handlers, not thousands), so `TEXT` is fine. The partial index `(queue, handler, priority DESC, scheduled_for ASC) WHERE status='queued'` is the index behind that filter.
 
 - **`queue` — `TEXT NOT NULL`.**
   The queue name decides *which worker pool* will pick the job up. Workers subscribe to a set of queues; dequeue is per-queue-subset. Same cardinality rationale as `handler`. A `queues` table would normalize this but adds a join to every dequeue — we accept denormalization here.
@@ -67,7 +67,7 @@ A row in `jobs` represents the lifetime of a unit of work. It is created on `Enq
 #### Body
 
 - **`payload` — `JSONB NOT NULL`.**
-  The handler's input. `JSONB` because handlers need to read fields out of it (logging, debugging, the operator UI); we are not just shipping opaque bytes. A size cap is enforced in code (default 256 KiB); the column itself has no DDL-level cap because `TOAST` handles large values silently and we don't want a hard failure mode that varies with payload shape.
+  The handler's input. `JSONB` because handlers need to read fields out of it (logging, debugging, the operator UI); we are not just shipping opaque bytes. A 256 KiB size cap is planned but not enforced yet (SPEC §0.9); the column itself has no DDL-level cap because `TOAST` handles large values silently and we don't want a hard failure mode that varies with payload shape.
 
 - **`result` — `JSONB NULL`.**
   Populated on success. Optional — handlers without a meaningful result leave this null. Same `JSONB` rationale as `payload`.
@@ -118,10 +118,10 @@ These four columns are the live coordination state. The dequeue query reads them
   The worker currently holding the lease. NULL when no worker holds the job. Why no formal foreign key? Two reasons. First, we want a worker row to be deletable (e.g. operator cleanup) without cascading havoc on historical jobs. Second, the relationship is observed through *behavior* (the worker heartbeats, holds leases) rather than referential integrity. The job_attempts row carries the historical record; this column is current-state only.
 
 - **`lease_expires_at` — `TIMESTAMPTZ NULL`.**
-  When the lease becomes reclaimable. NULL exactly when `current_worker_id IS NULL`. The dequeue query treats `status='running' AND lease_expires_at < now()` as a reclaimable candidate; a worker's `Heartbeat` extends this. See [The atomic dequeue](#the-atomic-dequeue) and [Lease lifecycle](#lease-lifecycle).
+  When the lease becomes reclaimable. NULL exactly when `current_worker_id IS NULL`. The dequeue query treats `status='running' AND lease_expires_at + 10s <= now()` as a reclaimable candidate; a worker's `RenewLease` extends this. See [The atomic dequeue](#the-atomic-dequeue) and [Lease lifecycle](#lease-lifecycle).
 
 - **`next_retry_at` — `TIMESTAMPTZ NULL`.**
-  When a failed job becomes a candidate for retry. Set on `Nack` (or on lease-loss). NULL for jobs in non-`failed` states. The dequeue query treats `status='failed' AND next_retry_at <= now()` as runnable. Why not just put the job back in `queued` with a new `scheduled_for`? Because operators ask "what is currently failing?" and want a status that says so — not a status that says "queued, but for the third time." Distinguishing `queued` (never run, or running for the first time) from `failed` (last attempt failed, retry pending) is worth the extra state.
+  When a failed job becomes a candidate for retry. Set on `Nack` (or on lease-loss). NULL for jobs in non-`failed` states. The retry scheduler promotes `status='failed' AND next_retry_at <= now()` rows back to `queued`. Dequeue never selects `failed` rows directly. Why not just put the job back in `queued` with a new `scheduled_for`? Because operators ask "what is currently failing?" and want a status that says so — not a status that says "queued, but for the third time." Distinguishing `queued` (never run, or running for the first time) from `failed` (last attempt failed, retry pending) is worth the extra state.
 
 #### Status
 
@@ -236,16 +236,16 @@ The mechanism is `SELECT ... FOR UPDATE SKIP LOCKED`, which is what makes Postgr
 
 ### What "runnable" means
 
-A job is runnable for a given worker if **all** of the following hold:
+A job is runnable for a worker if **all** of the following hold:
 
-- `jobs.queue` is in the worker's subscribed queues.
-- `jobs.handler` is in the worker's supported handlers.
+- `jobs.queue` is in the worker's subscribed queues, and `jobs.handler` is one the worker runs (SPEC §1.2).
 - One of these state predicates is true:
-  - `status = 'queued' AND scheduled_for <= now()` — first attempt, visible.
-  - `status = 'failed' AND next_retry_at IS NOT NULL AND next_retry_at <= now()` — retry pending, due.
-  - `status = 'running' AND lease_expires_at < now()` — previous holder is dead, reclaim.
+  - `status = 'queued' AND scheduled_for <= now()`: first attempt, visible.
+  - `status = 'running' AND lease_expires_at + 10s <= now()`: the previous holder is gone, so reclaim.
 
-The worker's subscribed queues and supported handlers arrive as **query parameters** (`= ANY($queues)`, `= ANY($handlers)`), never via a JOIN against the `workers` table. The `workers.queues[]` and `workers.handlers[]` columns exist for the operator UI; the dequeue path is decoupled from them on purpose.
+Failed rows are not runnable. The retry scheduler moves them back to `queued` when `next_retry_at` is due.
+
+The worker's subscribed queues arrive as a query parameter (`= ANY($queues)`), never via a JOIN against `workers`. The `workers.queues[]` and `workers.handlers[]` columns exist for the operator UI. The dequeue path does not read them.
 
 ### Ordering
 
@@ -261,37 +261,39 @@ The worker's subscribed queues and supported handlers arrive as **query paramete
 
 ### The reclaim case
 
-When dequeue picks up a `status='running' AND lease_expires_at < now()` row, three things happen in the same transaction:
+When the claim picks up a `status='running'` row whose lease has expired (plus the 10-second grace), the reclaim primitive runs in the same transaction (SPEC §5):
 
-1. The existing `job_attempts` row for `(job_id, attempt_number)` is updated: `outcome='lease_lost'`, `ended_at = previous lease_expires_at` (not `now()` — we want the operator to see when the lease *actually* lapsed).
-2. `jobs.attempt` is incremented.
-3. A new `job_attempts` row is inserted for the new attempt number.
+1. The open `job_attempts` row for the prior attempt is closed with `outcome='lease_lost'` and `ended_at = now()`. The `ended_at IS NULL` guard prevents closing an attempt twice.
+2. If budget remains, the claim proceeds under the new worker. `jobs.attempt` increments and a new `job_attempts` row is inserted.
+3. If the budget is exhausted, the row goes to `dead_lettered` and the claim returns nothing.
 
-The whole operation is one transaction. If the API process running the dequeue dies mid-transaction, the abort leaves the job exactly as it was before — a future dequeue will pick it up again.
+The periodic tick in the API takes the same expired rows and requeues them to `queued`. It does **not** increment `attempt`, and it does not touch `next_retry_at`.
+
+The whole operation is one transaction. If the process dies mid-transaction, the abort leaves the job as it was, and a future claim picks it up again.
 
 ## Lease lifecycle
 
 A lease is a promise: *this worker will heartbeat by `lease_expires_at`, or the job is reclaimable.*
 
-- **Acquire.** Dequeue sets `current_worker_id` and `lease_expires_at = now() + lease_duration`. Lease duration is per-queue config in code (MVP); a future migration may add it as a `jobs` column for per-job leases.
-- **Extend (heartbeat).** Worker calls `Heartbeat(job_id)`, which executes `UPDATE jobs SET lease_expires_at = now() + lease_duration WHERE id = $1 AND current_worker_id = $2 AND status = 'running'`. The `current_worker_id = $2` check is critical: if the lease was already reclaimed by another worker, the UPDATE affects zero rows and the worker knows to stop.
+- **Acquire.** Dequeue sets `current_worker_id` and `lease_expires_at = now() + 30 seconds`. The duration is a constant in code (SPEC §1.8). A future change may make it per-job.
+- **Extend (renew).** The worker calls `RenewLease` every 10 seconds per in-flight job (SPEC §4). It runs `UPDATE jobs SET lease_expires_at = now() + 30 seconds WHERE id = $1 AND current_worker_id = $2 AND status = 'running'`. The `current_worker_id = $2` check is critical: if the lease was already reclaimed by another worker, the UPDATE affects zero rows and the worker knows to stop.
 - **Release on success (`Ack`).** `UPDATE jobs SET status='succeeded', completed_at=now(), result=$2, current_worker_id=NULL, lease_expires_at=NULL WHERE id=$1 AND current_worker_id=$3 AND status='running'`. Same lease-still-mine guard.
-- **Release on failure (`Nack`).** If `attempt < max_attempts`: `status='failed'`, `error=$2`, `current_worker_id=NULL`, `lease_expires_at=NULL`, `next_retry_at = now() + backoff(attempt, jobs.backoff)`. If `attempt = max_attempts`: `status='dead_lettered'`, `dead_lettered_at=now()`, rest as above.
-- **Reclaim.** Handled by the dequeue path itself; no separate sweeper for leases. The lease's expiration *is* the signal.
+- **Release on failure (`Nack`).** If `attempt < max_attempts`: `status='failed'`, `error=$2`, `current_worker_id=NULL`, `lease_expires_at=NULL`, `next_retry_at` = now() plus a jittered backoff delay (SPEC §3.5). If `attempt = max_attempts`: `status='dead_lettered'`, `dead_lettered_at=now()`, rest as above.
+- **Reclaim.** Two call sites run the same queue-core primitive: inline in dequeue, and a periodic tick in the API (`apps/api/internal/reclaim/`). The lease's expiration is the signal (SPEC §5).
 - **Cancel.** Operator-initiated (normative: `packages/queue-core/SPEC.md` §6). Transitions `queued` / `failed` / `running` → `cancelled`, sets `cancelled_at`, clears `next_retry_at` and lease ownership. For `running`, also closes the open `job_attempts` row with `outcome='cancelled'`. Already-`cancelled` is idempotent; `succeeded` / `dead_lettered` reject. Cooperative: worker discovers via failed lease renewal and must not Ack/Nack.
 
 The guard pattern on every mutation — "this row's lease must still be mine" — is what makes the system safe under partition. A worker that thinks it's running a job but has been silently reclaimed cannot ack it; the ack will affect zero rows and the worker will log and bail.
 
 ## Retry and dead-letter
 
-Retry semantics live in the `retries/` package (`apps/api/internal/retries/`), which interprets `jobs.backoff` to compute `next_retry_at` on `Nack`. The schema's role is narrow:
+`Nack` computes `next_retry_at` from `jobs.backoff` inside queue-core (SPEC §3.5). The retry scheduler in `apps/api/internal/retries/` promotes due rows back to `queued`. The schema's role is narrow:
 
 - `attempt` and `max_attempts` are the ceiling.
 - `backoff` is the policy.
 - `next_retry_at` is the commitment.
-- `status='failed' AND next_retry_at <= now()` is the dequeue predicate.
+- `status='failed' AND next_retry_at <= now()` is the scheduler's promotion predicate.
 
-Dead-letter is a status transition, not a separate table. A dead-lettered job stays in `jobs` so the operator UI can show it next to its retries; "move to a DLQ table" would scatter the same information across two tables. Replay from dead-letter is just `UPDATE jobs SET status='queued', attempt=0, error=NULL, next_retry_at=NULL, dead_lettered_at=NULL` (operator-initiated, audited).
+Dead-letter is a status transition, not a separate table. A dead-lettered job stays in `jobs` so the operator UI can show it next to its retries; "move to a DLQ table" would scatter the same information across two tables. Replay from dead-letter is **not implemented yet**. When it lands, it will be an operator-initiated, audited state change. The shape is likely `UPDATE jobs SET status='queued', error=NULL, next_retry_at=NULL, dead_lettered_at=NULL`. Changing `attempt` on replay is a spec decision, to be made when the operation is specified.
 
 ## Cancellation
 
@@ -368,7 +370,7 @@ Three rules:
 
 Documenting absences makes future contributors' decisions easier:
 
-- **No JOIN against `workers` on the dequeue path.** Capability filtering (queue/handler subscription) happens by query parameters that the worker passes on every dequeue call, *not* by reading `workers.queues[]` or `workers.handlers[]`. The columns on `workers` exist for the operator UI. If a future change introduces a JOIN from the hot path to `workers`, every dequeue starts paying for that table's locks, indexes, and write contention — which silently undoes the entire premise of Postgres-as-a-queue. Treat any PR that adds `JOIN workers` inside `internal/queue/` as a spec violation until an ADR justifies it.
+- **No JOIN against `workers` on the dequeue path.** Capability filtering (queue/handler subscription) happens by query parameters that the worker passes on every dequeue call, *not* by reading `workers.queues[]` or `workers.handlers[]`. The columns on `workers` exist for the operator UI. If a future change introduces a JOIN from the hot path to `workers`, every dequeue starts paying for that table's locks, indexes, and write contention — which silently undoes the entire premise of Postgres-as-a-queue. Treat any PR that adds `JOIN workers` inside `packages/queue-core/` as a spec violation until an ADR justifies it.
 - **No `LISTEN`/`NOTIFY`.** Workers poll. The dequeue query is fast enough that polling at 1-second cadence is fine for MVP. `LISTEN`/`NOTIFY` is a latency optimization for later; it would change the worker loop but not the schema.
 - **No separate dead-letter table.** Status transition only.
 - **No event log / outbox.** ADR-0002 explicitly rules out dual writes. If we later need to publish job state changes to an external system, that comes via an additive table and a polling cursor, with its own ADR.
@@ -390,8 +392,8 @@ These will land later, each behind its own migration and (where the contract cha
 These are unresolved and will need decisions before — or shortly after — first production traffic:
 
 - **Idempotency key release on success.** Currently permanent. Some users will want "once succeeded, the key is reusable." Requires a contract change.
-- **Hard size limits on `payload` / `result` / `error`.** Today enforced only in code (default 256 KiB). A DDL-level CHECK is simple but blunt. Open.
+- **Hard size limits on `payload` / `result` / `error`.** Not enforced yet. The planned cap is 256 KiB, in code rather than in DDL. A DDL-level CHECK is simple but blunt. Open.
 - **Retention.** `succeeded` jobs accumulate. A purge job has to land before the table grows past comfortable working-set size. Open: how long, and is purge or archive the right move?
-- **Per-job lease duration.** Currently a queue-level config. Some long-running handlers want longer leases without changing queue-wide config. Adding `jobs.lease_duration_seconds` is trivial; the question is whether the spec should grow per-job knobs.
+- **Per-job lease duration.** Currently a fixed 30-second constant. Some long-running handlers want longer leases without changing queue-wide config. Adding `jobs.lease_duration_seconds` is trivial; the question is whether the spec should grow per-job knobs.
 
 These belong in ADRs or spec revisions as they get answered, not in this document.

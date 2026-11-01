@@ -55,7 +55,7 @@ API response shapes live in [`src/lib/types.ts`](src/lib/types.ts)
 
 ## Scripts
 
-- `pnpm dev` — local Vite (proxy API via `VITE_API_PROXY_TARGET`).
+- `pnpm dev` — local Vite. Set `VITE_API_PROXY_TARGET` to the API origin (default `http://localhost:8080`; use `http://localhost:8008` with compose). See `.env.example`.
 - `pnpm build` — production build.
 - `pnpm typecheck` — `tsc --noEmit`.
 - `pnpm lint:check` / `pnpm prettier:check`.

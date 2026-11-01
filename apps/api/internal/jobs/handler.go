@@ -65,7 +65,7 @@ type createRequest struct {
 
 // jobResponse is the API view of a Job. Field names and the seven-value
 // status enum match the frozen frontend contract in
-// apps/frontend/app/src/lib/fake-data.ts.
+// apps/frontend/app/src/lib/types.ts.
 type jobResponse struct {
 	ID             string `json:"id"`
 	Handler        string `json:"handler"`

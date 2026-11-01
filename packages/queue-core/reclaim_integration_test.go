@@ -89,7 +89,7 @@ func TestReclaim_FleetCollapse_SelfHeals(t *testing.T) {
 	requireStatusCount(t, ctx, pool, "queued", N)
 
 	// --- step 2: gen1 claims all N ------------------------------------
-	gen1Claimed := claimN(t, ctx, repo, gen1WorkerID, queueName, N)
+	gen1Claimed := claimN(t, ctx, repo, gen1WorkerID, queueName, handlerName, N)
 	for i, j := range gen1Claimed {
 		if j.Status != queuecore.StatusRunning {
 			t.Fatalf("gen1 claim %d: expected status=running, got %s", i, j.Status)
@@ -170,7 +170,7 @@ func TestReclaim_FleetCollapse_SelfHeals(t *testing.T) {
 	}
 
 	// --- step 7: gen2 claims all N requeued jobs ----------------------
-	gen2Claimed := claimN(t, ctx, repo, gen2WorkerID, queueName, N)
+	gen2Claimed := claimN(t, ctx, repo, gen2WorkerID, queueName, handlerName, N)
 	for i, j := range gen2Claimed {
 		if j.Attempt != 2 {
 			t.Errorf("gen2 claim %d (job %s): expected attempt=2 (gen1 didn't increment, gen2 increments to 2), got %d",
@@ -358,11 +358,11 @@ func runReclaimTick(t *testing.T, ctx context.Context, pool *pgxpool.Pool, limit
 	return stats
 }
 
-func claimN(t *testing.T, ctx context.Context, repo *queuecore.Repository, workerID, queueName string, n int) []*queuecore.Job {
+func claimN(t *testing.T, ctx context.Context, repo *queuecore.Repository, workerID, queueName, handlerName string, n int) []*queuecore.Job {
 	t.Helper()
 	out := make([]*queuecore.Job, 0, n)
 	for i := 0; i < n; i++ {
-		j, err := repo.ClaimNextJob(ctx, workerID, []string{queueName})
+		j, err := repo.ClaimNextJob(ctx, workerID, []string{queueName}, []string{handlerName})
 		if err != nil {
 			t.Fatalf("claim %d (worker=%s): %v", i, workerID, err)
 		}

@@ -70,13 +70,13 @@ isn't returning.
 docker compose ps worker
 
 # Get a goroutine stack dump if you've enabled debug — or strace it:
-docker compose exec worker-N sh -c 'kill -QUIT 1'   # if your binary handles SIGQUIT
-docker compose logs --tail 200 worker-N | grep -E 'job.start|job.renew|job.success'
+# The worker has no built-in goroutine dump. Check its recent log lines instead.
+docker compose logs --tail 200 veyra-worker-N | grep -E 'worker.execute.start|worker.renewal|worker.ack.success'
 ```
 
 ### Remediate
 
-1. Restart that one worker container (`docker compose restart worker-N`).
+1. Restart that one worker container (`docker compose restart veyra-worker-N`).
    On restart, the renewer goroutine stops. Within ~30 seconds the lease
    on that hung job expires. A surviving worker dequeues it via the
    reclaim branch and tries the handler again.

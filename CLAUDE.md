@@ -16,7 +16,7 @@ Distributed job queue and workflow orchestration system. PostgreSQL-first, Go ba
 - **No Kafka / NATS / Redis Streams / RabbitMQ.** Postgres is the queue.
 - **No Kubernetes manifests or operators.** Compose for now (`deployments/compose/`).
 - **No microservice splits.** New top-level dirs under `apps/` need an ADR.
-- **No undocumented queue semantics.** Any change to enqueue / dequeue / ack / lease / retry / timeout / dead-letter behavior requires the spec to be updated *first*. See [docs/decisions/0004-queue-semantics-documented-before-implementation.md](docs/decisions/0004-queue-semantics-documented-before-implementation.md).
+- **No undocumented queue semantics.** Any change to enqueue / dequeue / ack / lease / retry / timeout / dead-letter behavior requires the spec to be updated *first*. See [docs/decisions/0004_queue-semantics-documented-before-implementation.md](docs/decisions/0004_queue-semantics-documented-before-implementation.md).
 
 If you believe a hard NO should be lifted, open an ADR in `docs/decisions/` and stop. Do not implement around it.
 
@@ -53,8 +53,9 @@ Each subtree has its own `CLAUDE.md` with local conventions. Read the one closes
 
 ## Tooling
 
-- Backend: Go (latest stable), `go test ./...`, `go vet ./...`, `gofmt`.
-- Frontend: pnpm. `pnpm dev`, `pnpm build`, `pnpm typecheck`, `pnpm lint`.
+- Backend: Go 1.25 (see `go.work`). `gofmt`, `go vet ./...`, `go test ./...`, and `golangci-lint run` (config in `.golangci.yml`).
+- Frontend: pnpm 10 and Node 24. `pnpm dev`, `pnpm build`, `pnpm typecheck`, `pnpm lint:check`.
+- `make help` lists the common commands. CI (`.github/workflows/ci.yml`) runs the same checks on every pull request.
 - DB: PostgreSQL. Migrations versioned under `apps/api/migrations/`.
 - Local stack: `scripts/dev/up.sh` (wraps `docker compose -f deployments/compose/docker-compose.yml up --build`). Scale workers with `scripts/dev/up.sh 5`.
 - Prod stack: `docker compose -f deployments/compose/docker-compose.yml -f deployments/compose/docker-compose.prod.yml up -d --build`. Adds nginx, removes the api host port (nginx is the front door), runs 3 worker replicas by default. Postgres rebinds to `127.0.0.1:5433` (loopback only) so SSH-tunneled DBeaver/psql works without ever exposing the DB to the public internet — `5432/tcp -> 127.0.0.1:5433`, NOT 0.0.0.0.

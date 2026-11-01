@@ -75,6 +75,8 @@ pnpm build
 ## Testing expectations
 
 - Queue behavior is tested against real Postgres. Do not mock the database.
+- Several queue behaviors have no automated test yet. Each spec section lists its gaps in a
+  *Verified by* block. When you change one of those behaviors, add the missing test.
 - Tests that cover queue behavior name the spec section they verify.
 - Handlers must be idempotent and must respect context cancellation.
 

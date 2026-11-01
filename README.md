@@ -42,6 +42,21 @@ Veyra is early-stage and runnable. The API, worker, queue core, and operator con
 end to end. The HTTP API and the queue spec may still change before 1.0. See
 [CHANGELOG.md](CHANGELOG.md).
 
+### Known limitations
+
+- **No authentication or authorization.** Run the API on a trusted network. Do not expose
+  it to the internet.
+- **Jobs wait for a capable worker.** A worker only claims jobs for handlers it runs. A job whose
+  handler no worker runs (for example, from a typo) stays queued. Operators see it in queue depth
+  and can cancel it. The API does not check handler names yet, so this is the main way to get stuck jobs.
+- **No pause, drain, or dead-letter replay** yet. Operator console actions for these are planned.
+- **No payload size limit** yet. The planned limit is 256 KiB.
+- **Reclaim grace is fixed at 10 seconds** in code.
+- **Partial test coverage.** Cancel, Nack permanence, backoff math, and the built-in handlers are
+  tested. Enqueue, claim, ack, lease renewal, the retry scheduler, and the reclaim tick are not
+  yet covered by automated tests. The API package has no tests. Each spec section lists its gaps.
+
+
 ## Quick start
 
 You need Docker with the Compose plugin.

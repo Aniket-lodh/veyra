@@ -1,75 +1,97 @@
-# Veyra — System Overview
+# Veyra: system overview
 
-This is the top-level map of the system. For any subsystem, read the closest `CLAUDE.md` and the relevant ADRs in `docs/decisions/`.
+This is a map of the system. For exact semantics, read the spec
+([`packages/queue-core/SPEC.md`](../../packages/queue-core/SPEC.md)). For column-level
+reasoning, read [`database-schema.md`](database-schema.md). For a job's states and
+transitions, read [`job-lifecycle.md`](job-lifecycle.md).
 
 ## Components
 
 ```
                 ┌──────────────────────┐
-                │  apps/frontend       │
-                │  (React, operator    │
-                │   console)           │
+                │  apps/frontend/app   │
+                │  operator console    │
                 └──────────┬───────────┘
-                           │ HTTP + WS
+                           │ HTTP (JSON)
                            ▼
                 ┌──────────────────────┐
                 │  apps/api            │
-                │  - public API        │
-                │  - admin API         │
-                │  - WebSocket stream  │
+                │  REST API            │
+                │  background loops:   │
+                │   stale-worker       │
+                │   sweeper, retry     │
+                │   scheduler, reclaim │
+                │   driver             │
                 └──────────┬───────────┘
                            │ pgx
                            ▼
                 ┌──────────────────────┐
-                │   PostgreSQL         │
-                │   - jobs             │
-                │   - queues           │
-                │   - leases           │
-                │   - attempts / DLQ   │
-                │   - audit log        │
+                │   PostgreSQL 17      │
+                │   jobs               │
+                │   job_attempts       │
+                │   workers            │
                 └──────────┬───────────┘
                            │ pgx
                            ▼
                 ┌──────────────────────┐
                 │  apps/worker         │
-                │  - lease + execute   │
-                │  - heartbeat         │
-                │  - ack / nack        │
+                │  claim, execute,     │
+                │  renew, ack / nack   │
                 └──────────────────────┘
 ```
 
-There is one Postgres. Everything else is a stateless process. See [ADR-0002](../decisions/0002_postgresql-as-primary-store-and-queue.md).
+PostgreSQL is the only durable store. Every process is stateless, apart from the
+in-memory state of the current request or job. See
+[ADR-0002](../decisions/0002_postgresql-as-primary-store-and-queue.md).
 
-## Shared packages
+## Shared code
 
-- **`packages/queue-core`** — the queue primitives and their spec. Both `apps/api` (for enqueue, admin operations) and `apps/worker` (for lease/ack/nack) consume this. The spec in `packages/queue-core/SPEC.md` is the contract. See [ADR-0004](../decisions/0004_queue-semantics-documented-before-implementation.md).
-- **`packages/config`** — config loading (env + file). One pattern for all apps.
-- **`packages/logger`** — structured logging. One logger, used everywhere. Observability lives or dies on this being consistent.
+- **`packages/queue-core`** is the only shared Go package. Both `apps/api` and
+  `apps/worker` import it. It holds queue semantics and SQL. Its spec is
+  `SPEC.md`. See [ADR-0004](../decisions/0004_queue-semantics-documented-before-implementation.md).
+- Configuration loading and logging are per app today (`internal/config`,
+  `internal/logging`). A shared package is created only when a second consumer
+  needs the same code (`CLAUDE.md`).
 
-## Lifecycle of a job
+## Where the code runs
 
-1. **Enqueue.** A caller hits `apps/api`'s public API. The handler validates, persists a job row via `packages/queue-core`, and returns.
-2. **Visibility.** The job row has a `visible_at` (now, or future for scheduled jobs). It becomes returnable from dequeue once `visible_at <= now()` and it isn't already leased.
-3. **Lease.** A worker calls dequeue (`SELECT ... FOR UPDATE SKIP LOCKED`), sets `leased_by` and `lease_expires_at`, commits.
-4. **Heartbeat.** The worker extends `lease_expires_at` periodically while executing.
+| Concern | Location |
+|---|---|
+| Enqueue, inspect, cancel, list | `apps/api/internal/jobs` (HTTP), `packages/queue-core/repository.go` and `cancel.go` (SQL) |
+| Claim, ack, nack, renew | `packages/queue-core/repository.go`, called by `apps/worker/internal/runtime` |
+| Reclaim of expired leases | `packages/queue-core/reclaim.go` (primitive), `apps/api/internal/reclaim` (periodic tick), inline in claim |
+| Retry promotion | `apps/api/internal/retries` |
+| Stale-worker detection | `apps/api/internal/workers/sweeper.go` |
+| Handlers (`noop`, `http_request`, `send_email`) | `apps/worker/internal/handler` |
+| Migrations | `apps/api/migrations`, applied at API startup |
+
+## Lifecycle of a job, in brief
+
+1. **Enqueue.** `POST /jobs` validates the request and inserts a `queued` row.
+   If the idempotency key already exists, the existing row is returned.
+2. **Visible.** The row becomes claimable once `scheduled_for <= now()`.
+3. **Claim.** A worker claims the highest-priority, oldest visible job from its
+   queues. The claim sets `running`, writes a lease with a 30-second expiry, and
+   starts an attempt.
+4. **Renew.** While the handler runs, the worker renews the lease every 10 seconds.
 5. **Outcome.**
-   - **Ack** — the worker reports success; the job moves to a terminal `succeeded` status.
-   - **Nack** — the worker reports a recoverable failure; the retry layer sets a new `visible_at` based on backoff policy.
-   - **Lease expiry without heartbeat** — treated as a failure; the retry layer schedules another attempt, incrementing the attempt count.
-   - **Max attempts exceeded** — the job moves to `dead-lettered`; visible in operator UI for inspection/replay.
-6. **Inspect / replay.** Operators can pause queues, drain workers, view per-job history, and re-enqueue dead-lettered jobs through the admin API.
+   - **Ack:** the handler succeeded, and the job becomes `succeeded`.
+   - **Nack:** the handler failed. The job becomes `failed` with a jittered
+     `next_retry_at`, or `dead_lettered` if the failure is permanent or the attempt
+     budget is spent.
+   - **Lease expires** without renewal: the job is reclaimed. It returns to
+     `queued`, or is dead-lettered if no budget remains.
+   - **Cancel:** the job becomes `cancelled`. A running worker learns of this when
+     its next renewal fails, and it must stop without acking.
+6. **Inspect.** `GET /jobs/:id` returns the job and its attempt history.
 
-For the exact semantics at each step, read `packages/queue-core/SPEC.md`. This document is a map, not a contract.
+For the exact transitions, see [`job-lifecycle.md`](job-lifecycle.md).
 
-## What is intentionally *not* here
+## Not in the system
 
-- A separate message bus (Kafka, NATS, etc.) — see [ADR-0003](../decisions/0003_no-premature-microservices-or-orchestrators.md).
-- A separate cache (Redis, etc.) — Postgres handles read load via indexes; if we need caching later, we'll write an ADR.
-- Per-service databases — one Postgres, one schema (with sub-schemas if needed).
-- Kubernetes — Compose only, see [ADR-0003](../decisions/0003_no-premature-microservices-or-orchestrators.md).
-
-## Where to deepen
-
-- *Queue semantics:* `packages/queue-core/SPEC.md` (when it exists) and `apps/api/docs/architecture/job-lifecycle.md`.
-- *Why a decision:* `docs/decisions/`.
-- *Per-subsystem conventions:* the `CLAUDE.md` in that subtree.
+- A separate message bus (Kafka, NATS, and similar). See [ADR-0003](../decisions/0003_no-premature-microservices-or-orchestrators.md).
+- A cache. Postgres handles read load through indexes.
+- Per-service databases. There is one Postgres.
+- Kubernetes manifests. Docker Compose is the deployment target.
+- Authentication and authorization. The API has none yet, so run it on a private network.
+- Pause, drain, and DLQ replay. They are planned and not implemented.

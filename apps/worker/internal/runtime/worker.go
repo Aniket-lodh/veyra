@@ -237,7 +237,7 @@ func (w *Worker) pollLoop(ctx context.Context) {
 			return
 		}
 
-		job, err := w.cfg.Repo.ClaimNextJob(ctx, w.runtimeID, w.cfg.Queues)
+		job, err := w.cfg.Repo.ClaimNextJob(ctx, w.runtimeID, w.cfg.Queues, w.cfg.Registry.Names())
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return

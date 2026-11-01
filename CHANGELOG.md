@@ -28,10 +28,26 @@ and this project does not yet follow semantic versioning. It is pre-1.0.
   instead of a hard-coded address.
 - The Vite dev proxy defaults to `http://localhost:8080`, matching the API default.
 
+- `docs/architecture/system-overview.md` and `docs/architecture/job-lifecycle.md`
+  rewritten to match the code. `job-lifecycle.md` moved here from `apps/api/docs/`.
+- `packages/queue-core/SPEC.md` now has an Enqueue section (§0). Cancel, Failure
+  classification, and the other operations are marked implemented. Each section lists its
+  test coverage and gaps.
+- `apps/api/docs/swagger.json` covers every route: cancel, workers, queue stats, and renew.
+
+### Fixed
+
+- A worker now claims only jobs for handlers it runs. Before, a job for an unregistered handler was claimed and failed as `UnknownHandler`.
+- The reclaim description said the attempt counter increments on every reclaim. It increments only on an inline claim.
+- The reclaim grace window is documented as a fixed 10-second constant.
+- Runbook event names and container names.
+- **Breaking (internal):** `ClaimNextJob` takes a `handlers` argument, and `POST /internal/debug/claim` requires a `handlers` array. Deploy the API and workers together.
+
 ### Removed
 
 - Scaffold pages and fixture data from the operator console.
 - Unused Vite template assets.
+- Duplicate lifecycle docs and unreferenced soak-run logs.
 
 ## Earlier history
 

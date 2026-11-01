@@ -288,7 +288,7 @@ func mustCreateJob(t *testing.T, ctx context.Context, repo *queuecore.Repository
 
 func mustClaim(t *testing.T, ctx context.Context, repo *queuecore.Repository, wantID string) *queuecore.Job {
 	t.Helper()
-	j, err := repo.ClaimNextJob(ctx, nackTestWorker, []string{nackTestQueue})
+	j, err := repo.ClaimNextJob(ctx, nackTestWorker, []string{nackTestQueue}, []string{nackTestHandler})
 	if err != nil {
 		t.Fatalf("ClaimNextJob: %v", err)
 	}

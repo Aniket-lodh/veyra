@@ -54,6 +54,7 @@ func Register(app *fiber.App, h *Handler) {
 type claimReq struct {
 	WorkerID string   `json:"workerId"`
 	Queues   []string `json:"queues"`
+	Handlers []string `json:"handlers"`
 }
 
 type succeedReq struct {
@@ -90,8 +91,11 @@ func (h *Handler) Claim(c fiber.Ctx) error {
 	if len(req.Queues) == 0 {
 		return badRequest(c, "queues must be a non-empty array")
 	}
+	if len(req.Handlers) == 0 {
+		return badRequest(c, "handlers must be a non-empty array")
+	}
 
-	job, err := h.repo.ClaimNextJob(c.Context(), req.WorkerID, req.Queues)
+	job, err := h.repo.ClaimNextJob(c.Context(), req.WorkerID, req.Queues, req.Handlers)
 	if err != nil {
 		return internalError(c, err)
 	}

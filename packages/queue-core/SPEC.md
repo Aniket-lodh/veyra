@@ -1,8 +1,8 @@
 # Queue semantics — authoritative spec
 
 This file is the source of truth for Veyra's queue behavior. The implementation
-under `apps/api/internal/jobs/`, `apps/api/internal/queue/`, the worker, and the
-operator UI all reason about jobs based on what is written here. **If the spec
+in `packages/queue-core/`, the API (`apps/api/internal/{jobs,retries,reclaim}/`), the
+worker, and the operator console all reason about jobs based on what is written here. **If the spec
 and the code disagree, the spec is right and the code is the bug.**
 
 The rule: any change to the operations listed below must update this document
@@ -14,19 +14,106 @@ it verifies. See
 
 | Operation         | Section                                                            | Status        |
 |-------------------|--------------------------------------------------------------------|---------------|
-| Enqueue           | (not yet written)                                                  | implemented   |
-| **Dequeue**       | [§1 Dequeue](#1-dequeue)                                           | **specified** |
-| **Ack**           | [§2 Ack](#2-ack-success-completion)                                | **specified** |
-| **Nack / Fail**   | [§3 Nack](#3-nack-failure-completion)                              | **specified** |
-| **Retry scheduling** | [§3.5 Retry scheduling](#35-retry-scheduling)                   | **specified** |
-| **Lease Renewal** (a.k.a. ExtendLease) | [§4 Lease Renewal](#4-lease-renewal)          | **specified** |
+| **Enqueue**       | [§0 Enqueue](#0-enqueue)                                           | implemented   |
+| **Dequeue**       | [§1 Dequeue](#1-dequeue)                                           | implemented   |
+| **Ack**           | [§2 Ack](#2-ack-success-completion)                                | implemented   |
+| **Nack / Fail**   | [§3 Nack](#3-nack-failure-completion)                              | implemented   |
+| **Retry scheduling** | [§3.5 Retry scheduling](#35-retry-scheduling)                   | implemented   |
+| **Lease Renewal** (a.k.a. ExtendLease) | [§4 Lease Renewal](#4-lease-renewal)          | implemented   |
 | Worker heartbeat  | out of scope — proves the *runtime process* is alive, not a specific job execution. Lives in the `workers` table; see `apps/worker/CLAUDE.md`. Do **not** conflate with Lease Renewal. | n/a |
-| **Cancel**        | [§6 Cancel](#6-cancel)                                             | **specified** |
-| **Timeout / Reclaim** | [§5 Reclaim](#5-reclaim) — a top-level primitive with multiple invocation sites (dequeue inline + api-side periodic tick) | **specified** |
-| **Failure classification** (retryable vs permanent) | [§7 Failure classification](#7-failure-classification--retryable-vs-permanent) | **specified** |
+| **Cancel**        | [§6 Cancel](#6-cancel)                                             | implemented   |
+| **Timeout / Reclaim** | [§5 Reclaim](#5-reclaim) — a top-level primitive with multiple invocation sites (dequeue inline + api-side periodic tick) | implemented   |
+| **Failure classification** (retryable vs permanent) | [§7 Failure classification](#7-failure-classification--retryable-vs-permanent) | implemented   |
 
 A "not yet written" section is a hole, not a license to invent semantics. Stop
 and add the section first.
+
+**Test coverage is tracked per section.** Where a section lists no test, the
+behavior is implemented but not yet covered by an automated test. Those gaps are
+listed in each section's *Verified by* block. Do not claim coverage that is not
+listed there.
+
+---
+
+## 0. Enqueue
+
+Enqueue creates a job in the `queued` state. It is the only operation that
+inserts a row into `jobs`.
+
+The implementation is `Repository.Create(ctx, CreateParams)` in
+`packages/queue-core/repository.go`. The HTTP entry point is `POST /jobs` in
+`apps/api/internal/jobs/handler.go`, which validates the request and builds the
+params.
+
+### 0.1 Inputs
+
+| Name             | Type        | Required | Default       | Constraints |
+|------------------|-------------|----------|---------------|-------------|
+| `handler`        | `string`    | yes      | —             | Trimmed, non-empty. Not checked against any registry: the API does not know which handlers workers run. |
+| `queue`          | `string`    | yes      | —             | Trimmed, non-empty. |
+| `payload`        | JSON        | yes      | —             | Must be valid JSON. No size cap is enforced yet (see §0.9). |
+| `priority`       | `int`       | no       | `5`           | `0`–`9`, higher runs first. |
+| `maxAttempts`    | `int`       | no       | `3`           | `>= 1`. |
+| `backoff`        | object      | no       | exponential, base 30s, cap 3600s | Validated by `BackoffStrategy.Validate`. |
+| `scheduledFor`   | timestamp   | no       | `now()`       | Database time. A future value makes the job invisible to dequeue until then. |
+| `idempotencyKey` | `string`    | no       | none          | Trimmed. An empty value is treated as absent. See §0.5. |
+
+### 0.2 Outputs
+
+The inserted row as a `Job`. The HTTP API returns it with status `201`. The API
+reports `status: "scheduled"` when the row is `queued` and `scheduledFor` is in
+the future (see `docs/architecture/database-schema.md`, "Status mapping").
+
+### 0.3 Preconditions
+
+- Input validation passed (§0.1). Validation runs in the API layer. Queue-core
+  does not re-validate `handler`, `queue`, or `priority`.
+
+### 0.4 Postconditions (success)
+
+- A new row exists with a fresh ULID `id`, `status = 'queued'`, `attempt = 0`,
+  `enqueued_at = now()`, and `scheduled_for` as given or `now()`.
+- `current_worker_id`, `lease_expires_at`, `next_retry_at`, and the terminal
+  timestamps are `NULL`.
+
+### 0.5 Idempotency
+
+When `idempotencyKey` is set, `(queue, idempotency_key)` is unique for the life
+of the row. A second `Create` with the same pair returns the **existing** job
+and inserts nothing. The API still answers `201`, so callers do not need to
+tell first-time and repeat enqueues apart. The new request's other fields are
+ignored. A key is never released, even after the job succeeds.
+
+### 0.6 Concurrency
+
+The insert is `INSERT ... ON CONFLICT (queue, idempotency_key) WHERE
+idempotency_key IS NOT NULL DO NOTHING RETURNING ...`. If the insert hits a
+conflict, the existing row is read back by key. Two concurrent creates with the
+same key resolve to one row.
+
+### 0.7 Ordering and visibility
+
+- A job becomes visible to dequeue when `scheduled_for <= now()` (§1.2).
+- Among visible jobs, dequeue orders by `priority DESC, scheduled_for ASC` (§1.3).
+- The job list (`GET /jobs`) orders by `enqueued_at DESC`.
+
+### 0.8 Errors
+
+Queue-core returns no sentinel errors for Create. Validation failures are
+returned by the API as `400` before queue-core is called. Database errors are
+wrapped with the function name and returned, and the API maps them to `500`.
+
+### 0.9 Known gaps
+
+- The payload size cap (256 KiB, described in `docs/architecture/database-schema.md`)
+  is not enforced yet.
+- Queue-core emits no event on enqueue. The API logs `jobs.create` with `jobId`,
+  `queue`, `handler`, `priority`, and `maxAttempts`.
+
+### 0.10 Verified by
+
+No automated test covers Create yet. The end-to-end paths are exercised only
+manually and through the operator scripts in `scripts/stress/`.
 
 ---
 
@@ -36,9 +123,19 @@ Dequeue is the atomic operation by which a worker takes ownership of one job
 for execution. It is the hot path of the entire system.
 
 The implementation is `Repository.ClaimNextJob(ctx, workerID, queues)` in
-`packages/queue-core/repository.go`. The corresponding tests live in
-`packages/queue-core/repository_dequeue_test.go` (to be added when the
-worker exists; until then, exercise via `POST /internal/debug/claim`).
+`packages/queue-core/repository.go`. The worker calls it on every poll. The
+debug route `POST /internal/debug/claim` calls the same method.
+
+*Verified by:*
+
+- `TestClaim_FiltersByHandler`: a worker claims only jobs whose handler is in its list.
+- `TestClaim_RequiresQueuesAndHandlers`: empty `queues` or `handlers` is rejected before SQL.
+- `TestClaim_InlineReclaimRespectsHandler`: an expired lease for a handler the caller does not run is not reclaimed inline. The tick driver still reclaims it (§5.5.2).
+- `TestReclaim_FleetCollapse_SelfHeals` (`packages/queue-core/reclaim_integration_test.go`) claims jobs through this path end to end.
+
+**Compatibility.** `ClaimNextJob` gains a `handlers` parameter. The worker, the
+debug claim route (`POST /internal/debug/claim`, which now requires `handlers`),
+and the tests all change in the same commit. Deploy the API and workers together.
 
 ### 1.1 Inputs
 
@@ -46,16 +143,20 @@ worker exists; until then, exercise via `POST /internal/debug/claim`).
 |-----------|----------|------------------------------------------------------------------|
 | `workerID`| `string` | The **runtime** id of the calling worker (ephemeral per process boot — see `docs/architecture/database-schema.md`, "Worker identity", or simply: "fresh ULID each start"). Stored on the row as `current_worker_id` and on the new attempt row as `worker_id`. |
 | `queues`  | `[]string` | The set of queue names the worker is subscribed to. The worker passes this on **every** call. Must be non-empty. |
+| `handlers`| `[]string` | The set of handler names the worker can run. The worker passes this on **every** call. Must be non-empty. A job whose `handler` is not in this set is never returned to this caller. |
 
-`handlers []string` will join `queues` once worker registration lands. Until
-then, Dequeue does not filter by handler.
+Both `queues` and `handlers` are filters on the claim. A job is returned only if
+its `queue` is in `queues` and its `handler` is in `handlers`. This is the rule
+from SPEC §1.2 and it applies to every candidate, including reclaim candidates
+(§5.1).
 
 ### 1.2 Selection predicate
 
 A row is **runnable** by this worker if **all** of the following hold:
 
 1. `queue = ANY($queues)` — the caller is subscribed to this queue.
-2. One of these state predicates is true:
+2. `handler = ANY($handlers)` — the caller can run this handler.
+3. One of these state predicates is true:
    - `status = 'queued' AND scheduled_for <= now()` — a fresh, visible job.
    - `status = 'running' AND lease_expires_at + reclaim_grace <= now()` —
      a reclaimable job whose previous lease has expired AND whose grace
@@ -202,10 +303,25 @@ was already locked by another concurrent dequeue), `ClaimNextJob` returns
 available" log line is emitted at debug level; this is the steady state on an
 idle queue and must not look like a failure.
 
+### 1.9a Jobs with no capable worker
+
+A job whose handler no live worker runs stays `queued` (or `running`, once
+leased) until a worker that runs that handler claims it. Dequeue never fails a
+job because its handler is unknown to the caller. There is no timeout on this
+wait. Operators see such jobs as queued depth in `GET /queue/stats`, and they
+can cancel them (§6).
+
+Enqueue does not validate handler names against any worker's registry (§0.1).
+A typo in `handler` therefore creates a job that waits here indefinitely.
+
+`UnknownHandler` is no longer produced by the claim path. A worker that claims
+a job it cannot run because of a race between its registry and its claim call
+records it as `UnknownHandler` as a defensive fallback. No other path produces it.
+
 ### 1.10 Errors
 
-- Empty `queues` slice → returned synchronously as a validation error, no SQL
-  executed.
+- Empty `queues` or empty `handlers` slice → returned synchronously as a
+  validation error, no SQL executed. A worker that can run nothing must not claim.
 - Any pgx error during select/update/insert/commit → wrapped with the function
   name and returned. The transaction is rolled back via deferred `Rollback`
   (safe to call after Commit; pgx ignores "tx already closed").
@@ -245,9 +361,10 @@ Ack is how a worker reports that a job's current attempt finished successfully.
 It is the only transition out of `running` into `succeeded`.
 
 The implementation is `Repository.MarkJobSucceeded(ctx, SucceedParams)` in
-`packages/queue-core/repository.go`. Tests live in
-`packages/queue-core/repository_complete_test.go` (deferred until the worker
-exists; the interim driver is `POST /internal/debug/succeed`).
+`packages/queue-core/repository.go`. The worker calls it after a successful
+handler run. The debug route `POST /internal/debug/succeed` calls the same method.
+
+*Verified by:* no automated test for the success path yet (gap).
 
 ### 2.1 Inputs
 
@@ -340,9 +457,10 @@ Nack is how a worker reports that a job's current attempt failed. It is the
 only transition out of `running` into `failed` or `dead_lettered`.
 
 The implementation is `Repository.MarkJobFailed(ctx, FailParams)` in
-`packages/queue-core/repository.go`. Tests live in
-`packages/queue-core/repository_complete_test.go` (deferred; interim driver
-is `POST /internal/debug/fail`).
+`packages/queue-core/repository.go`. The worker calls it after a failed handler
+run. The debug route `POST /internal/debug/fail` calls the same method.
+
+*Verified by:* §3.5 and §7.11 list the Nack tests.
 
 ### 3.1 Inputs
 
@@ -493,6 +611,8 @@ should seed the PRNG via the implementation's test surface, not by
 mutating `next_retry_at` after the fact.
 
 #### 3.5.3 Scheduler-side promotion
+
+Implementation: `apps/api/internal/retries/scheduler.go`.
 
 The retry scheduler runs as a background goroutine in the `apps/api`
 process. Its sole job is to flip retry-due rows from `failed` to
@@ -687,27 +807,17 @@ Names are camelCase. Implementation uses `log/slog`. Extra fields are
 permitted but the listed ones are required for the operator dashboard
 to function.
 
-#### 3.5.11 Tests
+#### 3.5.11 Verified by
 
-| Spec clause | Test                                                                            |
-|-------------|---------------------------------------------------------------------------------|
-| §3.5.1      | `TestNack_Retryable_SetsNextRetryAt_Exponential` — base delays grow correctly   |
-| §3.5.1      | `TestNack_Retryable_SetsNextRetryAt_Fixed` — fixed strategy ignores attempt     |
-| §3.5.1      | `TestNack_Retryable_AtomicWithFailure` — `(status, next_retry_at)` co-written   |
-| §3.5.2      | `TestNack_Jitter_Range` — sampled delay falls in `[0.5×, 1.5×]` of base         |
-| §3.5.2      | `TestNack_Jitter_ComputedOnce` — reading the row N times yields the same value  |
-| §3.5.3      | `TestScheduler_Promote_DueOnly` — under-due rows are NOT promoted               |
-| §3.5.3      | `TestScheduler_Promote_BatchLimit` — at most N rows per tick                    |
-| §3.5.3      | `TestScheduler_Promote_AtomicClearNextRetryAt` — invariant §3.5.4(1)            |
-| §3.5.3      | `TestScheduler_Promote_DoesNotIncrementAttempt` — invariant §3.5.4(4)           |
-| §3.5.4      | `TestInvariant_NextRetryAtPresenceMatchesStatus` — exhaustive across statuses   |
-| §3.5.5      | `TestScheduler_LagObservable` — `lagMs` field is correct on promote event       |
-| §3.5.8      | `TestReclaim_DoesNotSetNextRetryAt` — §5.6 path leaves next_retry_at unset      |
-
-Tests live in `packages/queue-core/repository_retry_test.go` (Nack-side)
-and `apps/api/internal/retries/scheduler_test.go` (scheduler-side).
-Both must hit a real Postgres (per `apps/api/CLAUDE.md` — "do not mock
-the database").
+| Spec clause | Coverage |
+|-------------|----------|
+| §3.5.1 (exponential and fixed base delay) | `TestBaseBackoffSeconds_Exponential`, `TestBaseBackoffSeconds_Fixed`, `TestBaseBackoffSeconds_Defensive` (`packages/queue-core/backoff_test.go`) |
+| §3.5.2 (jitter range) | `TestComputeRetryDelaySeconds_JitterInRange` (`packages/queue-core/backoff_test.go`) |
+| §3.5.1 (`next_retry_at` written atomically with failure) | `TestNack_Retry_DefaultUnchanged` (`packages/queue-core/repository_complete_test.go`) |
+| §3.5.3 (scheduler promotion, batch limit, `attempt` untouched) | **gap**: no test yet |
+| §3.5.4 (invariants across statuses) | **gap**: no test yet |
+| §3.5.5 (promotion lag event) | **gap**: no test yet |
+| §3.5.8 (reclaim leaves `next_retry_at` NULL) | **gap**: no test yet |
 
 ### 3.6 Idempotency
 
@@ -759,9 +869,11 @@ A worker can be heartbeating fine while a specific job execution has hung,
 deadlocked, or already completed. Conflating them defeats the reclaim path.
 
 The implementation is `Repository.RenewLease(ctx, RenewParams)` in
-`packages/queue-core/repository.go`. Tests live in
-`packages/queue-core/repository_renew_test.go` (deferred until the worker
-drives renewal end-to-end; the interim driver is the worker runtime itself).
+`packages/queue-core/repository.go`. The worker runtime calls it every 10 seconds
+per in-flight job (`apps/worker/internal/runtime/worker.go`). The debug route
+`POST /internal/debug/renew` calls the same method.
+
+*Verified by:* no automated test yet (gap).
 
 ### 4.1 Inputs
 
@@ -1251,7 +1363,7 @@ sites) and three tick-driver-specific parameters.
 
 | Knob | Default | Bounds | Notes |
 |------|---------|--------|-------|
-| `reclaim_grace` | `10s` | configurable; >= 0 | Extra time beyond `lease_expires_at` before a row becomes reclaimable. Set to absorb transient liveness disruption (worker GC pause, brief DB stall, network hiccup, noisy container scheduling) without triggering ownership flapping. The selection predicate at both sites is `status='running' AND lease_expires_at + reclaim_grace <= now()`. |
+| `reclaim_grace` | `10s` | fixed in code today (`ReclaimGraceSeconds` in `packages/queue-core/reclaim.go`); configurable is planned, not implemented | Extra time beyond `lease_expires_at` before a row becomes reclaimable. Set to absorb transient liveness disruption (worker GC pause, brief DB stall, network hiccup, noisy container scheduling) without triggering ownership flapping. The selection predicate at both sites is `status='running' AND lease_expires_at + reclaim_grace <= now()`. |
 
 `reclaim_grace = 10s` against a lease duration of `30s` (§1.8) means a
 row is reclaimable after a worker has been silent for at most 40s
@@ -1265,6 +1377,8 @@ reverts behavior to "lease expiry == owner death" with the false-
 positive reclaim churn that implies under load.
 
 #### 5.10.2 Tick driver
+
+Implementation: `apps/api/internal/reclaim/driver.go`. Interval and batch limit come from `VEYRA_RECLAIM_INTERVAL_SECONDS` (default 10) and `VEYRA_RECLAIM_BATCH_LIMIT` (default 100).
 
 | Knob | Default | Bounds | Notes |
 |------|---------|--------|-------|
@@ -1359,58 +1473,29 @@ Soak-stream metrics:
 Names are camelCase. Implementation uses `log/slog`. Additional fields
 beyond the required set are permitted.
 
-### 5.13 Tests
+### 5.13 Verified by
 
-Inline-site coverage migrates from the existing reclaim tests in
-`packages/queue-core/repository_test.go` (current names like
-`TestReclaim_*` stay, but their spec-section references update to §5).
+Covered:
 
-New tests required:
+- `TestReclaim_FleetCollapse_SelfHeals` (`packages/queue-core/reclaim_integration_test.go`).
+  Runs real Postgres. Claims jobs, simulates lost leases, and checks that the
+  fleet recovers and every job succeeds.
 
-| Spec clause | Test                                                                            |
-|-------------|---------------------------------------------------------------------------------|
-| §5.4        | `TestReclaim_ClosesPriorAttempt` — `outcome='lease_lost'`, `ended_at` set; the `ended_at IS NULL` guard prevents double-closure |
-| §5.4        | `TestReclaim_PostLockRevalidation_StaleOnRenewedLease` — concurrent renewal between caller SELECT and primitive UPDATE → ReclaimOutcomeStale, no mutation, `queue.reclaim.row.stale` emitted |
-| §5.4        | `TestReclaim_PostLockRevalidation_StaleOnStatusChange` — row transitioned to `succeeded`/`failed`/`queued` between SELECT and UPDATE → Stale, no mutation |
-| §5.4        | `TestReclaim_PostLockRevalidation_StaleOnAttemptChange` — attempt counter incremented between SELECT and UPDATE → Stale, no mutation |
-| §5.5.1      | `TestReclaim_InlineClaim_BudgetRemaining` — claim happens, `attempt` increments, new `job_attempts` inserted (existing coverage, renamed) |
-| §5.5.2      | `TestReclaim_TickRequeue_BudgetRemaining` — row goes to `queued`, `attempt` UNCHANGED, `next_retry_at` UNTOUCHED, no new `job_attempts` row |
-| §5.6        | `TestReclaim_BudgetExhausted_DLQ_Inline` — current §1.5.2 coverage, renamed     |
-| §5.6        | `TestReclaim_BudgetExhausted_DLQ_Tick` — same constraint reasoning, via tick mode |
-| §5.7        | `TestReclaim_Idempotent_RedundantInvocation` — same row, two transactions; second invocation no-ops |
-| §5.7        | `TestReclaim_Concurrent_OnlyOneWins` — two goroutines, same row; exactly one mutates, the other observes `status != 'running'` and no-ops |
-| §5.7        | `TestReclaim_TickCrashMidBatch_NextTickResumes` — simulated rollback; next tick finds the same rows and reclaims them cleanly |
-| §5.8        | `TestReclaim_DoesNotEnterRetryPipeline` — tick-reclaimed row leaves `next_retry_at=NULL`. Replaces the §3.5.8 test row whose spec ref is updated |
-| §5.10       | `TestReclaim_Tick_BatchLimit` — per-tick LIMIT respected, no over-claim |
-| §5.10       | `TestReclaim_Tick_Singleton_AdvisoryLock` — concurrent tick processes do not double-reclaim (advisory-lock path) |
+Not yet covered (each is a gap in the implementation's test suite):
 
-Tests live in `packages/queue-core/` (primitive-level) and
-`apps/api/internal/reclaim/` (tick driver, when implemented). All
-tests hit a real Postgres (per `apps/api/CLAUDE.md` — do not mock the
-DB).
-
-**Integration test** (per `feedback-integration-tests-for-semantics`):
-
-- **Scenario "worker fleet collapse → queue self-heals".** Start
-  workers. Enqueue N jobs. Kill ALL workers via in-container
-  `docker exec pkill worker` (NOT `docker kill` — see
-  `feedback-docker-kill-vs-inside-kill`). Disable restart policy for
-  the test by overriding to `restart: no` so workers stay down. Wait
-  for leases to expire (`lease_duration + ε`). Verify the tick
-  reclaim has transitioned every `running` row to `queued`
-  (`jobs_in_flight=0`, `jobs_with_expired_lease=0`). Re-enable
-  workers (`docker compose up -d worker`). Verify all N jobs eventually
-  succeed.
-
-This is the invariant the 2026-05-26 soak failed to provide. It must
-be exercised by the post-A2 burner soak before declaring the queue
-self-healing.
+- §5.4 post-lock revalidation: stale on renewed lease, status change, attempt change.
+- §5.4 `ended_at IS NULL` guard prevents double closure of an attempt.
+- §5.5.1 inline claim with budget remaining. §5.5.2 tick requeue leaves `attempt` and `next_retry_at` unchanged.
+- §5.6 budget-exhausted dead-letter, inline and tick.
+- §5.7 idempotent redundant invocation, two concurrent invocations (exactly one wins), crash mid-batch.
+- §5.8 tick-reclaimed row leaves `next_retry_at = NULL`.
+- §5.10 tick batch limit. Advisory-lock singleton behavior.
 
 ---
 
 ## 6. Cancel
 
-> **Status: specified.** Operator-initiated terminal stop for a job that
+> **Status: implemented.** Operator-initiated terminal stop for a job that
 > has not yet finished successfully or dead-lettered. Cooperative for
 > in-flight work — see §6.4.
 
@@ -1530,15 +1615,13 @@ Integration tests in `packages/queue-core/repository_cancel_test.go`
 
 ### 6.9 Enqueue (placeholder)
 
-Enqueue remains specified by the provisional Create path in
-`packages/queue-core/repository.go` until its own section is written.
-Cancel does not change Enqueue.
+Enqueue is specified in §0. Cancel does not change Enqueue.
 
 ---
 
 ## 7. Failure classification — retryable vs permanent
 
-> **Status: specified.** Accepted 2026-10-28 (review decisions from
+> **Status: implemented.** Accepted 2026-10-28 (review decisions from
 > 2026-06-03 retained). Normative Nack terminality lives in §3.4; this
 > section owns the disposition concept, handler contract, and interactions
 > with retry/reclaim.

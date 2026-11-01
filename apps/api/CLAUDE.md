@@ -1,73 +1,92 @@
 # apps/api
 
-Go HTTP service. Public API + admin API + WebSocket for live job state.
+Go HTTP service. Serves the REST API and runs the background loops that keep the
+queue healthy (stale-worker sweeper, retry scheduler, reclaim driver).
 
 ## Stack
 
-- **Router:** `fiber` (v3) — `fasthttp`-based, Express-like API. See [ADR-0005](../../docs/decisions/0005_use-fiber-for-api-router.md) for the rationale and trade-offs.
-- **DB:** `pgx` (v5) directly. No ORM. Hand-written SQL or `pgx`'s scanning.
-- **Migrations:** `apps/api/migrations/NNNNNN_description.{up,down}.sql` (6-digit prefix, the `golang-migrate` convention). Numeric, monotonic, never rewritten after merge. Applied at startup by `internal/database.RunMigrations`, which uses `golang-migrate/v4` as a library against a `file://migrations` source.
-- **WebSocket:** `github.com/gofiber/contrib/websocket` (fiber-native, not `gorilla/websocket`).
-- **HTTP instrumentation:** fiber-specific (`github.com/gofiber/contrib/otelfiber` or equivalent). Standard `net/http` middleware does *not* apply — fiber sits on `fasthttp`, not `net/http`.
+- **Router:** `fiber` v3 (`fasthttp`-based). See [ADR-0005](../../docs/decisions/0005_use-fiber-for-api-router.md).
+  Standard `net/http` middleware does not apply.
+- **DB:** `pgx` v5 directly. No ORM. Hand-written SQL.
+- **Queue:** `packages/queue-core`. The API never writes queue state with its own SQL.
+  The only exception is the `workers` table (see below).
+- **Migrations:** `apps/api/migrations/NNNNNN_description.{up,down}.sql`. Applied at
+  startup by `internal/database.RunMigrations` (`golang-migrate` against `file://migrations`).
+- **Swagger UI:** mounted only when `APP_ENV=development`, from `docs/swagger.json`.
+- **Not present yet:** WebSocket live updates, authentication, metrics endpoints.
 
 ## Layout
 
 ```
 apps/api/
-  cmd/api/        main.go — process wiring ONLY (env → logger → db → app → routes → listen).
+  cmd/api/        main.go: wiring only (env, logger, DB, migrations, routes, loops, listen, shutdown)
   internal/
-    config/       Env-var loader (Config struct + DatabaseURL helper).
-    database/     pgx pool constructor + golang-migrate runner.
-    debug/        Dev-only /internal/debug/* routes against queuecore primitives. Mounted unconditionally today; ingress rejects /internal/* in prod.
-    health/       /health liveness probe (DB ping).
-    http/         fiber.App constructor: app config + middleware chain + central error handler. Does NOT know about domain routes.
-    jobs/         Job HTTP layer. Wraps queuecore in fiber handlers + the response DTO that matches the frozen frontend contract.
-    logging/      slog bootstrap (Setup(env, level)). Sets slog.Default. No logger interface, no wrapper.
-    middleware/   request id + access log. Each middleware writes to ctx (via SetContext), never c.Locals.
-    stats/        GET /queue/stats. Thin HTTP skin over queuecore.Repository.QueueStats; SQL ownership stays in queue-core.
-    workers/      GET /workers. Owns SQL against the `workers` table directly (observability-only table; queue-core deliberately does NOT touch it). Joins lease info in-process via queuecore.Repository.ListRunningLeases — never via SQL JOIN against workers.
-  migrations/     Numbered SQL pairs (golang-migrate). See "Migrations checklist" below.
-  docs/
-    architecture/  API-local design notes.
+    config/       env loader (the only place that calls os.Getenv for API settings)
+    database/     pgx pool and migration runner
+    debug/        /internal/debug/* routes (claim, succeed, fail, renew). Dev only.
+    health/       GET /health (DB ping)
+    http/         fiber app constructor, middleware chain, error handling
+    jobs/         /jobs routes: create, list, get, cancel. Thin wrapper over queuecore.
+    logging/      slog setup
+    middleware/   request ID (X-Request-Id) and access log
+    reclaim/      periodic reclaim driver. Calls the queue-core reclaim primitive.
+    retries/      retry scheduler. Promotes due `failed` rows to `queued`.
+    stats/        GET /queue/stats. Thin wrapper over queuecore.QueueStats.
+    workers/      GET /workers, and the stale-worker sweeper. Owns SQL on the `workers` table.
+  docs/swagger.json   hand-maintained OpenAPI 3.0 spec. Update it with every route change.
+  migrations/         numbered SQL pairs
 ```
 
-Folders that do NOT exist here are intentional: there is no `queue/`,
-`queues/`, `retries/`, `leases/`, or `websocket/`. Queue semantics live
-in `packages/queue-core` (their ownership; ADR-0004); the others have no
-implementation yet. **Do not create an empty folder to "reserve" a name**
-— empty folders pretend a boundary exists that the compiler does not
-enforce, and they confuse every other reader.
+Do not create an empty folder to reserve a name. An empty folder suggests a boundary
+that the compiler does not enforce.
 
 ## Conventions
 
-- **`context.Context` first.** Every function that does I/O takes `ctx context.Context` as its first parameter. In a fiber handler, obtain it via `c.UserContext()` and pass it to every downstream call. Never use `context.Background()` deep in the call stack.
-- **Handler signature:** `func(c fiber.Ctx) error`. Return errors; let fiber's error handler map them to HTTP codes. Do not write status codes from inside business logic.
-- **Wrap pgx errors with location.** `fmt.Errorf("jobs.Enqueue: %w", err)`. Don't swallow.
-- **No global state.** Pass dependencies via constructors. The `main` package wires the fiber app and routes; nothing else does.
-- **Handlers are thin.** Handler → service method → repository. The handler parses input (via `c.Bind*`), validates, calls a service, and translates the returned error to an HTTP response — that's it. No business logic in the handler.
-- **Observability is mandatory.** Every handler logs a structured entry; every queue operation emits a metric. Use `packages/logger` for logs and the fiber-native OTel middleware for traces — `net/http` instrumentation will not work here.
-- **Errors are typed when callers branch on them.** Use sentinel errors (`var ErrJobNotFound = errors.New(...)`) and `errors.Is`. No string matching. Map sentinel errors to HTTP status codes in a central fiber error handler, not at each call site.
-- **No `c.Locals` for request-scoped data that crosses package boundaries.** Use the request `context.Context` instead — it travels through service and repository layers; `c.Locals` does not.
+- **`context.Context` first.** Every function that does I/O takes `ctx` as its first
+  parameter. In handlers, use `c.Context()`. Never use `context.Background()` deep in the call stack.
+- **Handler signature:** `func(c fiber.Ctx) error`. Return errors, and map them to
+  HTTP status codes in the handler's response helpers (`badRequest`, `internalError`,
+  `mapCompletionError`).
+- **Handlers are thin:** parse and validate input, call queue-core, and translate the
+  result. No business logic in handlers.
+- **Errors are typed when callers branch on them.** Use sentinel errors from
+  queue-core (`ErrJobNotFound`, `ErrLeaseLost`, `ErrLeaseExpired`, `ErrNotCancellable`)
+  and `errors.Is`. Never match on strings.
+- **Wrap errors with the location:** `fmt.Errorf("jobs.Create: %w", err)`.
+- **No global state.** Pass dependencies through constructors. `main` wires everything.
+- **Request-scoped data** travels in `context.Context`, not `c.Locals`, when it crosses packages.
+- **Observability.** Every handler logs one structured entry (`slog`, with an `event`
+  field). Queue operations emit the events listed in `SPEC.md`. Use `internal/logging`.
+  There is no metrics backend yet.
+- **Configuration.** Every new variable gets a line in `apps/api/.env.example` and in the
+  README configuration section.
 
 ## Queue boundary rule
 
-Anything under `internal/queue/`, `internal/jobs/`, or `internal/retries/` may **only** change behavior that is already described in `packages/queue-core`'s spec. If you need different semantics, update the spec first. See [the queue spec ADR](../../docs/decisions/0004-queue-semantics-documented-before-implementation.md).
+`internal/jobs`, `internal/retries`, and `internal/reclaim` may only invoke queue-core. They
+must not change queue behavior. If a behavior change is needed, update
+`packages/queue-core/SPEC.md` first. See [ADR-0004](../../docs/decisions/0004_queue-semantics-documented-before-implementation.md).
+
+The `workers` table is observability only. Queue-core does not read it. The `GET /workers`
+handler joins lease data in-process through `queuecore.Repository.ListRunningLeases`. It
+never JOINs `workers` in SQL against `jobs`.
 
 ## Testing
 
-- `go test ./...` from `apps/api/`.
-- Integration tests hit a real Postgres (via the compose stack or testcontainers). **Do not mock the database** — the entire queue's correctness lives in SQL semantics; mocks lie.
-- Tests covering queue behavior must reference the spec section they verify.
+- `go test ./...` from `apps/api/`. **The API has no tests yet.** New behavior in this
+  package needs tests, and so do the HTTP status mappings.
+- Queue behavior is tested in `packages/queue-core`, against real Postgres via
+  testcontainers (`go test -tags integration ./...`). Do not mock the database.
 
 ## Migrations checklist
 
 Before adding a migration:
 
-- [ ] Numbered after the highest existing migration. No gaps, no edits to merged migrations.
-- [ ] Both `up.sql` and `down.sql` exist. Down must actually invert.
-- [ ] No `DROP COLUMN` / `DROP TABLE` without a deprecation migration shipped at least one release prior.
+- [ ] Numbered after the highest existing migration. No gaps. Never edit a merged migration.
+- [ ] Both `up.sql` and `down.sql` exist, and `down` actually inverts `up`.
+- [ ] No `DROP COLUMN` or `DROP TABLE` without a deprecation migration shipped in an earlier release.
 - [ ] New indexes on populated tables use `CREATE INDEX CONCURRENTLY`.
-- [ ] `NOT NULL` additions backfill in a separate prior migration, then add the constraint.
-- [ ] Each statement runs in its own transaction unless the migration explicitly needs atomicity (and the runner supports it).
+- [ ] `NOT NULL` additions backfill in a separate, earlier migration.
+- [ ] Each statement runs in its own transaction unless the migration needs atomicity.
 
-A migration that violates the checklist needs an explicit note in the PR body explaining why.
+If a migration breaks this list, explain why in the PR body.
