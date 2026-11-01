@@ -21,9 +21,9 @@ jobs:
       matrix:
         module: [packages/queue-core, apps/api, apps/worker]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.25"
           cache-dependency-path: |
@@ -42,7 +42,7 @@ jobs:
         run: go test ./...
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v8
+        uses: golangci/golangci-lint-action@v9
         with:
           version: v2.6.2
           working-directory: ${{ matrix.module }}
@@ -51,9 +51,9 @@ jobs:
     name: Queue integration tests (real Postgres)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.25"
           cache-dependency-path: |
@@ -71,11 +71,13 @@ jobs:
       run:
         working-directory: apps/frontend/app
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: pnpm/action-setup@v4
+        with:
+          version: 10
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: pnpm
@@ -90,7 +92,7 @@ jobs:
     name: Docker images build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build API image
         run: docker build -f deployments/docker/api.Dockerfile -t veyra-api:ci .
