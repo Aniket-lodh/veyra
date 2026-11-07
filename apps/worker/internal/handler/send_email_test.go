@@ -188,7 +188,6 @@ func TestClassifySMTPError_Auth(t *testing.T) {
 		_ = err
 	}
 	// Force auth via message containing auth for non-SendError: currently maps to connection.
-	// SendError path is covered when library returns typed errors in integration.
 }
 
 func TestNormalizeSMTPTLS(t *testing.T) {

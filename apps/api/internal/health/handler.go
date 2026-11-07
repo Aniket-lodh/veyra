@@ -1,7 +1,4 @@
-// Package health owns the /health endpoint. It is its own package (rather
-// than living in main or jobs) because liveness is a service-level concern
-// independent of any particular domain — a future readiness probe, a future
-// dependency-check endpoint, both belong here.
+// Package health serves /health.
 package health
 
 import (
@@ -13,9 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Handler depends only on the pgx pool because the only liveness check that
-// matters today is "can we reach Postgres?". Adding more dependencies as new
-// probes are introduced is fine; resist adding mocks for them.
+// Handler depends only on the pgx pool because the only liveness check that matters today is "can we reach Postgres?".
 type Handler struct {
 	pool *pgxpool.Pool
 }
@@ -24,16 +19,12 @@ func NewHandler(pool *pgxpool.Pool) *Handler {
 	return &Handler{pool: pool}
 }
 
-// Register mounts the routes. Keeping route registration here (not in main)
-// means cmd/api/main.go is wiring, not vocabulary.
+// Register mounts the routes.
 func Register(app *fiber.App, h *Handler) {
 	app.Get("/health", h.Health)
 }
 
-// Health responds 200 with a small JSON object when the database ping
-// succeeds, 503 otherwise. It is deliberately a fresh connection check on
-// every request — a stale pool that can't actually reach Postgres is exactly
-// the "healthy" lie a probe must catch.
+// Health responds 200 with a small JSON object when the database ping succeeds, 503 otherwise.
 func (h *Handler) Health(c fiber.Ctx) error {
 	ctx, cancel := context.WithTimeout(c.Context(), pingTimeout)
 	defer cancel()
@@ -53,6 +44,5 @@ func (h *Handler) Health(c fiber.Ctx) error {
 	})
 }
 
-// pingTimeout keeps the probe responsive even when Postgres is wedged. A
-// hung probe defeats its purpose — orchestrators expect a fast answer.
+// pingTimeout keeps the probe responsive even when Postgres is wedged.
 const pingTimeout = 2 * time.Second

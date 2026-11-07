@@ -10,21 +10,13 @@ import (
 	queuecore "github.com/Aniket-lodh/veyra/queue-core"
 )
 
-// Noop stands in for real handler work: it sleeps for a fixed duration, then
-// either succeeds or returns a SimulatedFailure at a configured rate. It exists
-// so the queue, reclaim, retry, and chaos machinery can be exercised without a
-// real workload — and so the soak/chaos harness behaves identically after the
-// handler seam landed as it did when the simulation lived in the runtime.
-//
-// Real handlers (http_request, …) replace it on a per-job basis via the job's
-// handler name; Noop is just one more registered handler.
+// Noop stands in for real handler work: it sleeps for a fixed duration, then either succeeds or returns a SimulatedFailure at a configured rate.
 type Noop struct {
 	dur            time.Duration
 	failurePercent int // rand.IntN(100) < n → SimulatedFailure; clamped to [0,100]
 }
 
-// NewNoop builds a Noop with the given simulated work duration and failure
-// rate. failurePercent is clamped to [0,100]; 0 disables injected failures.
+// NewNoop builds a Noop with the given simulated work duration and failure rate.
 func NewNoop(dur time.Duration, failurePercent int) *Noop {
 	switch {
 	case failurePercent < 0:
@@ -35,9 +27,7 @@ func NewNoop(dur time.Duration, failurePercent int) *Noop {
 	return &Noop{dur: dur, failurePercent: failurePercent}
 }
 
-// Handle sleeps, then succeeds or injects a failure. On ctx cancellation it
-// returns ctx.Err() promptly so the runtime takes the reclaim path (no
-// ack/nack) — matching the pre-seam simulation's behavior exactly.
+// Handle sleeps, then succeeds or injects a failure.
 func (n *Noop) Handle(ctx context.Context, job *queuecore.Job) (json.RawMessage, error) {
 	start := time.Now()
 
@@ -59,8 +49,7 @@ func (n *Noop) Handle(ctx context.Context, job *queuecore.Job) (json.RawMessage,
 	return result, nil
 }
 
-// sleepCtx returns true if d elapsed, false if ctx was cancelled first. A
-// non-positive duration returns immediately, reporting whether ctx is alive.
+// sleepCtx returns true if d elapsed, false if ctx was cancelled first.
 func sleepCtx(ctx context.Context, d time.Duration) bool {
 	if d <= 0 {
 		return ctx.Err() == nil

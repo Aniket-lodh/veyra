@@ -1,9 +1,7 @@
-// API contract types. Shapes match what the Go API returns today.
 import type { JobStatus } from '@/components/ui/status-badge';
 
 export type { JobStatus };
 
-/** Handlers registered on workers today. Used for filters and enqueue UI. */
 export const KNOWN_HANDLERS = ['http_request', 'send_email', 'noop'] as const;
 export type KnownHandler = (typeof KNOWN_HANDLERS)[number];
 

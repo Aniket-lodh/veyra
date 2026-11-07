@@ -1,18 +1,5 @@
 //go:build integration
 
-// This file exercises the reclaim primitive end-to-end against a real
-// Postgres. Build-tagged so `go test ./...` skips it; run with:
-//
-//	go test -tags integration ./...
-//
-// The scenario is the "fleet collapse → queue self-heals" invariant
-// from SPEC §5.13 and the post-2026-05-26 SOAK_REPORT.md: workers claim
-// jobs, the entire fleet disappears with leases still active, the
-// queue's tick reclaim path requeues every stranded `running` row,
-// fresh workers claim the requeued jobs, all complete. The test
-// explicitly asserts execution uniqueness — no two workers ever
-// concurrently execute the same logical attempt of the same job.
-
 package queuecore_test
 
 import (
@@ -31,27 +18,6 @@ import (
 )
 
 // TestReclaim_FleetCollapse_SelfHeals is the canonical reclaim proof.
-//
-// Timeline:
-//  1. Enqueue N jobs with max_attempts=3.
-//  2. Worker "gen1" claims all N jobs.
-//  3. Fleet collapse: no Ack/Nack — all N rows sit in `running` with
-//     a stale lease and current_worker_id=gen1.
-//  4. Fast-forward time by setting lease_expires_at to the past
-//     (instead of sleeping 40s+ in every CI run).
-//  5. Drive ONE tick of the reclaim sweep (in-test helper that
-//     mirrors the apps/api tick driver — see runReclaimTick below).
-//  6. Assert: every row is back to `queued`, no rows in `running`,
-//     every gen1 attempt has outcome='lease_lost'.
-//  7. Worker "gen2" claims all N requeued jobs.
-//  8. gen2 acks each one successfully.
-//  9. Assert final state: all N jobs `succeeded`.
-//  10. Assert execution uniqueness: for every job, attempt N+1's
-//     started_at is >= attempt N's ended_at (no temporal overlap),
-//     and (job_id, attempt_number) is unique (schema-enforced, but
-//     double-checked).
-//  11. Assert attempt-number density: attempts are 1, 2, …, with no
-//     gaps.
 func TestReclaim_FleetCollapse_SelfHeals(t *testing.T) {
 	const (
 		N              = 12 // job count
@@ -70,7 +36,7 @@ func TestReclaim_FleetCollapse_SelfHeals(t *testing.T) {
 	pool := testsupport.StartPostgres(t)
 	repo := queuecore.NewRepository(pool)
 
-	// --- step 1: enqueue N jobs ---------------------------------------
+	// step 1: enqueue N jobs.
 	jobIDs := make([]string, N)
 	for i := 0; i < N; i++ {
 		jobIDs[i] = fmt.Sprintf("01TESTJOB000000000000000%04d", i+1)
@@ -88,7 +54,7 @@ func TestReclaim_FleetCollapse_SelfHeals(t *testing.T) {
 	}
 	requireStatusCount(t, ctx, pool, "queued", N)
 
-	// --- step 2: gen1 claims all N ------------------------------------
+	// step 2: gen1 claims all N.
 	gen1Claimed := claimN(t, ctx, repo, gen1WorkerID, queueName, handlerName, N)
 	for i, j := range gen1Claimed {
 		if j.Status != queuecore.StatusRunning {
@@ -104,12 +70,7 @@ func TestReclaim_FleetCollapse_SelfHeals(t *testing.T) {
 	requireStatusCount(t, ctx, pool, "running", N)
 	requireAttemptCount(t, ctx, pool, "lease_lost", 0)
 
-	// --- step 3 + 4: simulate fleet death by abandoning, then fast-forward
-	// the leases. In production the worker container would crash; in the
-	// test we just stop calling Ack/Nack and rewrite lease_expires_at to
-	// a past time so the reclaim tick will pick them up on its very next
-	// scan. This is the only place the test diverges from the wall-clock
-	// scenario — every other transition uses real Postgres semantics.
+	// step 3 + 4: simulate fleet death by abandoning, then fast-forward the leases..
 	if _, err := pool.Exec(ctx, `
 		UPDATE jobs
 		SET lease_expires_at = now() - make_interval(secs => $1)
@@ -118,12 +79,7 @@ func TestReclaim_FleetCollapse_SelfHeals(t *testing.T) {
 		t.Fatalf("fast-forward leases: %v", err)
 	}
 
-	// --- step 5: one reclaim tick -------------------------------------
-	// This MUST requeue all N rows. The tick uses FOR UPDATE SKIP LOCKED
-	// + per-row SAVEPOINT exactly as the apps/api driver does — see
-	// apps/api/internal/reclaim/driver.go. The two implementations are
-	// in lockstep because they both invoke queuecore.Reclaim with the
-	// same params.
+	// step 5: one reclaim tick: This MUST requeue all N rows.
 	stats := runReclaimTick(t, ctx, pool, tickRowLimit)
 	if stats.requeued != N {
 		t.Fatalf("tick: expected requeued=%d, got %d (stats=%+v)", N, stats.requeued, stats)
@@ -136,11 +92,7 @@ func TestReclaim_FleetCollapse_SelfHeals(t *testing.T) {
 	requireStatusCount(t, ctx, pool, "running", 0)
 	requireAttemptCount(t, ctx, pool, "lease_lost", N)
 
-	// --- step 6: verify per-row invariants after reclaim --------------
-	// Every job's row: status=queued, current_worker_id=NULL,
-	// lease_expires_at=NULL, attempt UNCHANGED (still 1 — §5.5.2's
-	// "attempt is not incremented" invariant), scheduled_for UNCHANGED
-	// (§5.5.2's "scheduling intent preserved" invariant).
+	// step 6: verify per-row invariants after reclaim.
 	for _, jid := range jobIDs {
 		var (
 			status         string
@@ -169,7 +121,7 @@ func TestReclaim_FleetCollapse_SelfHeals(t *testing.T) {
 		}
 	}
 
-	// --- step 7: gen2 claims all N requeued jobs ----------------------
+	// step 7: gen2 claims all N requeued jobs.
 	gen2Claimed := claimN(t, ctx, repo, gen2WorkerID, queueName, handlerName, N)
 	for i, j := range gen2Claimed {
 		if j.Attempt != 2 {
@@ -181,7 +133,7 @@ func TestReclaim_FleetCollapse_SelfHeals(t *testing.T) {
 		}
 	}
 
-	// --- step 8: gen2 acks each one -----------------------------------
+	// step 8: gen2 acks each one.
 	for _, j := range gen2Claimed {
 		_, err := repo.MarkJobSucceeded(ctx, queuecore.SucceedParams{
 			WorkerID: gen2WorkerID,
@@ -192,21 +144,14 @@ func TestReclaim_FleetCollapse_SelfHeals(t *testing.T) {
 		}
 	}
 
-	// --- step 9: final state ------------------------------------------
+	// step 9: final state.
 	requireStatusCount(t, ctx, pool, "succeeded", N)
 	requireStatusCount(t, ctx, pool, "queued", 0)
 	requireStatusCount(t, ctx, pool, "running", 0)
 	requireStatusCount(t, ctx, pool, "failed", 0)
 	requireStatusCount(t, ctx, pool, "dead_lettered", 0)
 
-	// --- step 10: execution uniqueness --------------------------------
-	// For each job, list attempts ordered by attempt_number. Verify:
-	//   - attempt numbers are dense (1, 2, …) — no gaps.
-	//   - attempt N+1's started_at >= attempt N's ended_at (no temporal
-	//     overlap, which would imply concurrent execution by two
-	//     workers of the same job).
-	//   - attempt 1 worker is gen1; attempt 2 worker is gen2.
-	//   - attempt 1 outcome is 'lease_lost'; attempt 2 outcome is 'succeeded'.
+	// step 10: execution uniqueness: For each job, list attempts ordered by attempt_number.
 	for _, jid := range jobIDs {
 		attempts := listAttempts(t, ctx, pool, jid)
 		if len(attempts) != 2 {
@@ -230,10 +175,6 @@ func TestReclaim_FleetCollapse_SelfHeals(t *testing.T) {
 		}
 
 		// Temporal uniqueness: attempts[0].ended_at <= attempts[1].started_at.
-		// If this fails, two workers were executing the same job at the
-		// same wall-clock time — the headline invariant we are
-		// protecting against ("reclaim does NOT create concurrent
-		// duplicate execution").
 		if attempts[0].endedAt == nil {
 			t.Errorf("job %s: attempt 1 has no ended_at — should have been closed by reclaim", jid)
 			continue
@@ -244,7 +185,7 @@ func TestReclaim_FleetCollapse_SelfHeals(t *testing.T) {
 		}
 	}
 
-	// --- step 11: schema-level uniqueness (sanity) --------------------
+	// step 11: schema-level uniqueness (sanity).
 	var duplicateRows int
 	err := pool.QueryRow(ctx, `
 		SELECT count(*) FROM (
@@ -262,7 +203,6 @@ func TestReclaim_FleetCollapse_SelfHeals(t *testing.T) {
 	}
 }
 
-// --- helpers ---------------------------------------------------------
 
 type tickStats struct {
 	scanned  int
@@ -272,12 +212,7 @@ type tickStats struct {
 	failed   int
 }
 
-// runReclaimTick mirrors apps/api/internal/reclaim/driver.go's tick
-// logic in-test, so we exercise the same selection predicate + locking
-// discipline + per-row Reclaim invocation without depending on the api
-// module (queue-core cannot import apps/api). If the in-test loop
-// disagrees with the apps/api driver, ONE of them violates SPEC §5.10;
-// the SPEC is the source of truth.
+// runReclaimTick mirrors apps/api/internal/reclaim/driver.go's tick logic in-test, so we exercise the same selection predicate + locking…
 func runReclaimTick(t *testing.T, ctx context.Context, pool *pgxpool.Pool, limit int) tickStats {
 	t.Helper()
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{})
@@ -430,9 +365,7 @@ func listAttempts(t *testing.T, ctx context.Context, pool *pgxpool.Pool, jobID s
 	return out
 }
 
-// safeSuffix mirrors apps/api/internal/reclaim/driver.go's helper of
-// the same name. Postgres SAVEPOINT identifiers permit only
-// [A-Za-z0-9_]; substitute everything else with underscore.
+// safeSuffix mirrors apps/api/internal/reclaim/driver.go's helper of the same name.
 func safeSuffix(id string) string {
 	out := make([]byte, 0, len(id))
 	for i := 0; i < len(id); i++ {

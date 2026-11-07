@@ -1,5 +1,3 @@
-// Operator overview — Sidekiq / Temporal style: scan health, click into work.
-// Same color tokens; denser, actionable UX.
 import { Badge, type BadgeTone } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';

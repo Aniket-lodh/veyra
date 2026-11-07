@@ -1,35 +1,13 @@
-# Veyra prod overlay.
-#
-# Adds:
-#   - nginx in front of the api (the only externally-exposed service)
-#   - removes the postgres host port (nothing on the VPS should be talking
-#     to postgres except containers)
-#   - removes the api host port (everything goes through nginx)
-#   - tightens restart policies and logging
-#
-# Apply with:
+# Prod overlay:
 #   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
-#
-# This file does NOT redeclare images or volumes; it only patches the base.
 
 name: veyra
 
 services:
   postgres:
-    # Bind to the host's LOOPBACK ONLY (127.0.0.1), never 0.0.0.0. This:
-    #   - blocks public-internet reachability (loopback is not routable),
-    #   - keeps a path open for SSH-tunneled inspection from DBeaver / psql:
-    #       laptop:5433  --ssh-->  vps:127.0.0.1:5433  -->  postgres:5432
-    #     so the SSH auth on the VPS becomes the access boundary, NOT a
-    #     postgres password exposed to the world.
-    #
-    # !override replaces the base file's "5433:5432" (which is 0.0.0.0).
-    # If you instead want zero host exposure (compose-network-only), swap
-    # this for `ports: !reset []` — DB access then requires `docker compose
-    # exec postgres psql` or a one-shot client on veyra_default.
+    # Loopback only — SSH tunnel for ops; never publish 0.0.0.0.
     ports: !override
       - "127.0.0.1:5433:5432"
-    # Production logging — JSON, rotated. Captures Postgres stderr only.
     logging:
       driver: json-file
       options:
@@ -40,7 +18,6 @@ services:
     environment:
       APP_ENV: production
       LOG_LEVEL: info
-    # Drop the direct host port; nginx is the front door.
     ports: !reset []
     logging:
       driver: json-file
@@ -55,22 +32,8 @@ services:
     logging:
       driver: json-file
       options:
-        # Workers log per-job lines and per-tick renewals; bump retention
-        # higher than api so churn-of-the-day fits in one log file.
         max-size: "20m"
         max-file: "5"
-    # Start with 3 replicas; scale up at runtime with --scale.
-    #
-    # NOTE — restart policy lives in the base file (`restart: unless-stopped`)
-    # and is INTENTIONALLY NOT overridden here. When both `restart:` and
-    # `deploy.restart_policy` are present, `deploy.restart_policy` wins;
-    # combined with compose's literal translation `max_attempts: 0` →
-    # `HostConfig.MaximumRetryCount: 0` (which this engine interprets as
-    # "zero retries", NOT "unlimited"), the previous block silently
-    # disabled restarts on SIGKILL — see docs/SOAK_REPORT.md run
-    # 20260526T122313Z, finding A1. Do not re-add `restart_policy` here
-    # without verifying behavior via `docker kill --signal SIGKILL` and
-    # `docker inspect --format '{{.RestartCount}}'` post-kill.
     deploy:
       mode: replicated
       replicas: 3
@@ -83,24 +46,10 @@ services:
       api:
         condition: service_healthy
     ports:
-      # Bind to host loopback only. The expected production topology is:
-      #   internet -> host nginx (TLS, :443) -> 127.0.0.1:8080 -> this container -> api
-      # so the containerized nginx is never directly reachable from the
-      # public internet, and host nginx owns TLS + certificate renewal.
-      # If you instead want this container to BE the public front door,
-      # override the left side to "80:80" — but then host nginx must be
-      # stopped (`systemctl disable --now nginx`) to free the port.
       - "127.0.0.1:8088:80"
     volumes:
-      # Read-only mount: nginx must not be able to mutate its own config
-      # at runtime. Mutations require a rebuild + restart.
       - ../docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     healthcheck:
-      # Explicit 127.0.0.1 (NOT "localhost"). nginx's alpine image ships
-      # BusyBox wget, which resolves "localhost" → ::1 (IPv6) first and
-      # does NOT fall back to IPv4 on refusal. Using a literal IPv4
-      # address avoids the resolver round-trip entirely. Same fix applies
-      # to the api healthcheck in docker-compose.yml.
       test:
         ["CMD-SHELL", "wget --spider --quiet http://127.0.0.1/health || exit 1"]
       interval: 10s

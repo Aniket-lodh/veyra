@@ -1,22 +1,4 @@
-# Veyra base compose stack.
-#
-# Defines postgres + api + worker for local dev. Production overlays this
-# file with docker-compose.prod.yml (adds nginx, restricts host ports,
-# bumps worker replicas).
-#
-# Run dev:
-#   docker compose -f deployments/compose/docker-compose.yml up --build
-#
-# Scale workers:
-#   docker compose -f deployments/compose/docker-compose.yml up --scale worker=5
-#
-# Run prod:
-#   docker compose -f deployments/compose/docker-compose.yml \
-#                  -f deployments/compose/docker-compose.prod.yml up -d --build
-#
-# Build context is the REPO ROOT (../..). This is required for the
-# replace directive in apps/{api,worker}/go.mod that points at
-# ../../packages/queue-core. See deployments/docker/api.Dockerfile.
+# Dev stack: postgres + api + worker. Prod: add -f docker-compose.prod.yml
 
 name: veyra
 
@@ -30,17 +12,10 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-veyra}
       POSTGRES_DB: ${POSTGRES_DB:-veyra}
     ports:
-      # Host-side port 5433 keeps the container's 5432 reachable from the
-      # host (psql, IDE inspectors) without colliding with a host-side
-      # postgres. Prod overlay removes this exposure.
       - "5433:5432"
     volumes:
       - veyra-postgres-data:/var/lib/postgresql/data
     healthcheck:
-      # pg_isready returns 0 only when the server accepts connections. The
-      # api's depends_on: service_healthy waits for this before starting,
-      # which avoids the classic "migration runs against a still-booting
-      # postgres" race.
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-veyra} -d ${POSTGRES_DB:-veyra}"]
       interval: 5s
       timeout: 3s
@@ -69,15 +44,7 @@ services:
     ports:
       - "8008:8008"
     healthcheck:
-      # /health pings the database; a healthy api can definitely talk to
-      # postgres. wget --spider returns non-zero on >=400, so this fails
-      # cleanly when the api is up but degraded.
-      #
-      # Explicit 127.0.0.1 (NOT "localhost"). /etc/hosts maps localhost to
-      # both 127.0.0.1 and ::1; many wget implementations try ::1 first.
-      # The api binds IPv4 only, so an IPv6 attempt is refused. GNU wget
-      # falls back gracefully, BusyBox wget doesn't — keeping the literal
-      # IPv4 is portable across images and skips a wasted DNS hop.
+      # Use 127.0.0.1 — BusyBox wget does not fall back from ::1.
       test: ["CMD-SHELL", "wget --spider --quiet http://127.0.0.1:8008/health || exit 1"]
       interval: 10s
       timeout: 3s
@@ -91,10 +58,6 @@ services:
     image: veyra-worker:local
     restart: unless-stopped
     depends_on:
-      # Worker only TALKS to postgres at runtime, but it depends on api's
-      # health because api owns schema migrations. Starting workers before
-      # migrations finish means workers see a half-built schema. Waiting
-      # for api: service_healthy is the cheap correctness move.
       postgres:
         condition: service_healthy
       api:
@@ -109,19 +72,9 @@ services:
       DB_NAME: ${POSTGRES_DB:-veyra}
       DB_SSLMODE: disable
       VEYRA_WORKER_QUEUES: ${VEYRA_WORKER_QUEUES:-default}
-      # Simulated-failure rate (0..100). Default 20 mirrors normal dev runs;
-      # set higher (e.g. 80) for retry-storm soaks. See apps/worker/CLAUDE.md.
       VEYRA_WORKER_FAILURE_PERCENT: ${VEYRA_WORKER_FAILURE_PERCENT:-20}
-    # No host port — workers don't speak HTTP.
-    # Liveness signal is `workers.last_heartbeat_at`, NOT a container probe.
-    # Restart policy + the workers-table sweeper are the recovery mechanism.
-    # Graceful shutdown grace: tini in the image forwards SIGTERM to the Go
-    # process, which has the lease-expire-then-reclaim semantic. Give it
-    # time to deregister cleanly before docker SIGKILLs.
     stop_grace_period: 30s
 
 volumes:
   veyra-postgres-data:
-    # Named volume. Survives `docker compose down`; only `docker compose
-    # down -v` deletes it. This is the durability the spec requires.
     driver: local

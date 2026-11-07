@@ -1,22 +1,4 @@
-# Workload test fixture — OPT-IN overlay. Adds the unstable HTTP receiver that
-# the http_request handler can target to produce realistic failure modes
-# (2xx/4xx/5xx mix, delays, hangs). It is NOT a Veyra service and must NEVER be
-# layered onto the prod overlay — keep it to dev / soak runs only.
-#
-# Dev stack with the receiver:
-#   docker compose -f deployments/compose/docker-compose.yml \
-#                  -f deployments/compose/docker-compose.receiver.yml up --build
-#
-# Workers reach it on the compose network at http://unstable-receiver:8090.
-# The host port (127.0.0.1:8090) is for manual curl only; loopback-bound so it
-# is never exposed off-box.
-#
-# Drive scenarios per-request via query params (no restart needed), e.g.:
-#   http://unstable-receiver:8090/?bucket=5xx
-#   http://unstable-receiver:8090/?status=429
-#   http://unstable-receiver:8090/?hang=1
-#   http://unstable-receiver:8090/?delayMs=2000
-# Or set the container-wide default mix via the environment below.
+# OPT-IN workload fixture (unstable HTTP receiver). Dev/soak only — never with prod.
 
 name: veyra
 

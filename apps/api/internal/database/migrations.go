@@ -1,5 +1,4 @@
-// Package database owns the Postgres connection pool and schema migration
-// lifecycle for the api service.
+// Package database owns the Postgres pool and migrations.
 package database
 
 import (
@@ -12,20 +11,9 @@ import (
 )
 
 // migrationsSource is the file:// URL the migrate library reads SQL files from.
-// The path is resolved relative to the process working directory; the api
-// binary is expected to run from apps/api/ so that "migrations/" resolves to
-// apps/api/migrations/.
 const migrationsSource = "file://migrations"
 
-// RunMigrations applies every pending up migration against the database
-// identified by databaseURL. It is a no-op when the database is already at
-// the latest version (migrate.ErrNoChange is swallowed).
-//
-// The function opens its own database/sql connection through golang-migrate's
-// postgres driver; it does not share a connection with the pgx pool. This is
-// deliberate: migrations should run on a separate, short-lived connection so
-// session-level state (advisory locks held by migrate, search_path, etc.) can
-// never bleed into the application connection pool.
+// RunMigrations applies every pending up migration against the database identified by databaseURL.
 func RunMigrations(databaseURL string) (err error) {
 	m, err := migrate.New(migrationsSource, databaseURL)
 	if err != nil {

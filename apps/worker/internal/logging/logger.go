@@ -1,10 +1,4 @@
-// Package logging is the worker service's structured-logger bootstrap.
-//
-// It is intentionally a near-copy of apps/api/internal/logging. We are
-// allowing this ~30 lines of duplication on purpose — see the repo-root
-// CLAUDE.md and the doc-comment on apps/api/internal/logging for the
-// rationale. When (if) the two consumers diverge or a third appears, the
-// shared piece moves to packages/logger.
+// Package logging bootstraps the process slog.Logger.
 package logging
 
 import (
@@ -15,14 +9,6 @@ import (
 )
 
 // Setup builds the process-wide *slog.Logger and installs it as slog.Default.
-// Call it exactly once at the top of main(), BEFORE any other code emits a
-// log line.
-//
-// env: "" / "dev" / "development" / "local" → TextHandler; anything else →
-// JSONHandler. Defaulting unknown values to JSON keeps production safe when
-// the env var is missing.
-//
-// level: "debug" / "info" / "warn" / "error"; unknown → "info".
 func Setup(env, level string) *slog.Logger {
 	l := slog.New(buildHandler(os.Stderr, env, level))
 	slog.SetDefault(l)
