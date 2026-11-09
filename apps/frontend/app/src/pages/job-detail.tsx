@@ -1,5 +1,3 @@
-// Job Detail — drilldown from the Jobs list. Polls while the job is alive
-// and stops once it terminates.
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { CodeBlock } from '@/components/ui/code-block';
@@ -38,10 +36,6 @@ function formatBackoff(b: BackoffStrategy): string {
   return `exponential base=${b.baseSeconds}s cap=${b.capSeconds}s`;
 }
 
-// Narrowing helpers for the opaque payload/result blobs. The backend stores
-// these as JSONB and the contract types them `unknown`; we read the
-// http_request fields defensively so a malformed or partial blob renders as
-// "—" instead of throwing.
 function asRecord(v: unknown): Record<string, unknown> | null {
   return typeof v === 'object' && v !== null
     ? (v as Record<string, unknown>)
@@ -63,11 +57,6 @@ function asNumber(v: unknown): number | null {
   return typeof v === 'number' && Number.isFinite(v) ? v : null;
 }
 
-// The http_request handler caps responseExcerpt at 2048 bytes
-// (responseExcerptMaxBytes in apps/worker/internal/handler/http_request.go).
-// If the captured excerpt is at/over that byte length, it was almost
-// certainly truncated — surface that in the viewer. Heuristic only; keep in
-// step with the handler constant.
 const RESPONSE_EXCERPT_MAX_BYTES = 2048;
 function isLikelyTruncatedExcerpt(s: string): boolean {
   return new TextEncoder().encode(s).length >= RESPONSE_EXCERPT_MAX_BYTES;
@@ -92,11 +81,6 @@ function prettyJson(s: string): string {
   }
 }
 
-// HttpRequestDeliveryCard answers "what happened to this delivery?" without
-// log-diving: request fields come from payload, response + timing from result
-// (populated on a 2xx), and the error class names the failure bucket (the
-// full message lives in the Error card below). Pure rendering of existing
-// contract fields — no new types, no API change.
 function HttpRequestDeliveryCard({ job }: { job: Job }) {
   const payload = asRecord(job.payload);
   const result = asRecord(job.result);
@@ -107,10 +91,6 @@ function HttpRequestDeliveryCard({ job }: { job: Job }) {
   const contentType = asString(result?.contentType);
   const responseExcerpt = asString(result?.responseExcerpt);
   const dash = <span className="text-muted-foreground">—</span>;
-  // jobs.error is durable history — it is NOT cleared when a later attempt
-  // succeeds (queue-core keeps the last failure as context). So on a
-  // succeeded job a non-null error means "recovered after this failure",
-  // not "currently failing". Render it as history, not a live error.
   const recovered = job.status === 'succeeded' && job.error !== null;
 
   return (
@@ -240,8 +220,6 @@ export function JobDetailPage() {
   const cancelMutation = useCancelJob();
   const [cancelError, setCancelError] = useState<string | null>(null);
 
-  // 404 — the only error we can act on usefully (a clear "job not found"
-  // message). Other errors fall through to the generic error UI below.
   const notFound = error instanceof ApiError && error.status === 404;
 
   if (!id || notFound) {
@@ -535,8 +513,6 @@ export function JobDetailPage() {
 
       {job.result !== null &&
         (job.handler === 'http_request' || job.handler === 'send_email' ? (
-          // Delivery card above is the primary readable result view. Demote
-          // the raw object to a default-collapsed disclosure.
           <Card>
             <CardContent className="pt-3">
               <details>

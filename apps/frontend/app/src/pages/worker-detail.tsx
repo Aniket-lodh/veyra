@@ -1,16 +1,3 @@
-// Worker Detail — Phase 2, screen #4b (drilldown from Workers View).
-//
-// Reuses the /workers list query rather than introducing a /workers/:id
-// endpoint. The roster is tiny (tens of workers at most on a single-VPS
-// deployment), so the cost of "find one in the array" client-side is
-// near zero, and there's only one query key to invalidate when leases
-// change.
-//
-// "Recent jobs processed" — present in the scaffolded version — is NOT
-// rendered here yet. Materialising it requires either (a) a per-worker
-// filter on GET /jobs or (b) a /workers/:id/attempts endpoint. Neither
-// is in Phase 0's surface, and growing backend scope mid-Phase 2 is
-// against the agreed plan. Add when an operator actually asks.
 import { Badge, type BadgeTone } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';

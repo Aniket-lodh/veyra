@@ -35,24 +35,18 @@ func (c SMTPConfig) Configured() bool {
 	return strings.TrimSpace(c.Host) != ""
 }
 
-// MailSender is the single network boundary for send_email. Production uses
-// goMailSender; tests inject a fake.
+// MailSender is the single network boundary for send_email.
 type MailSender interface {
 	Send(ctx context.Context, msg *gomail.Msg) error
 }
 
 // SendEmail delivers one outbound email described by the job payload over SMTP.
-//
-// Credentials come from SMTPConfig (worker env), never from the payload.
-// Retries are owned by the queue (SPEC §7) — this handler does not retry.
 type SendEmail struct {
 	cfg    SMTPConfig
 	sender MailSender
 }
 
-// NewSendEmail builds the handler. If cfg.Host is empty the handler still
-// registers; Handle returns permanent smtp_config so UnknownHandler is not
-// the failure mode.
+// NewSendEmail builds the handler.
 func NewSendEmail(cfg SMTPConfig) *SendEmail {
 	cfg.TLS = normalizeSMTPTLS(cfg.TLS)
 	if cfg.Port <= 0 {
@@ -124,8 +118,7 @@ func (h *SendEmail) Handle(ctx context.Context, job *queuecore.Job) (json.RawMes
 
 	if sendErr != nil {
 		if errors.Is(sendErr, context.Canceled) || errors.Is(sendErr, context.DeadlineExceeded) {
-			// Lease loss / shutdown / our deadline — runtime owns reclaim path
-			// when jobCtx is cancelled; DeadlineExceeded from SMTP dial maps to timeout.
+			// Lease loss / shutdown / our deadline — runtime owns reclaim path when jobCtx is cancelled; DeadlineExceeded from SMTP dial maps to timeout.
 			if errors.Is(sendErr, context.Canceled) {
 				return nil, sendErr
 			}

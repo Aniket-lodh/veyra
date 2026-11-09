@@ -32,9 +32,14 @@ API response shapes live in [`src/lib/types.ts`](src/lib/types.ts)
   status ∈ queued | scheduled | running | failed. Idempotent if already
   cancelled; 409 if succeeded / dead-lettered.
 
+### Auth
+
+- Login / first-admin signup; session cookie via `credentials: 'include'`.
+- **API keys** page for machine credentials.
+
 ### Out of scope until asked
 
-- Auth, themes, mobile polish, complex charts, advanced grids, animations
+- OIDC/SSO, themes, mobile polish, complex charts, advanced grids, animations
 - Operator mutations still waiting on API: pause / drain / replay
 
 ## Stack
@@ -44,6 +49,7 @@ API response shapes live in [`src/lib/types.ts`](src/lib/types.ts)
 - **UI primitives:** shadcn/ui in `src/components/ui/`.
 - **Styling:** Tailwind.
 - **Data:** `@tanstack/react-query` + `src/lib/api/` (relative URLs; Vite proxies in dev).
+- **Live updates:** `src/lib/live/` opens same-origin `EventSource('/events')` while signed in (ADR-0009). Frames are revisioned `invalidate` / `resync`; query keys refetch REST once. No idle poll; after sustained disconnect the header shows “Live updates paused” and hooks enable a 60s safety refetch. Dev streaming uses `vite/sse-proxy.ts` (unbuffered).
 - **Type-checking:** `pnpm typecheck` before commits that touch `.ts`/`.tsx`.
 
 ## Conventions

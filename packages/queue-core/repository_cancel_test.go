@@ -1,8 +1,5 @@
 //go:build integration
 
-// Cancel tests for SPEC §6. Build-tagged; run with:
-//
-//	go test -tags integration ./...
 package queuecore_test
 
 import (

@@ -1,29 +1,3 @@
-// unstable-receiver is a deliberately flaky HTTP endpoint used to exercise the
-// worker's http_request handler against realistic failure modes: a configurable
-// mix of 2xx/4xx/5xx responses, response delays, and timeout/hang behavior.
-//
-// It is a WORKLOAD TEST FIXTURE, not a Veyra service. No persistence, no UI,
-// no analytics, no management API — just a dumb, configurable responder that
-// logs what it did. Defaults come from env; individual requests can override
-// behavior with query params (stateless request-shaping, not management) so a
-// single running receiver can drive every test scenario.
-//
-// Env (defaults in parens):
-//
-//	RECEIVER_PORT       (8090)   listen port
-//	RECEIVER_RATE_2XX   (70)     relative weight of a 200 response
-//	RECEIVER_RATE_4XX   (10)     relative weight of a 400 response
-//	RECEIVER_RATE_5XX   (20)     relative weight of a 503 response
-//	RECEIVER_DELAY_MS   (0)      fixed delay before responding
-//	RECEIVER_HANG_RATE  (0)      probability [0,1] of hanging until the client gives up
-//	RECEIVER_HANG_MS    (60000)  how long a hang sleeps before a late 504
-//
-// Per-request query overrides:
-//
-//	?status=NNN     force an exact status code
-//	?bucket=2xx|4xx|5xx   force a category (→ 200/400/503)
-//	?delayMs=N      force the response delay
-//	?hang=1         force a hang
 package main
 
 import (
@@ -86,8 +60,7 @@ func (c *config) handle(w http.ResponseWriter, r *http.Request) {
 		log.Printf("recv method=%s path=%s remote=%s → HANG hangMs=%d", r.Method, r.URL.Path, r.RemoteAddr, c.hangMs)
 		select {
 		case <-time.After(time.Duration(c.hangMs) * time.Millisecond):
-			// Client almost certainly timed out already; respond late so the
-			// connection isn't held forever if the client is patient.
+			// Client almost certainly timed out already; respond late so the connection isn't held forever if the client is patient.
 			writeStatus(w, http.StatusGatewayTimeout, "hang")
 		case <-r.Context().Done():
 			// Client gave up (timeout / cancellation) — nothing to write.
@@ -114,18 +87,14 @@ func (c *config) handle(w http.ResponseWriter, r *http.Request) {
 
 	// 3. Choose a status: exact override, then bucket override, then weighted.
 	code, bucket := c.chooseStatus(q)
-	// Surface Veyra's delivery-identity headers so redelivery stability is
-	// visible in the log: the same jobId across attempts (with attempt
-	// incrementing) is how a real receiver would dedupe at-least-once
-	// redeliveries. This receiver itself stays stateless — it only logs.
+	// Surface Veyra's delivery-identity headers so redelivery stability is visible in the log: the same jobId across attempts (with attempt…
 	log.Printf("recv method=%s path=%s remote=%s → status=%d bucket=%s delayMs=%d jobId=%s attempt=%s idemKey=%s",
 		r.Method, r.URL.Path, r.RemoteAddr, code, bucket, delayMs,
 		dash(r.Header.Get("X-Veyra-Job-Id")), dash(r.Header.Get("X-Veyra-Attempt")), dash(r.Header.Get("Idempotency-Key")))
 	writeStatus(w, code, bucket)
 }
 
-// chooseStatus resolves the response code and a human bucket label. Precedence:
-// explicit ?status, then ?bucket, then the configured weighted random mix.
+// chooseStatus resolves the response code and a human bucket label.
 func (c *config) chooseStatus(q map[string][]string) (int, string) {
 	get := func(k string) string {
 		if v, ok := q[k]; ok && len(v) > 0 {

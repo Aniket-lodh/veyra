@@ -13,7 +13,9 @@ queue healthy (stale-worker sweeper, retry scheduler, reclaim driver).
 - **Migrations:** `apps/api/migrations/NNNNNN_description.{up,down}.sql`. Applied at
   startup by `internal/database.RunMigrations` (`golang-migrate` against `file://migrations`).
 - **Swagger UI:** mounted only when `APP_ENV=development`, from `docs/swagger.json`.
-- **Not present yet:** WebSocket live updates, authentication, metrics endpoints.
+- **Auth:** `internal/auth/` — operator login + API keys. Public: `/health`, `/auth/*` (except `/auth/me`).
+- **Live updates:** `internal/live/` — `GET /events` SSE invalidation bus driven by Postgres `LISTEN veyra_ui` (ADR-0009). Not WebSockets; workers still poll.
+- **Not present yet:** OIDC/SSO, invite more users, metrics.
 
 ## Layout
 
@@ -24,9 +26,11 @@ apps/api/
     config/       env loader (the only place that calls os.Getenv for API settings)
     database/     pgx pool and migration runner
     debug/        /internal/debug/* routes (claim, succeed, fail, renew). Dev only.
+    auth/         Bearer API-key verify, scopes, /api-keys admin routes (ADR-0007)
     health/       GET /health (DB ping)
     http/         fiber app constructor, middleware chain, error handling
     jobs/         /jobs routes: create, list, get, cancel. Thin wrapper over queuecore.
+    live/         GET /events SSE + LISTEN fan-out for the operator console (ADR-0009).
     logging/      slog setup
     middleware/   request ID (X-Request-Id) and access log
     reclaim/      periodic reclaim driver. Calls the queue-core reclaim primitive.
@@ -73,8 +77,8 @@ never JOINs `workers` in SQL against `jobs`.
 
 ## Testing
 
-- `go test ./...` from `apps/api/`. **The API has no tests yet.** New behavior in this
-  package needs tests, and so do the HTTP status mappings.
+- `go test ./...` from `apps/api/`. Auth and `internal/live` have unit tests;
+  live NOTIFY→hub coverage uses `go test -tags integration ./internal/live/...`.
 - Queue behavior is tested in `packages/queue-core`, against real Postgres via
   testcontainers (`go test -tags integration ./...`). Do not mock the database.
 

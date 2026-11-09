@@ -1,5 +1,3 @@
-// Time + duration formatters used across the operator UI.
-
 export function formatClockUTC(iso: string | null | undefined): string {
   if (!iso) return '—';
   return iso.slice(11, 19);

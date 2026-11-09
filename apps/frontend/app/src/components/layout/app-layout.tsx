@@ -3,8 +3,6 @@ import { AppSidebar } from './app-sidebar';
 import { Outlet } from 'react-router-dom';
 
 export function AppLayout() {
-  // Viewport-locked shell: sidebar stays put; only <main> scrolls.
-  // min-w-0 keeps wide tables from forcing horizontal page growth.
   return (
     <div className="bg-background text-foreground flex h-dvh overflow-hidden">
       <AppSidebar />

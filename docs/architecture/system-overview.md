@@ -12,18 +12,17 @@ transitions, read [`job-lifecycle.md`](job-lifecycle.md).
                 │  apps/frontend/app   │
                 │  operator console    │
                 └──────────┬───────────┘
-                           │ HTTP (JSON)
+                           │ HTTP JSON + SSE invalidate
                            ▼
                 ┌──────────────────────┐
                 │  apps/api            │
-                │  REST API            │
+                │  REST API + /events  │
                 │  background loops:   │
-                │   stale-worker       │
-                │   sweeper, retry     │
-                │   scheduler, reclaim │
-                │   driver             │
+                │   sweeper, retry,    │
+                │   reclaim, live      │
+                │   LISTEN fan-out     │
                 └──────────┬───────────┘
-                           │ pgx
+                           │ pgx (+ LISTEN veyra_ui)
                            ▼
                 ┌──────────────────────┐
                 │   PostgreSQL 17      │
@@ -31,7 +30,7 @@ transitions, read [`job-lifecycle.md`](job-lifecycle.md).
                 │   job_attempts       │
                 │   workers            │
                 └──────────┬───────────┘
-                           │ pgx
+                           │ pgx (workers still poll)
                            ▼
                 ┌──────────────────────┐
                 │  apps/worker         │
@@ -39,6 +38,13 @@ transitions, read [`job-lifecycle.md`](job-lifecycle.md).
                 │  renew, ack / nack   │
                 └──────────────────────┘
 ```
+
+The console does not poll on a fixed timer. Postgres triggers notify
+`veyra_ui` on operator-visible writes; a dedicated API `LISTEN` connection
+feeds a coalescing revision bus; `GET /events` streams `invalidate` /
+`resync` frames (SSE `id` = revision); the browser `EventSource` invalidates
+TanStack Query keys and refetches REST once
+([ADR-0009](../decisions/0009_operator-live-updates-sse.md)).
 
 PostgreSQL is the only durable store. Every process is stateless, apart from the
 in-memory state of the current request or job. See
@@ -62,6 +68,7 @@ in-memory state of the current request or job. See
 | Reclaim of expired leases | `packages/queue-core/reclaim.go` (primitive), `apps/api/internal/reclaim` (periodic tick), inline in claim |
 | Retry promotion | `apps/api/internal/retries` |
 | Stale-worker detection | `apps/api/internal/workers/sweeper.go` |
+| Operator live updates (SSE) | `apps/api/internal/live`, triggers in migration `000005` |
 | Handlers (`noop`, `http_request`, `send_email`) | `apps/worker/internal/handler` |
 | Migrations | `apps/api/migrations`, applied at API startup |
 
@@ -93,5 +100,5 @@ For the exact transitions, see [`job-lifecycle.md`](job-lifecycle.md).
 - A cache. Postgres handles read load through indexes.
 - Per-service databases. There is one Postgres.
 - Kubernetes manifests. Docker Compose is the deployment target.
-- Authentication and authorization. The API has none yet, so run it on a private network.
+- OIDC / SSO. Today: email/password for operators; API keys for machines.
 - Pause, drain, and DLQ replay. They are planned and not implemented.

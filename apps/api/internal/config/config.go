@@ -1,7 +1,4 @@
-// Package config loads the api service's runtime configuration from
-// environment variables. It is the only place that reads os.Getenv; every
-// other package takes a populated Config (or a single field off it) so the
-// process has one well-known surface where env knobs are documented.
+// Package config loads runtime configuration from the environment.
 package config
 
 import (
@@ -24,35 +21,19 @@ type Config struct {
 	DBName     string
 	DBSSLMode  string
 
-	// SweeperInterval is the cadence at which the stale-worker sweeper
-	// scans the workers table. Each tick is a single UPDATE; tick
-	// frequency does NOT need to be smaller than the worker heartbeat
-	// interval — the threshold is `heartbeat * 3` per row, so a 10-second
-	// sweep tick on a 5-second heartbeat sees stale workers within ~20s
-	// in the worst case (5s + 5s + 5s threshold, then up to 10s until the
-	// next tick). Configurable for the 24h soak harness.
+	// SweeperInterval is the cadence at which the stale-worker sweeper scans the workers table.
 	SweeperInterval time.Duration
 
-	// RetryInterval is the cadence at which the retry scheduler scans the
-	// jobs table for `failed` rows whose `next_retry_at <= now()`. See
-	// SPEC.md §3.5.5 — promotion lag is bounded by this value. Default
-	// 5 seconds.
+	// RetryInterval is the cadence at which the retry scheduler scans the jobs table for `failed` rows whose `next_retry_at <= now()`.
 	RetryInterval time.Duration
 
 	// RetryBatchLimit caps how many rows the scheduler promotes per tick.
-	// Bounds the worst-case write storm if the failure rate spikes (e.g.
-	// a downstream just recovered). SPEC.md §3.5.3.
 	RetryBatchLimit int
 
 	// ReclaimInterval is the cadence of the api-side reclaim tick driver.
-	// SPEC.md §5.10.2 — default 10s, MUST be lower than the lease
-	// duration (30s) by a comfortable margin so an expired lease gets
-	// reclaimed within ~1 lease duration in the worst case.
 	ReclaimInterval time.Duration
 
-	// ReclaimBatchLimit caps how many expired-lease rows the reclaim
-	// driver processes per tick. SPEC.md §5.10.2 — bounds the per-tick
-	// transaction. Larger backlogs drain across multiple ticks.
+	// ReclaimBatchLimit caps how many expired-lease rows the reclaim driver processes per tick.
 	ReclaimBatchLimit int
 }
 
@@ -76,10 +57,7 @@ func Load() Config {
 	}
 }
 
-// IsDevelopment reports whether the current AppEnv is one of the recognised
-// dev/local values. Used to gate developer-facing features (swagger UI,
-// debug routes if we ever gate those) so they never ship in production
-// containers. Mirrors the logging package's dev predicate.
+// IsDevelopment reports whether the current AppEnv is one of the recognised dev/local values.
 func (c Config) IsDevelopment() bool {
 	switch strings.ToLower(strings.TrimSpace(c.AppEnv)) {
 	case "", "dev", "development", "local":
@@ -89,9 +67,7 @@ func (c Config) IsDevelopment() bool {
 	}
 }
 
-// DatabaseURL builds a libpq-compatible postgres:// URL from the configured
-// credentials. Used by golang-migrate (which speaks URLs, not the libpq DSN
-// key=value form used by NewPostgresPool).
+// DatabaseURL builds a libpq-compatible postgres:// URL from the configured credentials.
 func (c Config) DatabaseURL() string {
 	u := url.URL{
 		Scheme: "postgres",
@@ -115,10 +91,7 @@ func getEnv(key, fallback string) string {
 	return value
 }
 
-// getDurationSeconds parses an env var as a whole-second integer. Invalid
-// or empty input returns the fallback, intentionally — the api keeps booting
-// rather than refusing to start over a typo'd knob. Production deployments
-// surface that via the env file, not by misconfiguring at runtime.
+// getDurationSeconds parses an env var as a whole-second integer.
 func getDurationSeconds(key string, fallback time.Duration) time.Duration {
 	raw := os.Getenv(key)
 	if raw == "" {
@@ -131,8 +104,7 @@ func getDurationSeconds(key string, fallback time.Duration) time.Duration {
 	return time.Duration(n) * time.Second
 }
 
-// getInt parses an env var as a positive integer. Same boot-friendly
-// behavior as getDurationSeconds: bad input → fallback, no fatal.
+// getInt parses an env var as a positive integer.
 func getInt(key string, fallback int) int {
 	raw := os.Getenv(key)
 	if raw == "" {

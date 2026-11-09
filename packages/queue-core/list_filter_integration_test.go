@@ -1,18 +1,5 @@
 //go:build integration
 
-// Exercises the ListParams.Handlers filter end-to-end against a real
-// Postgres. Build-tagged so `go test ./...` skips it; run with:
-//
-//	go test -tags integration ./...
-//
-// The handler filter is observability-only (W4): it narrows the jobs
-// list by exact handler name so an operator can isolate one workload
-// (e.g. ?handler=http_request). It is NOT a queue semantic — it does
-// not touch enqueue/dequeue/lease/retry. These assertions pin the
-// contract the API + frontend rely on: exact match (not prefix),
-// repeatable values OR'd together, AND-composed with other filters,
-// and List/Count never disagreeing on what they match.
-
 package queuecore_test
 
 import (
@@ -33,9 +20,7 @@ func TestList_HandlerFilter(t *testing.T) {
 	pool := testsupport.StartPostgres(t)
 	repo := queuecore.NewRepository(pool)
 
-	// Fixture: handler × queue grid. The "http_request_v2" rows exist
-	// solely to prove the filter is EXACT — a ?handler=http_request must
-	// not catch them the way the prefix `search` would.
+	// Fixture: handler × queue grid.
 	fixtures := []struct {
 		handler string
 		queue   string
@@ -61,9 +46,7 @@ func TestList_HandlerFilter(t *testing.T) {
 		}
 	}
 
-	// listHandlers returns the handler of every row List yields for p, and
-	// asserts Count agrees with the number of rows List returned (the two
-	// share buildListFilters and must never drift).
+	// listHandlers returns the handler of every row List yields for p, and asserts Count agrees with the number of rows List returned (the two…
 	listHandlers := func(t *testing.T, p queuecore.ListParams) []string {
 		t.Helper()
 		p.Limit = 100

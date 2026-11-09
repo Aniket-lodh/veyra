@@ -1,5 +1,6 @@
 import { AppLayout } from '@/components/layout/app-layout';
 import { ROUTES } from '@/lib/routes';
+import { ApiKeysPage } from '@/pages/api-keys';
 import { DashboardPage } from '@/pages/dashboard';
 import { EnqueuePage } from '@/pages/enqueue';
 import { JobDetailPage } from '@/pages/job-detail';
@@ -10,8 +11,7 @@ import { createBrowserRouter } from 'react-router-dom';
 
 const relative = (p: string) => p.replace(/^\//, '');
 
-// Route order matters: the static `/jobs/new` must come BEFORE the dynamic
-// `/jobs/:id`, otherwise React Router treats "new" as a job id.
+// Route order matters: the static `/jobs/new` must come BEFORE the dynamic `/jobs/:id`, otherwise React Router treats "new" as a job id.
 export const router = createBrowserRouter([
   {
     path: '/',
@@ -23,6 +23,7 @@ export const router = createBrowserRouter([
       { path: relative(ROUTES.jobDetail), Component: JobDetailPage },
       { path: relative(ROUTES.workers), Component: WorkersPage },
       { path: relative(ROUTES.workerDetail), Component: WorkerDetailPage },
+      { path: relative(ROUTES.apiKeys), Component: ApiKeysPage },
     ],
   },
 ]);

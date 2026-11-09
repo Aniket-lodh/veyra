@@ -1,12 +1,4 @@
-// Package stats is the HTTP layer for the operator dashboard's aggregate
-// view. One endpoint, GET /queue/stats: it returns the snapshot the
-// dashboard renders. The SQL behind it lives in queue-core (since all
-// jobs-table SQL ownership lives there); this package is the API skin.
-//
-// Latency percentiles and throughput-per-minute are deliberately omitted
-// from this surface — they require a time-series store the system does
-// not yet have. The frontend renders them as `null` until they exist,
-// rather than the API faking values.
+// Package stats serves dashboard aggregate queue metrics.
 package stats
 
 import (
@@ -14,6 +6,7 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 
+	"github.com/Aniket-lodh/veyra/api/internal/auth"
 	queuecore "github.com/Aniket-lodh/veyra/queue-core"
 )
 
@@ -26,13 +19,11 @@ func NewHandler(repo *queuecore.Repository) *Handler {
 }
 
 // Register mounts GET /queue/stats on the fiber app.
-func Register(app *fiber.App, h *Handler) {
-	app.Get("/queue/stats", h.Get)
+func Register(app *fiber.App, h *Handler, authn *auth.Authenticator) {
+	app.Get("/queue/stats", authn.Require(auth.ScopeQueueRead), h.Get)
 }
 
-// totalsResponse is the global counts surface. Field names match the
-// frontend status vocabulary (camelCase, the 7-value enum including the
-// derived `scheduled` and the renamed `dead-lettered`).
+// totalsResponse is the global counts surface.
 type totalsResponse struct {
 	Queued       int `json:"queued"`
 	Scheduled    int `json:"scheduled"`
@@ -43,9 +34,7 @@ type totalsResponse struct {
 	Cancelled    int `json:"cancelled"`
 }
 
-// queueResponse is the per-queue surface. Matches the frontend
-// QueueMetrics interface with the time-series fields elided (they are
-// computed elsewhere and surfaced separately when they exist).
+// queueResponse is the per-queue surface.
 type queueResponse struct {
 	Name            string `json:"name"`
 	Depth           int    `json:"depth"`

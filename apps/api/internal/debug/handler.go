@@ -1,19 +1,4 @@
-// Package debug owns HTTP routes that exist to poke the queue from curl.
-// They are not part of the product surface — they are an operator tool.
-//
-// Today the routes shadow ClaimNextJob / MarkJobSucceeded / MarkJobFailed /
-// RenewLease so the queue's primitives can be exercised by hand against a
-// real database, independent of the worker. Even now that apps/worker exists
-// and drives these in-process, having a curl-able surface is still the
-// fastest way to:
-//
-//   - reproduce a reclaim race (claim from worker, claim again from curl)
-//   - test §1.5.2 budget-exhausted reclaim DLQ without crashing a worker
-//   - validate SPEC §4 lease renewal by hand
-//
-// All routes mount under /internal/debug/* and have no auth. They are NOT
-// safe to expose externally; the central HTTP server is expected to reject
-// /internal/* at the ingress in production.
+// Package debug exposes internal queue poke routes for curl.
 package debug
 
 import (
@@ -23,12 +8,11 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 
+	"github.com/Aniket-lodh/veyra/api/internal/auth"
 	queuecore "github.com/Aniket-lodh/veyra/queue-core"
 )
 
-// Handler holds only the queue repository; debug endpoints do not own any
-// other state. Keep it that way — every extra dependency widens the surface
-// that this dev-only package can break.
+// Handler holds only the queue repository; debug endpoints do not own any other state.
 type Handler struct {
 	repo *queuecore.Repository
 }
@@ -37,19 +21,13 @@ func NewHandler(repo *queuecore.Repository) *Handler {
 	return &Handler{repo: repo}
 }
 
-// Register mounts every debug route under /internal/debug/. Removing all debug
-// endpoints is two lines: drop the call site in cmd/api/main.go and delete
-// this package.
-func Register(app *fiber.App, h *Handler) {
-	app.Post("/internal/debug/claim", h.Claim)
-	app.Post("/internal/debug/succeed", h.Succeed)
-	app.Post("/internal/debug/fail", h.Fail)
-	app.Post("/internal/debug/renew", h.Renew)
+// Register mounts every debug route under /internal/debug/.
+func Register(app *fiber.App, h *Handler, authn *auth.Authenticator) {
+	app.Post("/internal/debug/claim", authn.Require(auth.ScopeDebug), h.Claim)
+	app.Post("/internal/debug/succeed", authn.Require(auth.ScopeDebug), h.Succeed)
+	app.Post("/internal/debug/fail", authn.Require(auth.ScopeDebug), h.Fail)
+	app.Post("/internal/debug/renew", authn.Require(auth.ScopeDebug), h.Renew)
 }
-
-// -----------------------------------------------------------------------------
-// Requests
-// -----------------------------------------------------------------------------
 
 type claimReq struct {
 	WorkerID string   `json:"workerId"`
@@ -74,12 +52,7 @@ type renewReq struct {
 	JobID    string `json:"jobId"`
 }
 
-// -----------------------------------------------------------------------------
-// Handlers
-// -----------------------------------------------------------------------------
-
-// Claim drives queuecore.ClaimNextJob. Returns JSON null when nothing matches
-// the predicate — same convention as the worker observes in-process.
+// Claim drives queuecore.ClaimNextJob.
 func (h *Handler) Claim(c fiber.Ctx) error {
 	var req claimReq
 	if err := json.Unmarshal(c.Body(), &req); err != nil {
@@ -128,8 +101,7 @@ func (h *Handler) Succeed(c fiber.Ctx) error {
 	return c.JSON(toDebugJob(job))
 }
 
-// Fail drives queuecore.MarkJobFailed. error.class and error.message are
-// required; the queue applies its own defaults to occurredAt and stackTrace.
+// Fail drives queuecore.MarkJobFailed.
 func (h *Handler) Fail(c fiber.Ctx) error {
 	var req failReq
 	if err := json.Unmarshal(c.Body(), &req); err != nil {
@@ -155,9 +127,7 @@ func (h *Handler) Fail(c fiber.Ctx) error {
 	return c.JSON(toDebugJob(job))
 }
 
-// Renew drives queuecore.RenewLease (SPEC §4). 200 on success with the
-// updated job, 409 on lease-lost/expired, 404 on not-found. Exists so the
-// operator can simulate a renewal heartbeat without running a worker.
+// Renew drives queuecore.RenewLease (SPEC §4).
 func (h *Handler) Renew(c fiber.Ctx) error {
 	var req renewReq
 	if err := json.Unmarshal(c.Body(), &req); err != nil {
@@ -179,14 +149,7 @@ func (h *Handler) Renew(c fiber.Ctx) error {
 	return c.JSON(toDebugJob(job))
 }
 
-// -----------------------------------------------------------------------------
-// Helpers (deliberately local; debug must not depend on jobs/ shape)
-// -----------------------------------------------------------------------------
-
-// toDebugJob serialises a queuecore.Job for debug callers. Deliberately a
-// minimal projection — debug endpoints should not mirror the public API
-// shape because that creates two parallel schemas to keep in sync. The
-// public response shape lives in internal/jobs and is owned by that package.
+// toDebugJob serialises a queuecore.Job for debug callers.
 func toDebugJob(j *queuecore.Job) fiber.Map {
 	return fiber.Map{
 		"id":              j.ID,
@@ -201,9 +164,7 @@ func toDebugJob(j *queuecore.Job) fiber.Map {
 	}
 }
 
-// mapCompletionError maps the queuecore sentinels to HTTP codes. 404 for
-// missing, 409 for lease-lost/expired (caller is wrong, not the server), 500
-// for anything else.
+// mapCompletionError maps the queuecore sentinels to HTTP codes.
 func mapCompletionError(c fiber.Ctx, err error) error {
 	switch {
 	case errors.Is(err, queuecore.ErrJobNotFound):

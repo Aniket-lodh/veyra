@@ -1,6 +1,3 @@
-// Create job — guided form → POST /jobs.
-// Job types: HTTP request (http_request) and Email (send_email). Shared chrome
-// (retries, advanced, submit); type-specific fields swap in place.
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { CodeBlock } from '@/components/ui/code-block';

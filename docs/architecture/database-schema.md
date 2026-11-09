@@ -29,15 +29,19 @@ The rest of this document is consistently arranged around this frame. Where a co
 
 ## Scope
 
-Three tables: **`jobs`**, **`job_attempts`**, **`workers`**. That is enough to coordinate enqueue, lease, retry, dead-letter, cancellation, and worker visibility — the MVP surface.
+Queue coordination tables: **`jobs`**, **`job_attempts`**, **`workers`**.
+
+Auth (ADR-0008) adds **`users`**, **`sessions`**, and **`api_keys`**. Those
+tables are not part of queue correctness; they gate who may call the HTTP API.
+See migrations `000003` / `000004` and `apps/api/internal/auth/`.
 
 Intentionally **not** in scope for this document or its migrations:
 
 - A `queues` table. Queues in MVP are string labels on `jobs.queue`. Per-queue concurrency limits, rate limits, and pause/drain are deferred — see [Future tables, intentionally deferred](#future-tables-intentionally-deferred).
 - A `handlers` registry. Handlers are string labels on `jobs.handler` and `workers.handlers[]`. Validation lives in code.
-- Organizations, users, tenants, RBAC, billing, teams, audit log. None of those affect queue correctness.
+- Organizations, users, tenants, full RBAC, billing, teams, audit log. API-key scopes are the only authorization unit today.
 
-If we add any of those later, they will be additive — they will not change the meaning of the three tables here.
+If we add any of those later, they will be additive — they will not change the meaning of the queue tables here.
 
 ## `jobs` — the coordination table
 
@@ -371,7 +375,8 @@ Three rules:
 Documenting absences makes future contributors' decisions easier:
 
 - **No JOIN against `workers` on the dequeue path.** Capability filtering (queue/handler subscription) happens by query parameters that the worker passes on every dequeue call, *not* by reading `workers.queues[]` or `workers.handlers[]`. The columns on `workers` exist for the operator UI. If a future change introduces a JOIN from the hot path to `workers`, every dequeue starts paying for that table's locks, indexes, and write contention — which silently undoes the entire premise of Postgres-as-a-queue. Treat any PR that adds `JOIN workers` inside `packages/queue-core/` as a spec violation until an ADR justifies it.
-- **No `LISTEN`/`NOTIFY`.** Workers poll. The dequeue query is fast enough that polling at 1-second cadence is fine for MVP. `LISTEN`/`NOTIFY` is a latency optimization for later; it would change the worker loop but not the schema.
+- **No `LISTEN`/`NOTIFY` on the worker dequeue path.** Workers poll. The dequeue query is fast enough that polling at ~1s cadence is fine. Promoting LISTEN into the worker loop would be a separate ADR + SPEC change.
+- **Operator UI does use `LISTEN`/`NOTIFY`.** Statement-level triggers on `jobs` / `workers` notify channel `veyra_ui`; the API fans that out over SSE (`GET /events`). See [ADR-0009](../decisions/0009_operator-live-updates-sse.md). This does not change queue semantics.
 - **No separate dead-letter table.** Status transition only.
 - **No event log / outbox.** ADR-0002 explicitly rules out dual writes. If we later need to publish job state changes to an external system, that comes via an additive table and a polling cursor, with its own ADR.
 - **No row-level row versioning (`xmin`-based optimistic locking).** The "lease must still be mine" guards on UPDATEs serve the same purpose with clearer semantics.

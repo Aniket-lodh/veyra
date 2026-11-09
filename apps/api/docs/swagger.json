@@ -2,8 +2,8 @@
   "openapi": "3.0.3",
   "info": {
     "title": "Veyra API",
-    "description": "Public and operator API for Veyra, a PostgreSQL-backed job queue. Schemas match the JSON the Go API returns (apps/api/internal/jobs/handler.go, apps/api/internal/workers/handler.go, apps/api/internal/stats/handler.go). Design rationale lives in docs/architecture/database-schema.md and the queue spec in packages/queue-core/SPEC.md.",
-    "version": "0.2.0"
+    "description": "Public and operator API for Veyra, a PostgreSQL-backed job queue. All routes except GET /health require Authorization: Bearer <api-key> (ADR-0007). Schemas match the JSON the Go API returns. Design rationale lives in docs/architecture/ and packages/queue-core/SPEC.md.",
+    "version": "0.3.0"
   },
   "servers": [
     {
@@ -31,6 +31,10 @@
     {
       "name": "debug (dev only)",
       "description": "Routes that drive the queue lifecycle by hand. Mounted unconditionally today; the nginx production overlay blocks /internal/*. Not part of the public contract."
+    },
+    {
+      "name": "api-keys",
+      "description": "Create, list, and revoke database API keys. Requires keys:admin (or an env bootstrap key with *)."
     }
   ],
   "paths": {
@@ -66,7 +70,8 @@
               }
             }
           }
-        }
+        },
+        "security": []
       }
     },
     "/jobs": {
@@ -441,7 +446,7 @@
             }
           },
           "404": {
-            "description": "ErrJobNotFound — no job with that id",
+            "description": "ErrJobNotFound \u2014 no job with that id",
             "content": {
               "application/json": {
                 "schema": {
@@ -538,7 +543,7 @@
             }
           },
           "404": {
-            "description": "ErrJobNotFound — no job with that id",
+            "description": "ErrJobNotFound \u2014 no job with that id",
             "content": {
               "application/json": {
                 "schema": {
@@ -576,7 +581,7 @@
           "jobs"
         ],
         "summary": "Cancel a job",
-        "description": "Cooperative cancel (queue-core SPEC §6). Allowed from queued, scheduled, failed, and running. Idempotent when already cancelled. Returns 409 when the job has succeeded or dead-lettered. A running worker discovers the cancel when its lease renewal fails, and must not ack or nack.",
+        "description": "Cooperative cancel (queue-core SPEC \u00a76). Allowed from queued, scheduled, failed, and running. Idempotent when already cancelled. Returns 409 when the job has succeeded or dead-lettered. A running worker discovers the cancel when its lease renewal fails, and must not ack or nack.",
         "parameters": [
           {
             "name": "id",
@@ -674,6 +679,31 @@
         }
       }
     },
+    "/events": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Operator live invalidation stream (SSE)",
+        "description": "Server-Sent Events stream of lightweight invalidation messages when jobs or workers change. Clients refetch REST after each event. Requires session cookie or Bearer API key with queue:read (ADR-0009).",
+        "responses": {
+          "200": {
+            "description": "text/event-stream of invalidate events",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string",
+                  "example": "event: invalidate\ndata: {\"resources\":[\"jobs\",\"stats\"],\"at\":\"2026-11-07T18:00:00Z\"}\n\n"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required"
+          }
+        }
+      }
+    },
     "/internal/debug/renew": {
       "post": {
         "tags": [
@@ -736,6 +766,147 @@
           }
         }
       }
+    },
+    "/api-keys": {
+      "get": {
+        "tags": [
+          "api-keys"
+        ],
+        "summary": "List API keys",
+        "description": "Returns metadata for all keys including revoked. Never returns plaintext secrets.",
+        "responses": {
+          "200": {
+            "description": "Key list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "keys"
+                  ],
+                  "properties": {
+                    "keys": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/ApiKey"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid Bearer token"
+          },
+          "403": {
+            "description": "Valid key without keys:admin"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "api-keys"
+        ],
+        "summary": "Create an API key",
+        "description": "Mints a new database key. The plaintext secret is returned once and never stored.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "name",
+                  "scopes"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "example": "payments-worker"
+                  },
+                  "scopes": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "jobs:read",
+                        "jobs:write",
+                        "queue:read",
+                        "keys:admin",
+                        "debug",
+                        "*"
+                      ]
+                    },
+                    "example": [
+                      "jobs:write",
+                      "jobs:read"
+                    ]
+                  },
+                  "expiresAt": {
+                    "type": "string",
+                    "format": "date-time",
+                    "nullable": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created; secret shown once",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiKeyCreated"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid name or scopes"
+          },
+          "401": {
+            "description": "Missing or invalid Bearer token"
+          },
+          "403": {
+            "description": "Valid key without keys:admin"
+          }
+        }
+      }
+    },
+    "/api-keys/{id}": {
+      "delete": {
+        "tags": [
+          "api-keys"
+        ],
+        "summary": "Revoke an API key",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Revoked (idempotent if already revoked)"
+          },
+          "401": {
+            "description": "Missing or invalid Bearer token"
+          },
+          "403": {
+            "description": "Valid key without keys:admin"
+          },
+          "404": {
+            "description": "Unknown key id"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -754,7 +925,7 @@
       },
       "JobStatus": {
         "type": "string",
-        "description": "The seven-value status surfaced by the API. 'scheduled' is derived (status='queued' AND scheduledFor in the future); 'dead-lettered' is the storage value 'dead_lettered' renamed for display. See docs/architecture/database-schema.md → 'Status mapping'.",
+        "description": "The seven-value status surfaced by the API. 'scheduled' is derived (status='queued' AND scheduledFor in the future); 'dead-lettered' is the storage value 'dead_lettered' renamed for display. See docs/architecture/database-schema.md \u2192 'Status mapping'.",
         "enum": [
           "queued",
           "scheduled",
@@ -1147,12 +1318,12 @@
         "properties": {
           "workerId": {
             "type": "string",
-            "description": "Caller's ephemeral runtime id (fresh per process boot — see SPEC §1.5). Stored on the claimed row as current_worker_id.",
+            "description": "Caller's ephemeral runtime id (fresh per process boot \u2014 see SPEC \u00a71.5). Stored on the claimed row as current_worker_id.",
             "example": "w-test-01"
           },
           "queues": {
             "type": "array",
-            "description": "Queue names the worker is subscribed to. Capability is passed as a parameter — the dequeue path never joins the workers table.",
+            "description": "Queue names the worker is subscribed to. Capability is passed as a parameter \u2014 the dequeue path never joins the workers table.",
             "minItems": 1,
             "items": {
               "type": "string"
@@ -1437,7 +1608,103 @@
             }
           }
         }
+      },
+      "ApiKey": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "prefix",
+          "scopes",
+          "createdAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "prefix": {
+            "type": "string",
+            "example": "veyra_a1b2c3d4"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastUsedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "revokedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          }
+        }
+      },
+      "ApiKeyCreated": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "prefix",
+          "scopes",
+          "secret"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "prefix": {
+            "type": "string"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "secret": {
+            "type": "string",
+            "description": "Full Bearer value; shown once"
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "API key",
+        "description": "Plaintext key of the form veyra_<8hex>_<64hex>. Env keys (VEYRA_API_KEYS) have full *. Database keys carry explicit scopes."
       }
     }
-  }
+  },
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ]
 }

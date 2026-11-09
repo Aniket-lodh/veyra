@@ -21,7 +21,7 @@ export default defineConfig([
     rules: {
       'react-refresh/only-export-components': [
         'error',
-        { allowExportNames: ['buttonVariants', 'STATUS_LABEL'] },
+        { allowExportNames: ['buttonVariants', 'STATUS_LABEL', 'useAuth'] },
       ],
     },
   },

@@ -1,8 +1,4 @@
--- Worker roster + freshness of last heartbeat. The workers-table heartbeat
--- proves the runtime is alive; this query is the operator's view of that.
---
--- "stale" here is anything older than 3 * heartbeat_interval — the same
--- threshold the future sweeper will use to flip workers to 'disconnected'.
+-- Worker roster and heartbeat freshness (stale = > 3× heartbeat interval).
 
 \timing on
 
