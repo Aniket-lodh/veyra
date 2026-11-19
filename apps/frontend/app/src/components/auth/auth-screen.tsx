@@ -38,7 +38,7 @@ export function AuthScreen() {
     <div className="bg-background text-foreground flex min-h-dvh items-center justify-center p-6">
       <form
         onSubmit={onSubmit}
-        className="border-border w-full max-w-sm space-y-4 border p-6"
+        className="border-border bg-card w-full max-w-sm space-y-4 rounded-lg border p-6"
       >
         <div className="space-y-1">
           <p className="text-muted-foreground text-xs font-medium tracking-wide uppercase">

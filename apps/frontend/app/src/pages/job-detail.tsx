@@ -203,15 +203,21 @@ function EmailDeliveryCard({ job }: { job: Job }) {
 
 function AttemptOutcomeCell({ a }: { a: JobAttempt }) {
   if (a.outcome === null) {
-    return <span className="text-blue-700">running</span>;
+    return <span className="text-status-info-text font-medium">running</span>;
   }
   if (a.outcome === 'succeeded') {
-    return <span className="text-emerald-700">succeeded</span>;
+    return (
+      <span className="text-status-success-text font-medium">succeeded</span>
+    );
   }
   if (a.outcome === 'cancelled') {
-    return <span className="text-slate-700">cancelled</span>;
+    return (
+      <span className="text-status-neutral-text font-medium">cancelled</span>
+    );
   }
-  return <span className="text-red-700">{a.outcome}</span>;
+  return (
+    <span className="text-status-danger-text font-medium">{a.outcome}</span>
+  );
 }
 
 export function JobDetailPage() {

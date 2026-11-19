@@ -111,7 +111,7 @@ export function WorkersPage() {
                         </Badge>
                         {stale && w.state !== 'disconnected' && (
                           <span
-                            className="text-[0.625rem] text-amber-600"
+                            className="text-status-warning-text text-[0.625rem] font-medium"
                             title="Heartbeat older than 3× interval — worker may have died without deregistering."
                           >
                             stale

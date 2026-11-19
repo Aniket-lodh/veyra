@@ -6,7 +6,7 @@ function Textarea({ className, ...props }: React.ComponentProps<'textarea'>) {
     <textarea
       data-slot="textarea"
       className={cn(
-        'border-border flex min-h-24 w-full rounded-md border bg-transparent px-2 py-1.5 text-xs',
+        'border-input flex min-h-24 w-full rounded-md border bg-transparent px-2 py-1.5 text-xs',
         'font-mono leading-relaxed', // monospace because payload is JSON
         'transition-colors outline-none',
         'placeholder:text-muted-foreground',
