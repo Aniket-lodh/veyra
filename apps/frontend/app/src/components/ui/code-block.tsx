@@ -1,3 +1,4 @@
+import { useTheme } from '@/lib/theme';
 import { cn } from '@/lib/utils';
 import { json } from '@codemirror/lang-json';
 import { EditorView } from '@codemirror/view';
@@ -48,6 +49,7 @@ export function CodeBlock({
   truncatedNote,
   defaultWrap = false,
 }: CodeBlockProps) {
+  const { resolvedTheme } = useTheme();
   const [wrap, setWrap] = useState(defaultWrap);
   const [copied, setCopied] = useState(false);
 
@@ -98,7 +100,7 @@ export function CodeBlock({
           <CodeMirror
             value={children}
             maxHeight="20rem"
-            theme="light"
+            theme={resolvedTheme}
             editable={false}
             readOnly
             extensions={extensions}

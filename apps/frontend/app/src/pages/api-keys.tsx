@@ -136,12 +136,14 @@ export function ApiKeysPage() {
       </form>
 
       {created ? (
-        <div className="border-border max-w-lg space-y-2 border border-amber-600/40 bg-amber-500/5 p-4">
-          <p className="text-sm font-medium">Copy this key now</p>
-          <p className="text-muted-foreground text-xs">
+        <div className="border-status-warning-border bg-status-warning-bg max-w-lg space-y-2 rounded-md border p-4">
+          <p className="text-foreground text-sm font-medium">
+            Copy this key now
+          </p>
+          <p className="text-text-secondary text-xs">
             It will not be shown again.
           </p>
-          <p className="bg-muted rounded px-2 py-2 font-mono text-xs break-all">
+          <p className="bg-surface-elevated border-border-subtle rounded border px-2 py-2 font-mono text-xs break-all">
             {created.secret}
           </p>
           <Button

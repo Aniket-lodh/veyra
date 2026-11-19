@@ -102,10 +102,10 @@ export function DashboardPage() {
                 className={cn(
                   'size-1.5 rounded-full',
                   stats.isError || workers.isError
-                    ? 'bg-destructive'
+                    ? 'bg-status-danger-solid'
                     : systemOk
-                      ? 'bg-emerald-500'
-                      : 'bg-amber-500',
+                      ? 'bg-status-success-solid'
+                      : 'bg-status-warning-solid',
                 )}
                 aria-hidden
               />
@@ -502,8 +502,8 @@ function MetricLink({
       to={to}
       className={cn(
         'border-border bg-card hover:bg-muted/40 focus-visible:ring-ring/30 block rounded-md border p-3 transition-colors outline-none focus-visible:ring-2',
-        hot && tone === 'danger' && 'border-destructive/30',
-        hot && tone === 'warn' && 'border-amber-500/30',
+        hot && tone === 'danger' && 'border-status-danger-border',
+        hot && tone === 'warn' && 'border-status-warning-border',
       )}
     >
       <div className="flex items-start justify-between gap-2">
@@ -515,16 +515,16 @@ function MetricLink({
           size={14}
           className={cn(
             'text-muted-foreground',
-            hot && tone === 'danger' && 'text-destructive',
-            hot && tone === 'warn' && 'text-amber-600',
+            hot && tone === 'danger' && 'text-status-danger-text',
+            hot && tone === 'warn' && 'text-status-warning-text',
           )}
         />
       </div>
       <div
         className={cn(
           'mt-1 text-2xl font-semibold tracking-tight tabular-nums',
-          hot && tone === 'danger' && 'text-destructive',
-          hot && tone === 'warn' && 'text-amber-700',
+          hot && tone === 'danger' && 'text-status-danger-text',
+          hot && tone === 'warn' && 'text-status-warning-text',
         )}
       >
         {loading ? (
@@ -568,12 +568,12 @@ function StatusStrip({
               title={`${item.label}: ${item.count}`}
               className={cn(
                 'h-full min-w-[2px] transition-opacity hover:opacity-80',
-                item.label === 'Waiting' && 'bg-slate-400',
-                item.label === 'Running' && 'bg-blue-500',
-                item.label === 'Succeeded' && 'bg-emerald-500',
-                item.label === 'Failed' && 'bg-red-500',
-                item.label === 'DLQ' && 'bg-amber-500',
-                item.label === 'Cancelled' && 'bg-slate-300',
+                item.label === 'Waiting' && 'bg-status-scheduled-solid',
+                item.label === 'Running' && 'bg-status-info-solid',
+                item.label === 'Succeeded' && 'bg-status-success-solid',
+                item.label === 'Failed' && 'bg-status-danger-solid',
+                item.label === 'DLQ' && 'bg-status-warning-solid',
+                item.label === 'Cancelled' && 'bg-status-neutral-solid',
               )}
               style={{ width: `${pct}%` }}
             />
