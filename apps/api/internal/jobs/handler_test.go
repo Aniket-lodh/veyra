@@ -88,7 +88,7 @@ func TestCreate_IdempotencyHeaderAccepted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("expected 201 Created, got %d", resp.StatusCode)
@@ -123,7 +123,7 @@ func TestCreate_IdempotencyHeaderBodyMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400 Bad Request on mismatch, got %d", resp.StatusCode)
@@ -196,7 +196,7 @@ func TestCreate_IdempotentReplayHeader(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 
 			if resp.StatusCode != http.StatusCreated {
 				t.Fatalf("expected 201 Created, got %d", resp.StatusCode)
@@ -238,7 +238,7 @@ func TestCreate_IdempotencyConflictReturns409(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("expected 409 Conflict, got %d", resp.StatusCode)
@@ -277,7 +277,7 @@ func TestCreate_InternalErrorSanitization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusInternalServerError {
 		t.Fatalf("expected 500, got %d", resp.StatusCode)

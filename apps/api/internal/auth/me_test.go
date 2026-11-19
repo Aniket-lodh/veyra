@@ -22,7 +22,7 @@ func TestMe_Unauthenticated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", resp.StatusCode)
@@ -50,7 +50,7 @@ func TestMe_SessionPrincipal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// With nil pool, GetUser returns ErrUserNotFound -> 401 unauthorized ("session required")
 	if resp.StatusCode != http.StatusUnauthorized {
@@ -78,7 +78,7 @@ func TestMe_APIKeyPrincipal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// With nil pool, GetKeyByID returns ErrKeyNotFound -> 401 unauthorized ("api key not found")
 	if resp.StatusCode != http.StatusUnauthorized {

@@ -100,7 +100,7 @@ func TestScopeAttenuation_RejectsEscalation(t *testing.T) {
 			if err != nil {
 				t.Fatalf("app.Test error: %v", err)
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 
 			if resp.StatusCode != tc.wantStatus {
 				bodyBytes, _ := io.ReadAll(resp.Body)
@@ -123,14 +123,14 @@ func TestScopeAttenuation_CaseInsensitiveBearer(t *testing.T) {
 		return c.SendString("ok")
 	})
 
-	// Lowercase "bearer " header
+	// Lowercase "bearer " header with dummy non-token
 	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
-	req.Header.Set("Authorization", "bearer veyra_12345678_notarealkey")
+	req.Header.Set("Authorization", "bearer dummy")
 	resp, err := app.Test(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Since Store has nil pool, Verify fails with unauthenticated, but "bearer " prefix was accepted
 	// (not rejected as missing Bearer header prefix).

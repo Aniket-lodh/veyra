@@ -16,7 +16,7 @@ func TestErrorHandler_Sanitizes500(t *testing.T) {
 	app := NewApp("test-app")
 
 	app.Get("/crash", func(c fiber.Ctx) error {
-		return errors.New("pgx: fatal database connection lost at 10.0.0.1:5432; table 'jobs_secret' syntax error")
+		return errors.New("pgx: fatal database connection lost at 10.0.0.1:5432; table 'jobs_internal' syntax error")
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/crash", nil)
@@ -24,7 +24,7 @@ func TestErrorHandler_Sanitizes500(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusInternalServerError {
 		t.Fatalf("expected 500, got %d", resp.StatusCode)
@@ -42,7 +42,7 @@ func TestErrorHandler_Sanitizes500(t *testing.T) {
 	}
 
 	// Must NOT leak database details
-	if strings.Contains(bodyStr, "pgx") || strings.Contains(bodyStr, "jobs_secret") || strings.Contains(bodyStr, "10.0.0.1") {
+	if strings.Contains(bodyStr, "pgx") || strings.Contains(bodyStr, "jobs_internal") || strings.Contains(bodyStr, "10.0.0.1") {
 		t.Fatalf("raw error leaked in 500 response: %s", bodyStr)
 	}
 }
@@ -60,7 +60,7 @@ func TestErrorHandler_Preserves4xx(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", resp.StatusCode)
