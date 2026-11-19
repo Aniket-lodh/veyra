@@ -184,5 +184,5 @@ func badRequest(c fiber.Ctx, msg string) error {
 
 func internalError(c fiber.Ctx, err error) error {
 	slog.ErrorContext(c.Context(), "debug.internal_error", "err", err.Error())
-	return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
 }

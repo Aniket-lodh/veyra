@@ -3,7 +3,9 @@ package auth
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
@@ -43,24 +45,52 @@ func (h *Handler) List(c fiber.Ctx) error {
 	keys, err := h.store.List(c.Context())
 	if err != nil {
 		slog.ErrorContext(c.Context(), "auth.keys.list_failed", "err", err.Error())
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
 	}
 	return c.JSON(fiber.Map{"keys": keys})
 }
 
 func (h *Handler) Create(c fiber.Ctx) error {
+	caller, ok := PrincipalFromContext(c.Context())
+	if !ok {
+		return unauthorized(c, "authentication required")
+	}
+
 	var req createKeyRequest
 	if err := json.Unmarshal(c.Body(), &req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid json body"})
 	}
+
+	callerHasStar := caller.HasScope(ScopeAll)
 	scopes := req.Scopes
 	if len(scopes) == 0 {
-		scopes = []string{ScopeAll}
+		if callerHasStar {
+			scopes = []string{ScopeAll}
+		} else {
+			scopes = caller.Scopes
+		}
+	}
+
+	// Scope attenuation: callers without "*" cannot grant "*" or any scope they do not hold.
+	if !callerHasStar {
+		for _, s := range scopes {
+			s = strings.TrimSpace(s)
+			if s == ScopeAll {
+				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+					"error": "cannot grant wildcard scope without holding wildcard privilege",
+				})
+			}
+			if !caller.HasScope(s) {
+				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+					"error": fmt.Sprintf("cannot grant scope %q: not held by current principal", s),
+				})
+			}
+		}
 	}
 
 	createdBy := ""
-	if p, ok := PrincipalFromContext(c.Context()); ok && p.Kind == "session" {
-		createdBy = p.ID
+	if caller.Kind == "session" {
+		createdBy = caller.ID
 	}
 
 	rec, gen, err := h.store.Create(c.Context(), req.Name, scopes, req.ExpiresAt, createdBy)
@@ -68,22 +98,21 @@ func (h *Handler) Create(c fiber.Ctx) error {
 		if errors.Is(err, ErrInvalidScope) {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
-		if err.Error() == "auth.Create: name required" {
+		if errors.Is(err, ErrNameRequired) || err.Error() == "auth.Create: name required" {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "name is required"})
 		}
-		if err.Error() == "auth.Create: expiresAt must be in the future" {
+		if errors.Is(err, ErrExpiresAtPast) || err.Error() == "auth.Create: expiresAt must be in the future" {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "expiresAt must be in the future"})
 		}
 		slog.ErrorContext(c.Context(), "auth.keys.create_failed", "err", err.Error())
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
 	}
-	principal, _ := PrincipalFromContext(c.Context())
 	slog.InfoContext(c.Context(), "auth.keys.created",
 		"keyId", rec.ID,
 		"keyPrefix", rec.Prefix,
 		"name", rec.Name,
 		"scopes", rec.Scopes,
-		"createdBy", principal.ID,
+		"createdBy", caller.ID,
 	)
 	return c.Status(fiber.StatusCreated).JSON(createKeyResponse{
 		ID:        rec.ID,
@@ -102,7 +131,7 @@ func (h *Handler) Revoke(c fiber.Ctx) error {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "api key not found"})
 		}
 		slog.ErrorContext(c.Context(), "auth.keys.revoke_failed", "err", err.Error(), "keyId", id)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
 	}
 	principal, _ := PrincipalFromContext(c.Context())
 	slog.InfoContext(c.Context(), "auth.keys.revoked",

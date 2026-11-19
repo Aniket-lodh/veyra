@@ -103,6 +103,9 @@ type Job struct {
 	NextRetryAt     *time.Time
 
 	Status JobStatus
+
+	// IsReplay reports whether the job was returned from an idempotent replay rather than inserted freshly.
+	IsReplay bool `json:"-"`
 }
 
 // Attempt is one row of the `job_attempts` table — a single execution of a job, in-flight or terminal.

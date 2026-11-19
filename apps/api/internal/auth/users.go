@@ -83,6 +83,9 @@ FROM users WHERE email = $1`
 }
 
 func (s *Store) GetUser(ctx context.Context, id string) (User, error) {
+	if s == nil || s.pool == nil {
+		return User{}, ErrUserNotFound
+	}
 	const q = `SELECT id, email, role, created_at FROM users WHERE id = $1`
 	var u User
 	err := s.pool.QueryRow(ctx, q, id).Scan(&u.ID, &u.Email, &u.Role, &u.CreatedAt)

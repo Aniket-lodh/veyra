@@ -35,7 +35,7 @@ func (h *SessionHandler) Status(c fiber.Ctx) error {
 	n, err := h.store.CountUsers(c.Context())
 	if err != nil {
 		slog.ErrorContext(c.Context(), "auth.status.count_failed", "err", err.Error())
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
 	}
 	out := fiber.Map{"bootstrapped": n > 0}
 	if cookie := c.Cookies(SessionCookieName); cookie != "" {
@@ -51,7 +51,7 @@ func (h *SessionHandler) Signup(c fiber.Ctx) error {
 	n, err := h.store.CountUsers(c.Context())
 	if err != nil {
 		slog.ErrorContext(c.Context(), "auth.signup.count_failed", "err", err.Error())
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
 	}
 	if n > 0 {
 		return c.Status(fiber.StatusConflict).JSON(fiber.Map{
@@ -75,13 +75,13 @@ func (h *SessionHandler) Signup(c fiber.Ctx) error {
 			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "email already registered"})
 		default:
 			slog.ErrorContext(c.Context(), "auth.signup.failed", "err", err.Error())
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
 		}
 	}
 
 	if err := h.issueSession(c, user.ID); err != nil {
 		slog.ErrorContext(c.Context(), "auth.signup.session_failed", "err", err.Error())
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
 	}
 
 	slog.InfoContext(c.Context(), "auth.signup.ok",
@@ -104,12 +104,12 @@ func (h *SessionHandler) Login(c fiber.Ctx) error {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid email or password"})
 		}
 		slog.ErrorContext(c.Context(), "auth.login.failed", "err", err.Error())
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
 	}
 
 	if err := h.issueSession(c, user.ID); err != nil {
 		slog.ErrorContext(c.Context(), "auth.login.session_failed", "err", err.Error())
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
 	}
 
 	slog.InfoContext(c.Context(), "auth.login.ok", "userId", user.ID, "email", user.Email)
@@ -128,18 +128,47 @@ func (h *SessionHandler) Logout(c fiber.Ctx) error {
 
 func (h *SessionHandler) Me(c fiber.Ctx) error {
 	p, ok := PrincipalFromContext(c.Context())
-	if !ok || p.Kind != "session" {
-		return unauthorized(c, "session required")
+	if !ok {
+		return unauthorized(c, "authentication required")
 	}
-	user, err := h.store.GetUser(c.Context(), p.ID)
-	if err != nil {
-		if errors.Is(err, ErrUserNotFound) {
-			return unauthorized(c, "session required")
+	switch p.Kind {
+	case "session":
+		user, err := h.store.GetUser(c.Context(), p.ID)
+		if err != nil {
+			if errors.Is(err, ErrUserNotFound) {
+				return unauthorized(c, "session required")
+			}
+			slog.ErrorContext(c.Context(), "auth.me.failed", "err", err.Error())
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
 		}
-		slog.ErrorContext(c.Context(), "auth.me.failed", "err", err.Error())
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+		return c.JSON(fiber.Map{
+			"kind": "session",
+			"user": user,
+		})
+	case "api_key":
+		key, err := h.store.GetKeyByID(c.Context(), p.ID)
+		if err != nil {
+			if errors.Is(err, ErrKeyNotFound) {
+				return unauthorized(c, "api key not found")
+			}
+			slog.ErrorContext(c.Context(), "auth.me.failed", "err", err.Error())
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
+		}
+		return c.JSON(fiber.Map{
+			"kind": "api_key",
+			"key": fiber.Map{
+				"id":         key.ID,
+				"name":       key.Name,
+				"prefix":     key.Prefix,
+				"scopes":     key.Scopes,
+				"createdAt":  key.CreatedAt,
+				"lastUsedAt": key.LastUsedAt,
+				"expiresAt":  key.ExpiresAt,
+			},
+		})
+	default:
+		return unauthorized(c, "authentication required")
 	}
-	return c.JSON(fiber.Map{"user": user})
 }
 
 func (h *SessionHandler) issueSession(c fiber.Ctx, userID string) error {

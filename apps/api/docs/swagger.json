@@ -126,6 +126,14 @@
         "responses": {
           "201": {
             "description": "Job created (or existing job returned for idempotent retry)",
+            "headers": {
+              "Idempotent-Replay": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Indicates whether the returned job was an idempotent replay (value: 'true')"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -136,6 +144,16 @@
           },
           "400": {
             "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Idempotency key parameter conflict",
             "content": {
               "application/json": {
                 "schema": {
@@ -800,7 +818,7 @@
             "description": "Missing or invalid Bearer token"
           },
           "403": {
-            "description": "Valid key without keys:admin"
+            "description": "Valid key without keys:admin or scope escalation beyond caller permissions"
           }
         }
       },
@@ -871,7 +889,7 @@
             "description": "Missing or invalid Bearer token"
           },
           "403": {
-            "description": "Valid key without keys:admin"
+            "description": "Valid key without keys:admin or scope escalation beyond caller permissions"
           }
         }
       }
@@ -900,7 +918,7 @@
             "description": "Missing or invalid Bearer token"
           },
           "403": {
-            "description": "Valid key without keys:admin"
+            "description": "Valid key without keys:admin or scope escalation beyond caller permissions"
           },
           "404": {
             "description": "Unknown key id"

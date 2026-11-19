@@ -79,10 +79,15 @@ the future (see `docs/architecture/database-schema.md`, "Status mapping").
 ### 0.5 Idempotency
 
 When `idempotencyKey` is set, `(queue, idempotency_key)` is unique for the life
-of the row. A second `Create` with the same pair returns the **existing** job
-and inserts nothing. The API still answers `201`, so callers do not need to
-tell first-time and repeat enqueues apart. The new request's other fields are
-ignored. A key is never released, even after the job succeeds.
+of the row. A second `Create` with the same pair verifies that the request
+fingerprint (canonical `handler`, `payload`, `priority`, `maxAttempts`, and `backoff`)
+matches the existing job:
+- If parameters are identical, `Create` returns the **existing** job with
+  `IsReplay = true`. The API answers `201 Created` with the `Idempotent-Replay: true`
+  header so callers can programmatically distinguish replays.
+- If parameters differ from the existing job, `Create` returns `ErrIdempotencyConflict`.
+  The API maps this error to `409 Conflict`.
+A key is never released, even after the job succeeds.
 
 ### 0.6 Concurrency
 
@@ -99,9 +104,12 @@ same key resolve to one row.
 
 ### 0.8 Errors
 
-Queue-core returns no sentinel errors for Create. Validation failures are
-returned by the API as `400` before queue-core is called. Database errors are
-wrapped with the function name and returned, and the API maps them to `500`.
+Queue-core returns `ErrIdempotencyConflict` when a duplicate idempotency key is
+submitted with conflicting parameters (mapped by the API to `409 Conflict`).
+Validation failures are returned by the API as `400` before queue-core is called.
+Database errors are wrapped with the function name and returned, and the API
+maps them to generic `500` internal server error responses while logging full
+diagnostic details.
 
 ### 0.9 Known gaps
 
