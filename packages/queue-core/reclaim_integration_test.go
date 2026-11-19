@@ -203,7 +203,6 @@ func TestReclaim_FleetCollapse_SelfHeals(t *testing.T) {
 	}
 }
 
-
 type tickStats struct {
 	scanned  int
 	requeued int
