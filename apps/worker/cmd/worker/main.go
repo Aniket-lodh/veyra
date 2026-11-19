@@ -1,7 +1,3 @@
-// Veyra worker. Boots, registers, heartbeats, polls, dispatches each job to a
-// registered handler, ack/nacks. The handler registry is built here at boot;
-// see apps/worker/CLAUDE.md for the handler contract and the current handler
-// set. The "noop" handler carries the simulated work the soak harness uses.
 package main
 
 import (
@@ -30,10 +26,7 @@ const (
 	workerVersion = "0.1.0"
 
 	heartbeatInterval = 10 * time.Second
-	// leaseRenewalInterval is the per-job RenewLease cadence. The queue's
-	// lease is 30s (queuecore SPEC §1.8), so 10s gives 3 attempts per lease
-	// window with ~20s margin for transient DB latency. Distinct from the
-	// worker heartbeat above — see queuecore SPEC §4 for the why.
+	// leaseRenewalInterval is the per-job RenewLease cadence.
 	leaseRenewalInterval  = 10 * time.Second
 	pollInterval          = 1 * time.Second
 	simulatedExecution    = 5 * time.Second
@@ -60,12 +53,7 @@ func main() {
 	queues := loadCSV("VEYRA_WORKER_QUEUES", []string{"default"})
 	failurePercent := loadFailurePercent()
 
-	// The handler registry is the worker's static set of executable handlers,
-	// built once here before Run. It is also the source of truth for the
-	// handler names advertised on the workers row (observability only). The
-	// "noop" handler carries the simulated sleep + failure injection that the
-	// soak/chaos harness relies on; real handlers (http_request, …) register
-	// here too as they land.
+	// The handler registry is the worker's static set of executable handlers, built once here before Run.
 	registry := handler.NewRegistry()
 	registry.Register("noop", handler.NewNoop(simulatedExecution, failurePercent))
 	registry.Register("http_request", handler.NewHTTPRequest())
@@ -133,14 +121,7 @@ func main() {
 		"failurePercent", failurePercent,
 	)
 
-	// Background goroutine: log "service.stopping" the moment the signal
-	// arrives, separately from "worker.shutdown.{begin,complete}" which
-	// fire inside Run. The two logs together let an operator see:
-	//   service.stopping  ← signal received
-	//   worker.shutdown.begin   ← pollLoop returned, draining
-	//   worker.deregistered     ← workers row flipped
-	//   worker.shutdown.complete ← Run() returns
-	//   service.stopped   ← about to exit
+	// Background goroutine: log "service.stopping" the moment the signal arrives, separately from "worker.shutdown.{begin,complete}" which fire inside Run.
 	go func() {
 		<-rootCtx.Done()
 		slog.Info("service.stopping",
@@ -159,9 +140,7 @@ func main() {
 	)
 }
 
-// loadDatabaseURL prefers VEYRA_WORKER_DATABASE_URL when set; otherwise it
-// assembles a URL from the same DB_* env vars the api uses. The two services
-// deliberately share the env-var convention so a single .env can drive both.
+// loadDatabaseURL prefers VEYRA_WORKER_DATABASE_URL when set; otherwise it assembles a URL from the same DB_* env vars the api uses.
 func loadDatabaseURL() string {
 	if u := strings.TrimSpace(os.Getenv("VEYRA_WORKER_DATABASE_URL")); u != "" {
 		return u
@@ -185,9 +164,7 @@ func loadDatabaseURL() string {
 	return u.String()
 }
 
-// loadFailurePercent reads VEYRA_WORKER_FAILURE_PERCENT and clamps it to
-// [0, 100]. Unset / unparseable falls back to defaultFailurePercent so the
-// container has the same behavior whether or not the operator set it.
+// loadFailurePercent reads VEYRA_WORKER_FAILURE_PERCENT and clamps it to [0, 100].
 func loadFailurePercent() int {
 	raw := strings.TrimSpace(os.Getenv("VEYRA_WORKER_FAILURE_PERCENT"))
 	if raw == "" {
@@ -236,8 +213,7 @@ func envOr(key, def string) string {
 	return def
 }
 
-// loadSMTPConfig reads VEYRA_SMTP_* for the send_email handler. Credentials
-// stay on the worker — never in job payloads (see apps/worker/CLAUDE.md).
+// loadSMTPConfig reads VEYRA_SMTP_* for the send_email handler.
 func loadSMTPConfig() handler.SMTPConfig {
 	port := 587
 	if raw := strings.TrimSpace(os.Getenv("VEYRA_SMTP_PORT")); raw != "" {
@@ -257,9 +233,7 @@ func loadSMTPConfig() handler.SMTPConfig {
 	}
 }
 
-// exitFatal emits one structured ERROR line and exits 1. Used for startup
-// failures where we cannot meaningfully continue. We do NOT use log.Fatal
-// because that bypasses slog and produces an unstructured line in production.
+// exitFatal emits one structured ERROR line and exits 1.
 func exitFatal(event string, err error) {
 	slog.Error(event, "err", err.Error())
 	os.Exit(1)

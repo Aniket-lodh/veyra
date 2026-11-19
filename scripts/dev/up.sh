@@ -1,13 +1,7 @@
 #!/usr/bin/env bash
-# Bring up the dev stack (postgres + api + worker) in the foreground.
-#
-# Usage:
-#   scripts/dev/up.sh              # 1 worker
-#   scripts/dev/up.sh 5            # 5 workers
-#
-# Logs stream to the terminal as multiplexed JSON/text per service. Ctrl-C
-# triggers a graceful shutdown — see apps/{api,worker} main.go for the
-# signal-handling story.
+# Bring up the dev stack (postgres + api + worker).
+# Usage: scripts/dev/up.sh [worker_replicas]
+
 set -euo pipefail
 
 WORKERS="${1:-1}"

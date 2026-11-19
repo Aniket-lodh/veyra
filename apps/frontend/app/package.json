@@ -15,7 +15,8 @@
     "prettier:fix": "prettier \"src/**/*.{ts,tsx}\" --write",
     "preview": "vite preview",
     "typecheck": "tsc -p tsconfig.json",
-    "typecheck:build": "tsc -p tsconfig.build.json"
+    "typecheck:build": "tsc -p tsconfig.build.json",
+    "test": "node --experimental-strip-types --test vite/sse-proxy.test.ts src/lib/live/payload.test.ts"
   },
   "dependencies": {
     "@codemirror/lang-json": "^6.0.2",

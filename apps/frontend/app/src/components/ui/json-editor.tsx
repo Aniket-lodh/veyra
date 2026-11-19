@@ -1,5 +1,3 @@
-// JSON body editor — CodeMirror 6 with highlight, lint gutter, and Beautify.
-// Same role as Postman/Insomnia's JSON body pane: edit a payload string.
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { json, jsonParseLinter } from '@codemirror/lang-json';

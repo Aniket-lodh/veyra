@@ -5,19 +5,11 @@ import (
 	"testing"
 )
 
-// These tests cover the pure-math half of the retry pipeline (SPEC §3.5.1
-// and the deterministic half of §3.5.2). The DB-coupled half — atomic
-// write with the failure tx, observability events, scheduler promotion —
-// is verified live against the running compose stack; the equivalent Go
-// integration tests are tracked as a follow-up under the
-// "no formal test harness exists yet" debt that affects every operation
-// in queue-core (each of §1, §2, §3, §4 also has its tests deferred).
+// These tests cover the pure-math half of the retry pipeline (SPEC §3.5.1 and the deterministic half of §3.5.2).
 
 func intp(i int) *int { return &i }
 
 // TestBaseBackoffSeconds_Exponential — SPEC §3.5.1, exponential case.
-// First failed attempt yields base; second yields 2×base; growth clips
-// at cap. Independent of jitter.
 func TestBaseBackoffSeconds_Exponential(t *testing.T) {
 	b := BackoffStrategy{
 		Kind:        "exponential",
@@ -44,7 +36,6 @@ func TestBaseBackoffSeconds_Exponential(t *testing.T) {
 }
 
 // TestBaseBackoffSeconds_Fixed — SPEC §3.5.1, fixed case.
-// Same delay regardless of attempt number.
 func TestBaseBackoffSeconds_Fixed(t *testing.T) {
 	b := BackoffStrategy{Kind: "fixed", Seconds: intp(45)}
 	for _, attempt := range []int{1, 2, 5, 100} {
@@ -55,11 +46,7 @@ func TestBaseBackoffSeconds_Fixed(t *testing.T) {
 	}
 }
 
-// TestBaseBackoffSeconds_Defensive — defensive fallback when backoff
-// fields are nil or kind is unknown. Enqueue validates BackoffStrategy
-// (BackoffStrategy.Validate) so production callers don't reach these
-// branches; the fallback exists to keep MarkJobFailed from crashing if
-// a row was somehow written outside the public surface.
+// TestBaseBackoffSeconds_Defensive — defensive fallback when backoff fields are nil or kind is unknown.
 func TestBaseBackoffSeconds_Defensive(t *testing.T) {
 	cases := []struct {
 		name string
@@ -82,9 +69,6 @@ func TestBaseBackoffSeconds_Defensive(t *testing.T) {
 }
 
 // TestComputeRetryDelaySeconds_JitterInRange — SPEC §3.5.2.
-// 1000 samples must all fall in [0.5×base, 1.5×base], and the empirical
-// spread must cover most of that range (proves jitter is actually varying,
-// not silently returning the same value).
 func TestComputeRetryDelaySeconds_JitterInRange(t *testing.T) {
 	const (
 		samples = 1000
@@ -111,11 +95,7 @@ func TestComputeRetryDelaySeconds_JitterInRange(t *testing.T) {
 		}
 	}
 
-	// With 1000 uniform samples we should see the empirical range cover
-	// most of the [0.5×, 1.5×] window. These thresholds are loose enough
-	// not to be flaky but tight enough to catch a jitter that has gone
-	// silently degenerate (e.g. always returning 1.0× because someone
-	// removed the random call).
+	// With 1000 uniform samples we should see the empirical range cover most of the [0.5×, 1.5×] window.
 	if min > 0.6*base {
 		t.Errorf("min sample %v is too high; jitter not spreading downward (loose threshold 0.6×base = %v)", min, 0.6*base)
 	}

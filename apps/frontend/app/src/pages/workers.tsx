@@ -1,20 +1,3 @@
-// Workers View — Phase 2, screen #4.
-//
-// Operator answer to "which workers are alive and what are they working
-// on?" Polls every 5s via useWorkers. The id column is the ephemeral
-// runtime id (fresh ULID per process boot); the OPERATOR-FACING identity
-// is hostname + version, because a crashed-and-restarted "same" worker
-// produces a new id by design (see queue-core's ephemeral-id rationale).
-//
-// Liveness derivation:
-//
-//   The api's `state` column is what the worker last reported. If the
-//   worker process died without writing 'disconnected', the row stays
-//   "active" with a stale lastHeartbeatAt until the (not-yet-built)
-//   sweeper marks it dead. We compute a UI-only "stale" flag here when
-//   lastHeartbeatAt is older than 3× heartbeatIntervalSeconds, matching
-//   the sweeper's planned threshold, and surface it as a visual hint
-//   without claiming to know the truth.
 import { Badge, type BadgeTone } from '@/components/ui/badge';
 import {
   Table,
@@ -163,11 +146,6 @@ export function WorkersPage() {
   );
 }
 
-// isHeartbeatStale matches the threshold the (not-yet-built) sweeper will
-// use: a worker is treated as stale by the operator UI if its last
-// heartbeat is older than 3 × its declared interval. We display this as a
-// visual flag, NOT as a state mutation — the source of truth is still the
-// row's `state` column.
 function isHeartbeatStale(
   lastHeartbeatAt: string,
   heartbeatIntervalSeconds: number,

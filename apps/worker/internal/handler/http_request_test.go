@@ -191,8 +191,7 @@ func TestHTTPRequest_429_Retryable(t *testing.T) {
 }
 
 func TestHTTPRequest_Timeout(t *testing.T) {
-	// Server sleeps longer than the request's timeoutSeconds, so the
-	// per-request deadline (reqCtx) fires while the job context stays alive.
+	// Server sleeps longer than the request's timeoutSeconds, so the per-request deadline (reqCtx) fires while the job context stays alive.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(1500 * time.Millisecond)
 		w.WriteHeader(http.StatusOK)
@@ -241,8 +240,7 @@ func TestHTTPRequest_JobCtxCancelled_NotAHandlerFailure(t *testing.T) {
 	go func() { time.Sleep(100 * time.Millisecond); cancel() }()
 
 	_, err := h.Handle(ctx, jobWith(t, map[string]any{"url": srv.URL, "timeoutSeconds": 30}))
-	// Must surface as context.Canceled (runtime takes the reclaim path), NOT a
-	// classified *handler.Error.
+	// Must surface as context.Canceled (runtime takes the reclaim path), NOT a classified *handler.Error.
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v; want context.Canceled", err)
 	}

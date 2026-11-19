@@ -1,10 +1,4 @@
-// Package queuecore is the queue. Job model, lifecycle primitives, and the
-// SQL that backs them all live here; apps/api and apps/worker both depend on
-// this package and reason about jobs through the same code path.
-//
-// The semantics are pinned in SPEC.md in this directory; any change to the
-// observable behavior of Enqueue, Dequeue, Ack, Nack, Heartbeat, or Cancel
-// must update the spec first. See docs/decisions/0004 for the rule.
+// Package queuecore is the queue: model, primitives, and Postgres repository.
 package queuecore
 
 import (
@@ -14,9 +8,7 @@ import (
 	"time"
 )
 
-// JobStatus is the storage-level enum. Six values, matching `job_status` in
-// the database. The seventh value the API surfaces ("scheduled") is derived
-// at serialization time; it is never stored.
+// JobStatus is the storage-level enum.
 type JobStatus string
 
 const (
@@ -28,10 +20,7 @@ const (
 	StatusCancelled    JobStatus = "cancelled"
 )
 
-// BackoffStrategy is the retry policy. Stored as a JSONB blob; interpreted by
-// the (future) retries package. Shape matches the frozen frontend contract
-// (camelCase fields). The discriminant is `Kind`; the relevant secondary
-// fields are populated by kind.
+// BackoffStrategy is the retry policy.
 type BackoffStrategy struct {
 	Kind        string `json:"kind"`
 	BaseSeconds *int   `json:"baseSeconds,omitempty"`
@@ -39,8 +28,7 @@ type BackoffStrategy struct {
 	Seconds     *int   `json:"seconds,omitempty"`
 }
 
-// Validate enforces the discriminated-union invariants the schema's JSONB
-// column does not. Called on every enqueue.
+// Validate enforces the discriminated-union invariants the schema's JSONB column does not.
 func (b BackoffStrategy) Validate() error {
 	switch b.Kind {
 	case "exponential":
@@ -69,8 +57,6 @@ func (b BackoffStrategy) Validate() error {
 }
 
 // DefaultBackoff is applied when the caller does not specify one on enqueue.
-// Exponential, 30s base, 1h cap — reasonable for the bulk of background work.
-// The handler clones this so per-job mutations cannot leak.
 func DefaultBackoff() BackoffStrategy {
 	base := 30
 	cap := 3600
@@ -82,7 +68,6 @@ func DefaultBackoff() BackoffStrategy {
 }
 
 // JobError is the structured error stored on a job after a failed attempt.
-// Shape matches the frozen frontend contract.
 type JobError struct {
 	Class      string    `json:"class"`
 	Message    string    `json:"message"`
@@ -91,11 +76,6 @@ type JobError struct {
 }
 
 // Job is the in-memory representation of one row in the `jobs` table.
-//
-// Fields with `*` are nullable in the database. JSONB payloads (payload,
-// result) are kept as raw bytes — the queue does not interpret them. The
-// structured `error` and `backoff` JSONB columns are decoded into typed
-// values because the queue layer does interpret them.
 type Job struct {
 	ID             string
 	Handler        string
@@ -125,13 +105,7 @@ type Job struct {
 	Status JobStatus
 }
 
-// Attempt is one row of the `job_attempts` table — a single execution of a
-// job, in-flight or terminal. Shape mirrors the frozen frontend `JobAttempt`
-// contract. The (JobID, AttemptNumber) pair is the user-facing identifier;
-// the bigserial primary key is not exposed.
-//
-// EndedAt and Outcome are nil while the attempt is in flight; CHECK
-// constraint job_attempts_outcome_matches_end guarantees they flip together.
+// Attempt is one row of the `job_attempts` table — a single execution of a job, in-flight or terminal.
 type Attempt struct {
 	JobID         string
 	AttemptNumber int
@@ -143,10 +117,7 @@ type Attempt struct {
 	ErrorMessage  *string
 }
 
-// AttemptOutcome is the storage-level enum from `attempt_outcome`. Five
-// values; the API renames LeaseLost ("lease_lost") to "lease-lost" before
-// serializing, mirroring the dead_lettered → dead-lettered convention on
-// JobStatus.
+// AttemptOutcome is the storage-level enum from `attempt_outcome`.
 type AttemptOutcome string
 
 const (
@@ -157,23 +128,13 @@ const (
 	OutcomeLeaseLost AttemptOutcome = "lease_lost"
 )
 
-// QueueStats is the aggregated counts surface that powers the operator
-// dashboard. Totals are global (across all queues); PerQueue is one entry
-// per known queue. "Known" = a queue that has at least one row in `jobs`.
-//
-// Fields that require a time-series store (jobs/min, p50, p95) are not
-// populated here — they are computed by a future metrics layer and
-// surfaced separately.
+// QueueStats is the aggregated counts surface that powers the operator dashboard.
 type QueueStats struct {
 	Totals   StatusCounts
 	PerQueue []QueueAggregate
 }
 
-// StatusCounts is the count of jobs in each storage status, plus the
-// API-derived Scheduled bucket (queued AND scheduled_for > now()). Note
-// that Queued in this struct means "queued AND due" — the visible-now
-// subset of status='queued'; the future-scheduled ones live in Scheduled.
-// This split matches the 7-value frontend status vocabulary.
+// StatusCounts is the count of jobs in each storage status, plus the API-derived Scheduled bucket (queued AND scheduled_for > now()).
 type StatusCounts struct {
 	Queued       int
 	Scheduled    int
@@ -184,10 +145,7 @@ type StatusCounts struct {
 	Cancelled    int
 }
 
-// QueueAggregate is one queue's view. Depth is the visible-and-runnable
-// count (queued + due); InFlight is currently-running. The 24h windows
-// look back exactly 24 hours from now(), bucketed by the terminal
-// transition time (completed_at / dead_lettered_at).
+// QueueAggregate is one queue's view.
 type QueueAggregate struct {
 	Name            string
 	Depth           int
@@ -197,11 +155,7 @@ type QueueAggregate struct {
 	DeadLettered24h int
 }
 
-// RunningLease is a thin row used by the workers handler to materialize
-// `worker.leases[]` for the operator UI. It is the only shape that crosses
-// the queue-core ↔ workers boundary — workers asks queue-core for "what
-// jobs are currently running, owned by which worker" and zips the result
-// onto the workers table.
+// RunningLease is a thin row used by the workers handler to materialize `worker.leases[]` for the operator UI.
 type RunningLease struct {
 	JobID          string
 	Handler        string

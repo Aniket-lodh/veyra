@@ -2,6 +2,7 @@ import { ROUTES } from '@/lib/routes';
 import {
   Add01Icon,
   DashboardSquare01Icon,
+  Key01Icon,
   ServerStack01Icon,
   Task01Icon,
 } from '@hugeicons/core-free-icons';
@@ -21,4 +22,5 @@ export const NAV_ITEMS: NavItem[] = [
   { label: 'Jobs', to: ROUTES.jobs, icon: Task01Icon },
   { label: 'Enqueue', to: ROUTES.jobEnqueue, icon: Add01Icon },
   { label: 'Workers', to: ROUTES.workers, icon: ServerStack01Icon },
+  { label: 'API keys', to: ROUTES.apiKeys, icon: Key01Icon },
 ];

@@ -1,4 +1,3 @@
-// Jobs list — filters are picks where the set is known; search stays free text.
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -41,7 +40,6 @@ const STATUS_OPTIONS: JobStatus[] = [
 const selectClass =
   'h-8 w-full rounded-md border border-border bg-transparent px-2 text-xs outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30';
 
-/** Selected chip colors mirror StatusBadge so filters read the same as the table. */
 const STATUS_CHIP_ON: Record<JobStatus, string> = {
   queued: 'bg-muted text-muted-foreground',
   scheduled: 'bg-violet-100 text-violet-700',

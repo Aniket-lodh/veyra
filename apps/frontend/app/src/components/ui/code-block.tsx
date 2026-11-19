@@ -1,5 +1,3 @@
-// Read-only code viewer. JSON uses the same CodeMirror highlighter as the
-// enqueue body editor; plain text (stack traces, excerpts) stays unhighlighted.
 import { cn } from '@/lib/utils';
 import { json } from '@codemirror/lang-json';
 import { EditorView } from '@codemirror/view';
@@ -34,25 +32,14 @@ const viewerTheme = EditorView.theme({
 });
 
 interface CodeBlockProps {
-  /** The text to render. Callers still pass a string
-   *  (e.g. JSON.stringify(value, null, 2)). */
   children: string;
   className?: string;
-  /** `json` gets syntax highlighting; `text` is plain monospace. */
   language?: 'json' | 'text';
-  /** Mark content that was already truncated upstream (e.g. a response
-   *  excerpt capped by the worker). Shows a small note under the block. */
   truncated?: boolean;
-  /** Override the default truncation note. */
   truncatedNote?: string;
-  /** Start with soft-wrap on. Defaults to off (horizontal scroll). */
   defaultWrap?: boolean;
 }
 
-/**
- * CodeBlock — bounded scrollable viewer with copy + wrap controls.
- * JSON surfaces share highlighting with JsonEditor; stacks/excerpts stay plain.
- */
 export function CodeBlock({
   children,
   className,
@@ -77,7 +64,7 @@ export function CodeBlock({
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1500);
     } catch {
-      // Clipboard API unavailable in insecure contexts — fail quietly.
+      // ignore
     }
   };
 

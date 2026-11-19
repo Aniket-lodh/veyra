@@ -7,23 +7,18 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
-// AccessLog wraps every request and emits one structured INFO line at
-// completion with the operational fields an SRE actually needs: method, path,
-// status, latency, request_id, remote ip, bytes out. We deliberately do NOT
-// log the body — that's PII / payload data, the wrong default for a
-// production access log.
-//
-// Mount AFTER RequestID so the log line carries the same id the response
-// header carries. The order is the only coupling between the two.
-//
-// One INFO per request is a busy-but-acceptable cadence. The right knob for
-// quieting it is the slog level (logging.Setup level=warn), not adding a
-// "should-I-log-this-path" filter here.
+// AccessLog wraps every request and emits one structured INFO line at completion.
+// Long-lived SSE (/events) is skipped: live.sse.connect / live.sse.disconnect
+// are the source of truth (ADR-0009).
 func AccessLog() fiber.Handler {
 	return func(c fiber.Ctx) error {
 		start := time.Now()
 
 		err := c.Next()
+
+		if c.Path() == "/events" {
+			return err
+		}
 
 		// c.Next has now run the handler chain; status is final.
 		latencyMs := time.Since(start).Milliseconds()
@@ -46,9 +41,7 @@ func AccessLog() fiber.Handler {
 			"bytesOut", len(c.Response().Body()),
 		}
 		if err != nil {
-			// fiber's error handler will translate err into the response; we
-			// still want it in the access log so a 500 has its cause on the
-			// same line as its outcome.
+			// fiber's error handler will translate err into the response; we still want it in the access log so a 500 has its cause on the same line as its outcome.
 			attrs = append(attrs, "err", err.Error())
 		}
 

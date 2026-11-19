@@ -1,18 +1,5 @@
 #!/usr/bin/env bash
-# snapshot.sh — one snapshot of the running stack.
-#
-# Emits a single block to stdout. Every line is prefixed `ts=<unix> ` so
-# concatenated snapshots remain greppable as a time series:
-#
-#   grep '^ts=.* jobs_in_flight=' soak.log | awk -F= '{print $2,$NF}'
-#
-# Cheap to run (a few short SQL aggregates plus one `docker stats`); safe
-# to invoke once per minute for 24h+.
-#
-# Override DOCKER_COMPOSE_FILES if running against the prod overlay:
-#   DOCKER_COMPOSE_FILES="-f deployments/compose/docker-compose.yml \
-#                         -f deployments/compose/docker-compose.prod.yml" \
-#       scripts/soak/snapshot.sh
+# One stack snapshot to stdout (ts-prefixed lines for grepping).
 
 set -euo pipefail
 
@@ -23,10 +10,7 @@ DOCKER_COMPOSE_FILES="${DOCKER_COMPOSE_FILES:--f $REPO_ROOT/deployments/compose/
 TS=$(date +%s)
 PREFIX="ts=$TS"
 
-# --- Container resource snapshot ---------------------------------------------
-# `docker stats --no-stream` returns one row per container with CPU%, mem%,
-# mem usage. We strip the human-readable mem suffix to MB; if the unit
-# isn't MiB/GiB, leave the raw string in.
+# --- Container resource snapshot --------------------------------------------- `docker stats --no-stream` returns one row per container with CPU%, mem%, mem usage.
 emit_docker_stats() {
     # shellcheck disable=SC2086
     docker compose $DOCKER_COMPOSE_FILES ps -q 2>/dev/null \
@@ -34,13 +18,6 @@ emit_docker_stats() {
         | awk -v p="$PREFIX" '{ print p, "container=" $0 }'
 }
 
-# --- Worker container generations (B5) ---------------------------------------
-# One line per worker container with its container ID, started_at, and
-# RestartCount. Paired with worker_runtime: lines from the SQL snapshot,
-# this gives provable resurrection evidence over the run: a container
-# whose RestartCount climbs is a generation rotation observed at the
-# Docker layer; a workers.id that changes for the same hostname is the
-# same rotation observed at the application layer. They should match.
 emit_worker_containers() {
     docker ps --filter "label=com.docker.compose.service=worker" \
               --format '{{.Names}} {{.ID}}' 2>/dev/null \
@@ -56,9 +33,6 @@ emit_worker_containers() {
 
 # --- DB-side metrics ---------------------------------------------------------
 emit_sql_snapshot() {
-    # -q suppresses psql's own status messages ("Output format is
-    # unaligned." etc) that would otherwise pollute the snapshot stream.
-    # shellcheck disable=SC2086
     docker compose $DOCKER_COMPOSE_FILES exec -T postgres \
         psql -q -U "${POSTGRES_USER:-veyra}" -d "${POSTGRES_DB:-veyra}" -f - < "$SQL_FILE" \
         | awk -v p="$PREFIX" 'NF { print p, $0 }'

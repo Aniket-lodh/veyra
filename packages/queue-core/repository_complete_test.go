@@ -1,9 +1,5 @@
 //go:build integration
 
-// Nack completion tests for SPEC §7 (failure classification) and the
-// permanent branch of §3.4. Build-tagged; run with:
-//
-//	go test -tags integration ./...
 package queuecore_test
 
 import (
@@ -24,8 +20,7 @@ const (
 	nackTestHandler = "test.handler"
 )
 
-// TestNack_Permanent_DeadLettersWithBudgetRemaining covers SPEC §7.3 row 1:
-// a permanent disposition short-circuits a job that still has attempts left.
+// TestNack_Permanent_DeadLettersWithBudgetRemaining covers SPEC §7.3 row 1: a permanent disposition short-circuits a job that still has attempts left.
 func TestNack_Permanent_DeadLettersWithBudgetRemaining(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -68,8 +63,7 @@ func TestNack_Permanent_DeadLettersWithBudgetRemaining(t *testing.T) {
 	requireJobStatus(t, ctx, pool, jobID, "dead_lettered")
 }
 
-// TestNack_Permanent_PreservesHandlerErrorClass covers SPEC §7.3: permanent
-// DLQ stores the handler's class, never AttemptBudgetExhausted (reclaim-only).
+// TestNack_Permanent_PreservesHandlerErrorClass covers SPEC §7.3: permanent DLQ stores the handler's class, never AttemptBudgetExhausted (reclaim-only).
 func TestNack_Permanent_PreservesHandlerErrorClass(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -119,9 +113,7 @@ func TestNack_Permanent_PreservesHandlerErrorClass(t *testing.T) {
 	}
 }
 
-// TestNack_Permanent_NoNextRetryAt_SchedulerNeverPromotes covers SPEC §7.5:
-// permanent jobs never land in failed+next_retry_at, so the scheduler
-// predicate cannot promote them.
+// TestNack_Permanent_NoNextRetryAt_SchedulerNeverPromotes covers SPEC §7.5: permanent jobs never land in failed+next_retry_at, so the…
 func TestNack_Permanent_NoNextRetryAt_SchedulerNeverPromotes(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -163,8 +155,7 @@ func TestNack_Permanent_NoNextRetryAt_SchedulerNeverPromotes(t *testing.T) {
 	requireJobStatus(t, ctx, pool, jobID, "dead_lettered")
 }
 
-// TestNack_Retry_DefaultUnchanged covers SPEC §7.2 rule 1: Permanent=false
-// (zero value) keeps today's retryable Nack behavior.
+// TestNack_Retry_DefaultUnchanged covers SPEC §7.2 rule 1: Permanent=false (zero value) keeps today's retryable Nack behavior.
 func TestNack_Retry_DefaultUnchanged(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -197,8 +188,7 @@ func TestNack_Retry_DefaultUnchanged(t *testing.T) {
 	requireJobStatus(t, ctx, pool, jobID, "failed")
 }
 
-// TestReclaim_BudgetExhausted_NeverPermanent covers SPEC §7.6: reclaim DLQ
-// uses AttemptBudgetExhausted and has no permanent disposition path.
+// TestReclaim_BudgetExhausted_NeverPermanent covers SPEC §7.6: reclaim DLQ uses AttemptBudgetExhausted and has no permanent disposition path.
 func TestReclaim_BudgetExhausted_NeverPermanent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
