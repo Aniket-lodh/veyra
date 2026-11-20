@@ -31,7 +31,7 @@ type Config struct {
 	HeartbeatInterval    time.Duration // workers.last_heartbeat_at update cadence — proves the RUNTIME is alive
 	LeaseRenewalInterval time.Duration // per-job RenewLease cadence — proves THIS JOB EXECUTION is healthy (queuecore SPEC §4)
 	PollInterval         time.Duration // ClaimNextJob cadence when the queue is idle
-	MaxConcurrency       int           // advertised on the workers row. Worker still runs serially.
+	MaxConcurrency       int           // advertised on the workers row and sets the max concurrent job execution pool size
 }
 
 // Worker is one runtime.
@@ -60,25 +60,58 @@ func (w *Worker) Run(ctx context.Context) error {
 		"version", w.cfg.Version,
 		"queues", w.cfg.Queues,
 		"handlers", w.cfg.Registry.Names(),
+		"maxConcurrency", w.cfg.MaxConcurrency,
 		"heartbeatSeconds", int(w.cfg.HeartbeatInterval/time.Second),
 	)
 
-	// Heartbeat runs on its own goroutine and uses the same root ctx.
-	var wg sync.WaitGroup
-	wg.Go(func() { w.heartbeatLoop(ctx) })
+	maxConc := w.cfg.MaxConcurrency
+	if maxConc < 1 {
+		maxConc = 1
+	}
+	sem := make(chan struct{}, maxConc)
+	var jobsWg sync.WaitGroup
+
+	lifetimeCtx, lifetimeCancel := context.WithCancel(context.Background())
+	defer lifetimeCancel()
+
+	// Heartbeat runs on its own background context until shutdown draining completes.
+	heartbeatCtx, heartbeatCancel := context.WithCancel(context.Background())
+	defer heartbeatCancel()
+
+	var hbWg sync.WaitGroup
+	hbWg.Go(func() { w.heartbeatLoop(heartbeatCtx) })
 
 	// Poll loop blocks until ctx done.
-	w.pollLoop(ctx)
+	w.pollLoop(ctx, sem, &jobsWg, lifetimeCtx)
 
-	// ctx already cancelled at this point.
 	slog.Info("worker.shutdown.begin",
 		"workerId", w.runtimeID,
 		"reason", ctxErrString(ctx),
-		"action", "draining heartbeat + lease renewers, then deregistering",
+		"action", "draining in-flight jobs, then stopping heartbeat and deregistering",
 	)
 
-	// ctx already cancelled at this point; the heartbeat goroutine sees it on the next tick and returns.
-	wg.Wait()
+	// Wait for in-flight jobs to drain cleanly with a timeout.
+	drainDone := make(chan struct{})
+	go func() {
+		jobsWg.Wait()
+		close(drainDone)
+	}()
+
+	select {
+	case <-drainDone:
+		slog.Info("worker.shutdown.drained_cleanly", "workerId", w.runtimeID)
+	case <-time.After(25 * time.Second):
+		slog.Warn("worker.shutdown.drain_timeout",
+			"workerId", w.runtimeID,
+			"action", "cancelling remaining in-flight jobs",
+		)
+		lifetimeCancel()
+		<-drainDone
+	}
+
+	// Stop heartbeat loop and wait for it.
+	heartbeatCancel()
+	hbWg.Wait()
 
 	// Best-effort deregister with a fresh short-lived ctx.
 	dctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -177,15 +210,22 @@ func (w *Worker) heartbeat(ctx context.Context) (bool, error) {
 	return cmd.RowsAffected() == 1, nil
 }
 
-// pollLoop is the main loop.
-func (w *Worker) pollLoop(ctx context.Context) {
+// pollLoop is the main loop. It acquires a concurrency slot before calling ClaimNextJob.
+func (w *Worker) pollLoop(ctx context.Context, sem chan struct{}, jobsWg *sync.WaitGroup, lifetimeCtx context.Context) {
 	for {
 		if ctx.Err() != nil {
 			return
 		}
 
+		select {
+		case <-ctx.Done():
+			return
+		case sem <- struct{}{}:
+		}
+
 		job, err := w.cfg.Repo.ClaimNextJob(ctx, w.runtimeID, w.cfg.Queues, w.cfg.Registry.Names())
 		if err != nil {
+			<-sem
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return
 			}
@@ -200,13 +240,21 @@ func (w *Worker) pollLoop(ctx context.Context) {
 		}
 
 		if job == nil {
+			<-sem
 			if !sleep(ctx, w.cfg.PollInterval) {
 				return
 			}
 			continue
 		}
 
-		w.executeJob(ctx, job)
+		jobsWg.Add(1)
+		go func(j *queuecore.Job) {
+			defer func() {
+				<-sem
+				jobsWg.Done()
+			}()
+			w.executeJob(lifetimeCtx, j)
+		}(job)
 	}
 }
 

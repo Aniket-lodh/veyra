@@ -66,6 +66,46 @@ func (a *Authenticator) Require(scopes ...string) fiber.Handler {
 	}
 }
 
+func (a *Authenticator) RequireAny(scopes ...string) fiber.Handler {
+	return func(c fiber.Ctx) error {
+		if c.Query("api_key") != "" || c.Query("token") != "" || c.Query("access_token") != "" {
+			slog.WarnContext(c.Context(), "auth.query_credential_rejected",
+				"path", c.Path(),
+			)
+			return unauthorized(c, "credentials must use cookie or Authorization header")
+		}
+
+		principal, ok := PrincipalFromContext(c.Context())
+		if !ok {
+			var err error
+			principal, err = a.resolve(c)
+			if err != nil {
+				slog.InfoContext(c.Context(), "auth.rejected",
+					"path", c.Path(),
+					"reason", "unauthenticated",
+				)
+				return unauthorized(c, "authentication required")
+			}
+		}
+
+		if len(scopes) > 0 && !principal.HasAnyScope(scopes...) {
+			slog.InfoContext(c.Context(), "auth.forbidden",
+				"path", c.Path(),
+				"principalId", principal.ID,
+				"kind", principal.Kind,
+				"requiredAny", scopes,
+			)
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+				"error": "insufficient scope",
+			})
+		}
+
+		ctx := ContextWithPrincipal(c.Context(), principal)
+		c.SetContext(ctx)
+		return c.Next()
+	}
+}
+
 func (a *Authenticator) resolve(c fiber.Ctx) (Principal, error) {
 	if cookie := strings.TrimSpace(c.Cookies(SessionCookieName)); cookie != "" {
 		user, sessionID, err := a.Store.ResolveSession(c.Context(), cookie)
