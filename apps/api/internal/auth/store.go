@@ -26,6 +26,9 @@ func NewStore(pool *pgxpool.Pool) *Store {
 }
 
 func (s *Store) Verify(ctx context.Context, plaintext string) (Principal, error) {
+	if s == nil || s.pool == nil {
+		return Principal{}, ErrUnauthenticated
+	}
 	plaintext = strings.TrimSpace(plaintext)
 	if plaintext == "" {
 		return Principal{}, ErrUnauthenticated
@@ -96,14 +99,14 @@ func (s *Store) touchLastUsed(ctx context.Context, id string, last *time.Time) {
 func (s *Store) Create(ctx context.Context, name string, scopes []string, expiresAt *time.Time, createdByUserID string) (KeyRecord, GeneratedKey, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
-		return KeyRecord{}, GeneratedKey{}, fmt.Errorf("auth.Create: name required")
+		return KeyRecord{}, GeneratedKey{}, ErrNameRequired
 	}
 	scopes, err := ValidateScopes(scopes)
 	if err != nil {
 		return KeyRecord{}, GeneratedKey{}, err
 	}
 	if expiresAt != nil && !expiresAt.After(time.Now().UTC()) {
-		return KeyRecord{}, GeneratedKey{}, fmt.Errorf("auth.Create: expiresAt must be in the future")
+		return KeyRecord{}, GeneratedKey{}, ErrExpiresAtPast
 	}
 	gen, err := GenerateKey()
 	if err != nil {
@@ -189,4 +192,105 @@ WHERE id = $1`, id)
 		return ErrKeyNotFound
 	}
 	return nil
+}
+
+// GetKeyByID returns metadata for a single key by ID, without exposing secret hashes.
+func (s *Store) GetKeyByID(ctx context.Context, id string) (ListedKey, error) {
+	if s == nil || s.pool == nil {
+		return ListedKey{}, ErrKeyNotFound
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ListedKey{}, ErrKeyNotFound
+	}
+	const q = `
+SELECT id, name, key_prefix, scopes, created_at, last_used_at, expires_at, revoked_at
+FROM api_keys
+WHERE id = $1`
+	var k ListedKey
+	err := s.pool.QueryRow(ctx, q, id).Scan(
+		&k.ID, &k.Name, &k.Prefix, &k.Scopes,
+		&k.CreatedAt, &k.LastUsedAt, &k.ExpiresAt, &k.RevokedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ListedKey{}, ErrKeyNotFound
+	}
+	if err != nil {
+		return ListedKey{}, fmt.Errorf("auth.GetKeyByID: %w", err)
+	}
+	return k, nil
+}
+
+// ValidatePrincipal re-verifies that a principal is still active, unrevoked, unexpired, and holds queue:read scope.
+func (s *Store) ValidatePrincipal(ctx context.Context, p Principal) error {
+	if s == nil || s.pool == nil {
+		return nil
+	}
+	switch p.Kind {
+	case "api_key":
+		const q = `
+SELECT scopes, expires_at, revoked_at
+FROM api_keys
+WHERE id = $1`
+		var (
+			scopes    []string
+			expiresAt *time.Time
+			revokedAt *time.Time
+		)
+		err := s.pool.QueryRow(ctx, q, p.ID).Scan(&scopes, &expiresAt, &revokedAt)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrKeyNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("auth.ValidatePrincipal: %w", err)
+		}
+		if revokedAt != nil {
+			return ErrKeyRevoked
+		}
+		if expiresAt != nil && !expiresAt.After(time.Now().UTC()) {
+			return ErrKeyExpired
+		}
+		hasQueueRead := false
+		for _, sc := range scopes {
+			if sc == ScopeAll || sc == ScopeQueueRead {
+				hasQueueRead = true
+				break
+			}
+		}
+		if !hasQueueRead {
+			return ErrForbidden
+		}
+		return nil
+
+	case "session":
+		if p.SessionID != "" {
+			const q = `SELECT expires_at FROM sessions WHERE id = $1`
+			var expiresAt time.Time
+			err := s.pool.QueryRow(ctx, q, p.SessionID).Scan(&expiresAt)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrUnauthenticated
+			}
+			if err != nil {
+				return fmt.Errorf("auth.ValidatePrincipal: %w", err)
+			}
+			if !expiresAt.After(time.Now().UTC()) {
+				return ErrUnauthenticated
+			}
+		}
+		if p.ID != "" {
+			const q = `SELECT role FROM users WHERE id = $1`
+			var role string
+			err := s.pool.QueryRow(ctx, q, p.ID).Scan(&role)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrUserNotFound
+			}
+			if err != nil {
+				return fmt.Errorf("auth.ValidatePrincipal: %w", err)
+			}
+		}
+		return nil
+
+	default:
+		return ErrUnauthenticated
+	}
 }

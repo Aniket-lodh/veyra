@@ -60,15 +60,16 @@ func (a *Authenticator) Require(scopes ...string) fiber.Handler {
 
 func (a *Authenticator) resolve(c fiber.Ctx) (Principal, error) {
 	if cookie := strings.TrimSpace(c.Cookies(SessionCookieName)); cookie != "" {
-		user, _, err := a.Store.ResolveSession(c.Context(), cookie)
+		user, sessionID, err := a.Store.ResolveSession(c.Context(), cookie)
 		if err == nil {
 			return Principal{
-				ID:     user.ID,
-				Kind:   "session",
-				Email:  user.Email,
-				Role:   user.Role,
-				Scopes: []string{ScopeAll},
-				Source: "session",
+				ID:        user.ID,
+				Kind:      "session",
+				Email:     user.Email,
+				Role:      user.Role,
+				Scopes:    []string{ScopeAll},
+				Source:    "session",
+				SessionID: sessionID,
 			}, nil
 		}
 		if err != ErrUnauthenticated {
@@ -81,14 +82,21 @@ func (a *Authenticator) resolve(c fiber.Ctx) (Principal, error) {
 		return Principal{}, ErrUnauthenticated
 	}
 	const prefix = "Bearer "
-	if !strings.HasPrefix(raw, prefix) {
+	if len(raw) < len(prefix) || !strings.EqualFold(raw[:len(prefix)], prefix) {
 		return Principal{}, ErrUnauthenticated
 	}
-	token := strings.TrimSpace(strings.TrimPrefix(raw, prefix))
+	token := strings.TrimSpace(raw[len(prefix):])
 	if token == "" {
 		return Principal{}, ErrUnauthenticated
 	}
 	return a.Store.Verify(c.Context(), token)
+}
+
+func (a *Authenticator) ValidatePrincipal(ctx context.Context, p Principal) error {
+	if a == nil || a.Store == nil {
+		return nil
+	}
+	return a.Store.ValidatePrincipal(ctx, p)
 }
 
 func unauthorized(c fiber.Ctx, msg string) error {

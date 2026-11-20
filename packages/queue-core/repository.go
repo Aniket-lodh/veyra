@@ -1,11 +1,13 @@
 package queuecore
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -25,6 +27,9 @@ var ErrLeaseExpired = errors.New("lease expired: lease deadline has passed")
 
 // ErrNotCancellable is returned by Cancel when the job is already in a finished terminal state (succeeded or dead_lettered).
 var ErrNotCancellable = errors.New("job is not cancellable: already succeeded or dead-lettered")
+
+// ErrIdempotencyConflict is returned by Create when an idempotency key matches an existing job with different parameters.
+var ErrIdempotencyConflict = errors.New("idempotency key conflict: parameters do not match existing job")
 
 // leaseDurationSeconds is the queue's hardcoded lease length.
 const leaseDurationSeconds = 30
@@ -83,9 +88,66 @@ func (r *Repository) Create(ctx context.Context, p CreateParams) (*Job, error) {
 
 	// ON CONFLICT DO NOTHING produces no row when an idempotency collision occurs.
 	if errors.Is(err, pgx.ErrNoRows) && p.IdempotencyKey != nil {
-		return r.getByIdempotencyKey(ctx, p.Queue, *p.IdempotencyKey)
+		existing, getErr := r.getByIdempotencyKey(ctx, p.Queue, *p.IdempotencyKey)
+		if getErr != nil {
+			return nil, getErr
+		}
+		if !equalFingerprint(p, existing) {
+			return nil, ErrIdempotencyConflict
+		}
+		existing.IsReplay = true
+		return existing, nil
 	}
 	return nil, fmt.Errorf("queuecore.Repository.Create: insert: %w", err)
+}
+
+func equalFingerprint(p CreateParams, existing *Job) bool {
+	if strings.TrimSpace(p.Handler) != strings.TrimSpace(existing.Handler) {
+		return false
+	}
+	if p.Priority != existing.Priority {
+		return false
+	}
+	if p.MaxAttempts != existing.MaxAttempts {
+		return false
+	}
+	if !equalBackoff(p.Backoff, existing.Backoff) {
+		return false
+	}
+	if !equalJSON(p.Payload, existing.Payload) {
+		return false
+	}
+	return true
+}
+
+func equalBackoff(a, b BackoffStrategy) bool {
+	if a.Kind != b.Kind {
+		return false
+	}
+	if (a.BaseSeconds == nil) != (b.BaseSeconds == nil) || (a.BaseSeconds != nil && *a.BaseSeconds != *b.BaseSeconds) {
+		return false
+	}
+	if (a.CapSeconds == nil) != (b.CapSeconds == nil) || (a.CapSeconds != nil && *a.CapSeconds != *b.CapSeconds) {
+		return false
+	}
+	if (a.Seconds == nil) != (b.Seconds == nil) || (a.Seconds != nil && *a.Seconds != *b.Seconds) {
+		return false
+	}
+	return true
+}
+
+func equalJSON(a, b []byte) bool {
+	if bytes.Equal(a, b) {
+		return true
+	}
+	var v1, v2 any
+	if err := json.Unmarshal(a, &v1); err != nil {
+		return false
+	}
+	if err := json.Unmarshal(b, &v2); err != nil {
+		return false
+	}
+	return reflect.DeepEqual(v1, v2)
 }
 
 // GetByID returns the job with the given id, or ErrJobNotFound.

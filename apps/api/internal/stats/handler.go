@@ -58,7 +58,7 @@ func (h *Handler) Get(c fiber.Ctx) error {
 			"path", c.Path(),
 			"err", err.Error(),
 		)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
 	}
 
 	resp := statsResponse{

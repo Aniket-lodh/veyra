@@ -2,6 +2,7 @@
 package jobs
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,12 +26,21 @@ const (
 	maxListLimit     = 200
 )
 
-// Handler holds the dependencies the job HTTP routes need.
-type Handler struct {
-	repo *queuecore.Repository
+type jobRepository interface {
+	Create(ctx context.Context, p queuecore.CreateParams) (*queuecore.Job, error)
+	Cancel(ctx context.Context, p queuecore.CancelParams) (*queuecore.Job, error)
+	GetByID(ctx context.Context, id string) (*queuecore.Job, error)
+	List(ctx context.Context, p queuecore.ListParams) ([]*queuecore.Job, error)
+	Count(ctx context.Context, p queuecore.ListParams) (int, error)
+	ListAttempts(ctx context.Context, jobID string) ([]*queuecore.Attempt, error)
 }
 
-func NewHandler(repo *queuecore.Repository) *Handler {
+// Handler holds the dependencies the job HTTP routes need.
+type Handler struct {
+	repo jobRepository
+}
+
+func NewHandler(repo jobRepository) *Handler {
 	return &Handler{repo: repo}
 }
 
@@ -182,6 +192,16 @@ func (h *Handler) Create(c fiber.Ctx) error {
 		return badRequest(c, "invalid JSON body: "+err.Error())
 	}
 
+	headerKey := strings.TrimSpace(c.Get("Idempotency-Key"))
+	if req.IdempotencyKey != nil && strings.TrimSpace(*req.IdempotencyKey) != "" {
+		bodyKey := strings.TrimSpace(*req.IdempotencyKey)
+		if headerKey != "" && headerKey != bodyKey {
+			return badRequest(c, "Idempotency-Key header and request body idempotencyKey do not match")
+		}
+	} else if headerKey != "" {
+		req.IdempotencyKey = &headerKey
+	}
+
 	params, err := buildCreateParams(req)
 	if err != nil {
 		return badRequest(c, err.Error())
@@ -189,6 +209,11 @@ func (h *Handler) Create(c fiber.Ctx) error {
 
 	job, err := h.repo.Create(c.Context(), params)
 	if err != nil {
+		if errors.Is(err, queuecore.ErrIdempotencyConflict) {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+				"error": "idempotency key conflict: parameters do not match existing job",
+			})
+		}
 		return internalError(c, err)
 	}
 	slog.InfoContext(c.Context(), "jobs.create",
@@ -198,7 +223,11 @@ func (h *Handler) Create(c fiber.Ctx) error {
 		"handler", job.Handler,
 		"priority", job.Priority,
 		"maxAttempts", job.MaxAttempts,
+		"isReplay", job.IsReplay,
 	)
+	if job.IsReplay {
+		c.Set("Idempotent-Replay", "true")
+	}
 	return c.Status(fiber.StatusCreated).JSON(toResponse(job))
 }
 
@@ -464,5 +493,5 @@ func internalError(c fiber.Ctx, err error) error {
 		"method", c.Method(),
 		"err", err.Error(),
 	)
-	return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
 }

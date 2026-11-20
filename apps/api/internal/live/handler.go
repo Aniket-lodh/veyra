@@ -15,6 +15,10 @@ import (
 
 const clientRetry = 3 * time.Second
 
+// StreamValidationInterval controls how frequently active SSE streams re-validate credential validity.
+// Exported so unit/integration tests can accelerate verification.
+var StreamValidationInterval = 10 * time.Second
+
 // Register mounts GET /events (SSE invalidation stream).
 func Register(app *fiber.App, hub *Hub, authn *auth.Authenticator) {
 	app.Get("/events", authn.Require(auth.ScopeQueueRead), sse.New(sse.Config{
@@ -33,12 +37,12 @@ func Register(app *fiber.App, hub *Hub, authn *auth.Authenticator) {
 			slog.InfoContext(c.Context(), "live.sse.disconnect", attrs...)
 		},
 		Handler: func(c fiber.Ctx, stream *sse.Stream) error {
-			return serveSSE(c, stream, hub)
+			return serveSSE(c, stream, hub, authn)
 		},
 	}))
 }
 
-func serveSSE(c fiber.Ctx, stream *sse.Stream, hub *Hub) error {
+func serveSSE(c fiber.Ctx, stream *sse.Stream, hub *Hub, authn *auth.Authenticator) error {
 	principal, _ := auth.PrincipalFromContext(c.Context())
 	sub := hub.Subscribe()
 	defer sub.Unsubscribe()
@@ -59,6 +63,9 @@ func serveSSE(c fiber.Ctx, stream *sse.Stream, hub *Hub) error {
 		}
 	}
 
+	validationTicker := time.NewTicker(StreamValidationInterval)
+	defer validationTicker.Stop()
+
 	for {
 		if ev, ok := sub.TakePending(); ok {
 			if err := writeFrame(stream, "invalidate", ev); err != nil {
@@ -69,6 +76,16 @@ func serveSSE(c fiber.Ctx, stream *sse.Stream, hub *Hub) error {
 		select {
 		case <-stream.Context().Done():
 			return nil
+		case <-validationTicker.C:
+			if err := authn.ValidatePrincipal(stream.Context(), principal); err != nil {
+				slog.InfoContext(c.Context(), "live.sse.revoked",
+					"event", "live.sse.revoked",
+					"principalId", principal.ID,
+					"kind", principal.Kind,
+					"err", err.Error(),
+				)
+				return nil
+			}
 		case ev, ok := <-sub.C():
 			if !ok {
 				return nil

@@ -9,12 +9,16 @@ export type BadgeTone =
   | 'muted';
 
 const TONE_STYLES: Record<BadgeTone, string> = {
-  neutral: 'bg-muted text-foreground',
-  info: 'bg-blue-100 text-blue-700',
-  success: 'bg-emerald-100 text-emerald-700',
-  warning: 'bg-amber-100 text-amber-700',
-  danger: 'bg-red-100 text-red-700',
-  muted: 'bg-muted text-muted-foreground',
+  neutral:
+    'bg-status-neutral-bg text-status-neutral-text border border-status-neutral-border',
+  info: 'bg-status-info-bg text-status-info-text border border-status-info-border',
+  success:
+    'bg-status-success-bg text-status-success-text border border-status-success-border',
+  warning:
+    'bg-status-warning-bg text-status-warning-text border border-status-warning-border',
+  danger:
+    'bg-status-danger-bg text-status-danger-text border border-status-danger-border',
+  muted: 'bg-surface-elevated text-text-muted border border-border-subtle',
 };
 
 interface BadgeProps {

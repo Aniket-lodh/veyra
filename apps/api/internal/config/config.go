@@ -35,10 +35,15 @@ type Config struct {
 
 	// ReclaimBatchLimit caps how many expired-lease rows the reclaim driver processes per tick.
 	ReclaimBatchLimit int
+
+	// EnableDebugEndpoints controls whether /internal/debug/* routes are mounted.
+	// In development, defaults to true unless explicitly disabled.
+	// In production, defaults to false unless explicitly enabled.
+	EnableDebugEndpoints bool
 }
 
 func Load() Config {
-	return Config{
+	c := Config{
 		AppEnv: getEnv("APP_ENV", "development"),
 		Port:   getEnv("PORT", "8080"),
 
@@ -55,6 +60,12 @@ func Load() Config {
 		ReclaimInterval:   getDurationSeconds("VEYRA_RECLAIM_INTERVAL_SECONDS", 10*time.Second),
 		ReclaimBatchLimit: getInt("VEYRA_RECLAIM_BATCH_LIMIT", 100),
 	}
+	enableDebug := c.IsDevelopment()
+	if raw := os.Getenv("ENABLE_DEBUG_ENDPOINTS"); raw != "" {
+		enableDebug = parseBool(raw, enableDebug)
+	}
+	c.EnableDebugEndpoints = enableDebug
+	return c
 }
 
 // IsDevelopment reports whether the current AppEnv is one of the recognised dev/local values.
@@ -115,4 +126,13 @@ func getInt(key string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+// parseBool parses an env var as a boolean (1, t, T, TRUE, true, True, 0, f, F, FALSE, false, False).
+func parseBool(raw string, fallback bool) bool {
+	v, err := strconv.ParseBool(strings.TrimSpace(raw))
+	if err != nil {
+		return fallback
+	}
+	return v
 }

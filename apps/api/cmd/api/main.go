@@ -108,7 +108,12 @@ func main() {
 	jobs.Register(app, jobs.NewHandler(jobRepo), authn)
 	stats.Register(app, stats.NewHandler(jobRepo), authn)
 	workers.Register(app, workers.NewHandler(dbPool, jobRepo), authn)
-	debug.Register(app, debug.NewHandler(jobRepo), authn)
+	if cfg.EnableDebugEndpoints {
+		debug.Register(app, debug.NewHandler(jobRepo), authn)
+		slog.Info("service.debug_routes.mounted", "path", "/internal/debug/*")
+	} else {
+		slog.Info("service.debug_routes.disabled")
+	}
 	auth.Register(app, auth.NewHandler(authStore, authn))
 
 	liveHub := live.NewHub()

@@ -3,13 +3,14 @@ package auth
 import "time"
 
 type Principal struct {
-	ID     string
-	Kind   string // session | api_key
-	Email  string
-	Role   string
-	Prefix string
-	Scopes []string
-	Source string
+	ID        string
+	Kind      string // session | api_key
+	Email     string
+	Role      string
+	Prefix    string
+	Scopes    []string
+	Source    string
+	SessionID string
 }
 
 func (p Principal) HasScope(want string) bool {

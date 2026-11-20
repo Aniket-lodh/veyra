@@ -2,6 +2,7 @@ import { AuthScreen } from '@/components/auth/auth-screen';
 import { AuthProvider, useAuth } from '@/lib/auth/auth-context';
 import { registerAuthRequiredNotifier } from '@/lib/auth/auth-events';
 import { LiveUpdatesProvider } from '@/lib/live/live-updates-provider';
+import { ThemeProvider } from '@/lib/theme';
 import { router } from '@/router';
 import { useEffect } from 'react';
 import { RouterProvider } from 'react-router-dom';
@@ -31,11 +32,13 @@ function AuthBridge({ children }: { children: React.ReactNode }) {
 
 function App() {
   return (
-    <AuthProvider>
-      <AuthBridge>
-        <RouterProvider router={router} />
-      </AuthBridge>
-    </AuthProvider>
+    <ThemeProvider>
+      <AuthProvider>
+        <AuthBridge>
+          <RouterProvider router={router} />
+        </AuthBridge>
+      </AuthProvider>
+    </ThemeProvider>
   );
 }
 

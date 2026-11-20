@@ -38,5 +38,9 @@ func errorHandler(c fiber.Ctx, err error) error {
 		"status", code,
 		"err", err.Error(),
 	)
-	return c.Status(code).JSON(fiber.Map{"error": err.Error()})
+	msg := err.Error()
+	if code >= fiber.StatusInternalServerError {
+		msg = "internal server error"
+	}
+	return c.Status(code).JSON(fiber.Map{"error": msg})
 }

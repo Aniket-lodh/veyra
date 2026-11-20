@@ -40,6 +40,10 @@ var (
 	ErrInvalidCredentials = errors.New("auth: invalid credentials")
 	ErrUserNotFound       = errors.New("auth: user not found")
 	ErrKeyNotFound        = errors.New("auth: api key not found")
+	ErrNameRequired       = errors.New("auth: name required")
+	ErrExpiresAtPast      = errors.New("auth: expiresAt must be in the future")
+	ErrKeyRevoked         = errors.New("auth: api key revoked")
+	ErrKeyExpired         = errors.New("auth: api key expired")
 )
 
 type KeyRecord struct {

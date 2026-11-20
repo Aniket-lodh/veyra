@@ -10,13 +10,20 @@ export type JobStatus =
   | 'cancelled';
 
 const STATUS_STYLES: Record<JobStatus, string> = {
-  queued: 'bg-muted text-muted-foreground',
-  scheduled: 'bg-violet-100 text-violet-700',
-  running: 'bg-blue-100 text-blue-700',
-  succeeded: 'bg-emerald-100 text-emerald-700',
-  failed: 'bg-red-100 text-red-700',
-  'dead-lettered': 'bg-amber-100 text-amber-700',
-  cancelled: 'bg-slate-200 text-slate-700',
+  queued:
+    'bg-status-neutral-bg text-status-neutral-text border border-status-neutral-border',
+  scheduled:
+    'bg-status-scheduled-bg text-status-scheduled-text border border-status-scheduled-border',
+  running:
+    'bg-status-info-bg text-status-info-text border border-status-info-border',
+  succeeded:
+    'bg-status-success-bg text-status-success-text border border-status-success-border',
+  failed:
+    'bg-status-danger-bg text-status-danger-text border border-status-danger-border',
+  'dead-lettered':
+    'bg-status-warning-bg text-status-warning-text border border-status-warning-border',
+  cancelled:
+    'bg-status-neutral-bg text-status-neutral-text border border-status-neutral-border',
 };
 
 export const STATUS_LABEL: Record<JobStatus, string> = {

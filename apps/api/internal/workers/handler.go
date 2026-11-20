@@ -149,5 +149,5 @@ func internalError(c fiber.Ctx, err error) error {
 		"method", c.Method(),
 		"err", err.Error(),
 	)
-	return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
 }
