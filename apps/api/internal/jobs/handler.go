@@ -441,6 +441,11 @@ func (h *Handler) List(c fiber.Ctx) error {
 		return badRequest(c, err.Error())
 	}
 
+	workerID, err := parseWorkerIDFilter(c)
+	if err != nil {
+		return badRequest(c, err.Error())
+	}
+
 	params := queuecore.ListParams{
 		Limit:    limit,
 		Offset:   offset,
@@ -448,6 +453,7 @@ func (h *Handler) List(c fiber.Ctx) error {
 		Queues:   repeatedQuery(c, "queue"),
 		Handlers: repeatedQuery(c, "handler"),
 		Search:   strings.TrimSpace(c.Query("search")),
+		WorkerID: workerID,
 	}
 
 	ctx := c.Context()
@@ -618,6 +624,36 @@ func apiStatusToStorage(api string) (queuecore.JobStatus, bool) {
 	default:
 		return "", false
 	}
+}
+
+// parseWorkerIDFilter reads and validates optional worker_id / workerId query parameter.
+func parseWorkerIDFilter(c fiber.Ctx) (string, error) {
+	rawSnake := strings.TrimSpace(c.Query("worker_id"))
+	rawCamel := strings.TrimSpace(c.Query("workerId"))
+
+	if rawSnake != "" && rawCamel != "" && rawSnake != rawCamel {
+		return "", errors.New("worker_id and workerId query parameters do not match")
+	}
+
+	workerID := rawSnake
+	if workerID == "" {
+		workerID = rawCamel
+	}
+	if workerID == "" {
+		return "", nil
+	}
+
+	if len(workerID) > 128 {
+		return "", errors.New("worker_id must be at most 128 characters")
+	}
+
+	for _, ch := range workerID {
+		if ch <= 32 || ch > 126 {
+			return "", errors.New("invalid worker_id: must contain only printable ASCII characters without spaces")
+		}
+	}
+
+	return workerID, nil
 }
 
 func badRequest(c fiber.Ctx, msg string) error {

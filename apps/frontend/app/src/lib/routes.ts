@@ -19,6 +19,9 @@ export const jobsByQueuePath = (queue: string) =>
 export const jobsByHandlerPath = (handler: string) =>
   `/jobs?handler=${encodeURIComponent(handler)}`;
 
+export const jobsByWorkerPath = (workerId: string) =>
+  `/jobs?worker_id=${encodeURIComponent(workerId)}`;
+
 export const jobsByStatusPath = (...statuses: string[]) => {
   const sp = new URLSearchParams();
   for (const s of statuses) sp.append('status', s);

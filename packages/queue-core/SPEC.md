@@ -102,7 +102,7 @@ same key resolve to one row.
 
 - A job becomes visible to dequeue when `scheduled_for <= now()` (§1.2).
 - Among visible jobs, dequeue orders by `priority DESC, scheduled_for ASC` (§1.3).
-- The job list (`GET /jobs`) orders by `enqueued_at DESC`.
+- The job list (`GET /jobs`) orders by `enqueued_at DESC` and supports filtering by `status`, `queue`, `handler`, `search`, and `worker_id` (matching `current_worker_id` on `jobs` or historical `worker_id` on `job_attempts`). Verified by `TestList_WorkerFilter` and `TestList_HandlerFilter` in `packages/queue-core/list_filter_integration_test.go`.
 
 ### 0.8 Errors
 

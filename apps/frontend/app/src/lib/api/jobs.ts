@@ -8,6 +8,7 @@ export interface ListJobsParams {
   queues?: string[];
   handlers?: string[];
   search?: string;
+  workerId?: string;
 }
 
 export interface ListJobsResponse {
@@ -29,6 +30,7 @@ export function listJobs(
       queue: params.queues,
       handler: params.handlers,
       search: params.search,
+      worker_id: params.workerId,
     },
     signal,
   });
