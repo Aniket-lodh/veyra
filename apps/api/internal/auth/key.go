@@ -12,18 +12,22 @@ import (
 )
 
 const (
-	ScopeJobsRead  = "jobs:read"
-	ScopeJobsWrite = "jobs:write"
-	ScopeQueueRead = "queue:read"
-	ScopeKeysAdmin = "keys:admin"
-	ScopeDebug     = "debug"
-	ScopeAll       = "*"
+	ScopeJobsRead     = "jobs:read"
+	ScopeJobsWrite    = "jobs:write"
+	ScopeQueueRead    = "queue:read"
+	ScopeWorkersRead  = "workers:read"
+	ScopeWorkersWrite = "workers:write"
+	ScopeKeysAdmin    = "keys:admin"
+	ScopeDebug        = "debug"
+	ScopeAll          = "*"
 )
 
 var AllKnownScopes = []string{
 	ScopeJobsRead,
 	ScopeJobsWrite,
 	ScopeQueueRead,
+	ScopeWorkersRead,
+	ScopeWorkersWrite,
 	ScopeKeysAdmin,
 	ScopeDebug,
 	ScopeAll,

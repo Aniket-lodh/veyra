@@ -1102,6 +1102,62 @@ Workers undergo managed administrative lifecycle transitions to support orderly 
 - If a cordoned or draining worker crashes or ceases heartbeating, the sweeper marks it `disconnected`.
 - Reclaim processes leases solely based on `jobs.status = 'running'` and `jobs.lease_expires_at`. Worker lifecycle state changes do not interrupt running leases or reclaim timers.
 
+### 4.12 External Worker HTTP Protocol
+
+External workers and distributed SDKs communicate with Veyra over HTTPS via `apps/api` using Bearer API keys (`workers:write` or `jobs:write`), eliminating the requirement for external services to have direct PostgreSQL access.
+
+#### 4.12.1 Endpoints and Contracts
+
+1. **Worker Registration (`POST /workers/register`)**
+   - **Payload:** `{ "id"?: string, "hostname"?: string, "pid"?: int, "version"?: string, "queues": string[], "handlers": string[], "maxConcurrency": int, "heartbeatIntervalSeconds"?: int }`.
+   - **Guards:** `queues` and `handlers` must be non-empty arrays; `maxConcurrency` must be $\ge 1$.
+   - **Semantics:** Upserts the worker record in `workers` with `state = 'active'`, `started_at = now()`, and `last_heartbeat_at = now()`. Generates a ULID `id` if omitted.
+   - **Returns:** `200 OK` with the registered `workerResponse`. Emits SSE dirty broadcast `["workers", "stats"]`.
+
+2. **Worker Heartbeat (`POST /workers/:id/heartbeat`)**
+   - **Semantics:** Updates `last_heartbeat_at = now()` for the specified worker provided its state is not `disconnected`.
+   - **Returns:**
+     - `200 OK` with `{ "id": string, "state": string, "lastHeartbeatAt": timestamp }`. The `state` informs workers if they have been administratively `cordoned` or set to `draining`.
+     - `404 Not Found` if the worker row is missing or in `disconnected` state. External workers receiving `404` must halt polling and re-register.
+
+3. **Job Claim (`POST /workers/:id/claim`)**
+   - **Payload (optional):** `{ "queues"?: string[], "handlers"?: string[] }` (overrides worker's registered defaults for this claim).
+   - **Guards:**
+     - Checks worker state: returns `404 Not Found` if worker is missing or `disconnected`.
+     - Returns `204 No Content` immediately if worker is `cordoned` or `draining`, preventing new claims.
+   - **Semantics:** Calls `ClaimNextJob` with `FOR UPDATE SKIP LOCKED`.
+   - **Returns:**
+     - `204 No Content` when no runnable jobs match worker capabilities or if queues are paused.
+     - `200 OK` with claimed job payload, attempt, priority, and `leaseExpiresAt`. Emits SSE invalidation `["workers", "jobs", "stats"]`.
+
+4. **Lease Renewal (`POST /workers/:id/jobs/:jobId/heartbeat`)**
+   - **Semantics:** Invokes `RenewLease` for `(workerId, jobId)`, pushing `lease_expires_at` forward by 30 seconds.
+   - **Returns:**
+     - `200 OK` with `{ "renewed": true, "jobId": string, "workerId": string, "leaseExpiresAt": timestamp }`.
+     - `409 Conflict` if the lease was lost, expired, or claimed by another worker (`ErrLeaseLost`, `ErrLeaseExpired`, `ErrJobNotFound`). External worker must abort execution immediately upon receiving `409`.
+
+5. **Job Completion / Ack (`POST /workers/:id/jobs/:jobId/complete`)**
+   - **Payload:** `{ "result"?: json.RawMessage }`.
+   - **Semantics:** Invokes `MarkJobSucceeded` to close attempt with `outcome = 'succeeded'` and set job `status = 'succeeded'`. Increments `workers.total_processed`.
+   - **Returns:**
+     - `200 OK` with `{ "completed": true, "jobId": string, "workerId": string, "status": "succeeded" }`.
+     - `404 Not Found` if job does not exist.
+     - `409 Conflict` if lease was lost or expired. Emits SSE invalidation `["workers", "jobs", "stats"]`.
+
+6. **Job Failure / Nack (`POST /workers/:id/jobs/:jobId/fail`)**
+   - **Payload:** `{ "errorClass"?: string, "message": string, "stackTrace"?: string, "permanent": bool }` (also accepts nested `error` object).
+   - **Semantics:** Invokes `MarkJobFailed`. If `permanent = true` or `attempt >= maxAttempts`, transitions job to `dead_lettered`; otherwise transitions to `failed` and schedules retry according to backoff policy. Increments `workers.total_processed`.
+   - **Returns:**
+     - `200 OK` with `{ "failed": true, "jobId": string, "workerId": string, "status": string, "permanent": bool, "terminal": bool }`.
+     - `404 Not Found` if job does not exist.
+     - `409 Conflict` if lease was lost or expired. Emits SSE invalidation `["workers", "jobs", "stats"]`.
+
+### 4.13 Parallel Worker Concurrency & Execution Pools
+
+1. **Concurrency Pool Bounding:** Workers implement bounded concurrency pools using counting semaphores sized to `maxConcurrency`.
+2. **Pre-Claim Acquisition Invariant:** Workers acquire a concurrency semaphore slot *prior* to issuing `ClaimNextJob`. This prevents hoarding database leases for jobs that cannot be executed immediately.
+3. **Graceful Drain on Shutdown:** Upon receiving shutdown signals (`SIGINT`, `SIGTERM`), the worker ceases polling for new work, maintains the worker heartbeat loop to keep active leases valid, and drains active concurrency slots until in-flight jobs complete their ack/nack cycle (or a graceful drain timeout expires), before deregistering as `disconnected`.
+
 ---
 
 ## 5. Reclaim

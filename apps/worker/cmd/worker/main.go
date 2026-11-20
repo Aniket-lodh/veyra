@@ -31,7 +31,7 @@ const (
 	pollInterval          = 1 * time.Second
 	simulatedExecution    = 5 * time.Second
 	defaultFailurePercent = 20 // rand.IntN(100) < n → simulated nack. Override via VEYRA_WORKER_FAILURE_PERCENT for soak storms.
-	maxConcurrency        = 1  // advertised on the workers row; one job at a time
+	defaultMaxConcurrency = 1  // default max concurrent jobs
 
 	dbPingTimeout = 5 * time.Second
 )
@@ -52,6 +52,7 @@ func main() {
 	databaseURL := loadDatabaseURL()
 	queues := loadCSV("VEYRA_WORKER_QUEUES", []string{"default"})
 	failurePercent := loadFailurePercent()
+	maxConcurrency := loadMaxConcurrency()
 
 	// The handler registry is the worker's static set of executable handlers, built once here before Run.
 	registry := handler.NewRegistry()
@@ -186,6 +187,26 @@ func loadFailurePercent() int {
 	default:
 		return n
 	}
+}
+
+// loadMaxConcurrency reads VEYRA_WORKER_MAX_CONCURRENCY and clamps it to >= 1.
+func loadMaxConcurrency() int {
+	raw := strings.TrimSpace(os.Getenv("VEYRA_WORKER_MAX_CONCURRENCY"))
+	if raw == "" {
+		return defaultMaxConcurrency
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		slog.Warn("config.max_concurrency.invalid",
+			"value", raw, "fallback", defaultMaxConcurrency,
+			"err", err.Error(),
+		)
+		return defaultMaxConcurrency
+	}
+	if n < 1 {
+		return 1
+	}
+	return n
 }
 
 func loadCSV(key string, def []string) []string {

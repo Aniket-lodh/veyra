@@ -20,6 +20,12 @@ import (
 type mockWorkerStore struct {
 	queryWorkersFunc     func(ctx context.Context) ([]workerResponse, error)
 	getWorkerFunc        func(ctx context.Context, id string) (*workerResponse, error)
+	registerWorkerFunc   func(ctx context.Context, p registerWorkerParams) (*workerResponse, error)
+	heartbeatWorkerFunc  func(ctx context.Context, id string) (*heartbeatResponse, error)
+	claimJobFunc         func(ctx context.Context, id string, queues, handlers []string) (*queuecore.Job, error)
+	renewJobLeaseFunc    func(ctx context.Context, workerID, jobID string) (*queuecore.Job, error)
+	completeJobFunc      func(ctx context.Context, workerID, jobID string, result json.RawMessage) (*queuecore.Job, error)
+	failJobFunc          func(ctx context.Context, workerID, jobID string, jerr queuecore.JobError, permanent bool) (*queuecore.Job, error)
 	releaseLeaseFunc     func(ctx context.Context, workerID, jobID string) error
 	drainWorkerFunc      func(ctx context.Context, id string) (*workerResponse, error)
 	cordonWorkerFunc     func(ctx context.Context, id string) (*workerResponse, error)
@@ -39,6 +45,48 @@ func (m *mockWorkerStore) GetWorker(ctx context.Context, id string) (*workerResp
 		return m.getWorkerFunc(ctx, id)
 	}
 	return nil, ErrWorkerNotFound
+}
+
+func (m *mockWorkerStore) RegisterWorker(ctx context.Context, p registerWorkerParams) (*workerResponse, error) {
+	if m.registerWorkerFunc != nil {
+		return m.registerWorkerFunc(ctx, p)
+	}
+	return nil, ErrWorkerNotFound
+}
+
+func (m *mockWorkerStore) HeartbeatWorker(ctx context.Context, id string) (*heartbeatResponse, error) {
+	if m.heartbeatWorkerFunc != nil {
+		return m.heartbeatWorkerFunc(ctx, id)
+	}
+	return nil, ErrWorkerNotFound
+}
+
+func (m *mockWorkerStore) ClaimJob(ctx context.Context, id string, queues, handlers []string) (*queuecore.Job, error) {
+	if m.claimJobFunc != nil {
+		return m.claimJobFunc(ctx, id, queues, handlers)
+	}
+	return nil, nil
+}
+
+func (m *mockWorkerStore) RenewJobLease(ctx context.Context, workerID, jobID string) (*queuecore.Job, error) {
+	if m.renewJobLeaseFunc != nil {
+		return m.renewJobLeaseFunc(ctx, workerID, jobID)
+	}
+	return nil, queuecore.ErrLeaseLost
+}
+
+func (m *mockWorkerStore) CompleteJob(ctx context.Context, workerID, jobID string, result json.RawMessage) (*queuecore.Job, error) {
+	if m.completeJobFunc != nil {
+		return m.completeJobFunc(ctx, workerID, jobID, result)
+	}
+	return nil, queuecore.ErrJobNotFound
+}
+
+func (m *mockWorkerStore) FailJob(ctx context.Context, workerID, jobID string, jerr queuecore.JobError, permanent bool) (*queuecore.Job, error) {
+	if m.failJobFunc != nil {
+		return m.failJobFunc(ctx, workerID, jobID, jerr, permanent)
+	}
+	return nil, queuecore.ErrJobNotFound
 }
 
 func (m *mockWorkerStore) ReleaseLease(ctx context.Context, workerID, jobID string) error {
@@ -91,7 +139,13 @@ func setupTestApp(store workerStore, broadcaster eventBroadcaster, authn *auth.A
 		Register(app, h, authn)
 	} else {
 		app.Get("/workers", h.List)
+		app.Post("/workers/register", h.RegisterWorker)
 		app.Get("/workers/:id", h.GetByID)
+		app.Post("/workers/:id/heartbeat", h.Heartbeat)
+		app.Post("/workers/:id/claim", h.Claim)
+		app.Post("/workers/:id/jobs/:jobId/heartbeat", h.RenewJobLease)
+		app.Post("/workers/:id/jobs/:jobId/complete", h.CompleteJob)
+		app.Post("/workers/:id/jobs/:jobId/fail", h.FailJob)
 		app.Post("/workers/:id/leases/:jobId/release", h.ReleaseLease)
 		app.Post("/workers/:id/drain", h.Drain)
 		app.Post("/workers/:id/cordon", h.Cordon)
@@ -799,5 +853,453 @@ func TestDeregister_NotFound(t *testing.T) {
 
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("expected 404 Not Found, got %d", resp.StatusCode)
+	}
+}
+
+func TestRegisterWorker_Success(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	broadcaster := &mockBroadcaster{}
+	store := &mockWorkerStore{
+		registerWorkerFunc: func(ctx context.Context, p registerWorkerParams) (*workerResponse, error) {
+			return &workerResponse{
+				ID:                       p.ID,
+				Hostname:                 p.Hostname,
+				PID:                      p.PID,
+				Version:                  p.Version,
+				State:                    "active",
+				StartedAt:                now,
+				LastHeartbeatAt:          now,
+				HeartbeatIntervalSeconds: p.HeartbeatIntervalSeconds,
+				Queues:                   p.Queues,
+				Handlers:                 p.Handlers,
+				MaxConcurrency:           p.MaxConcurrency,
+			}, nil
+		},
+	}
+	app, _ := setupTestApp(store, broadcaster, nil)
+
+	body := `{"id":"01EXTWORKER1","hostname":"ext-node-1","queues":["default"],"handlers":["send_email"],"maxConcurrency":5}`
+	req := httptest.NewRequest(http.MethodPost, "/workers/register", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", resp.StatusCode)
+	}
+
+	var w workerResponse
+	if err := json.NewDecoder(resp.Body).Decode(&w); err != nil {
+		t.Fatal(err)
+	}
+	if w.ID != "01EXTWORKER1" || w.MaxConcurrency != 5 || w.State != "active" {
+		t.Fatalf("unexpected worker: %+v", w)
+	}
+	if len(broadcaster.dirty) == 0 {
+		t.Fatal("expected broadcaster dirty event")
+	}
+}
+
+func TestRegisterWorker_ValidationErrors(t *testing.T) {
+	t.Parallel()
+
+	app, _ := setupTestApp(&mockWorkerStore{}, nil, nil)
+
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"empty body", `{}`},
+		{"missing queues", `{"handlers":["h1"],"maxConcurrency":1}`},
+		{"empty queues", `{"queues":[],"handlers":["h1"],"maxConcurrency":1}`},
+		{"missing handlers", `{"queues":["q1"],"maxConcurrency":1}`},
+		{"empty handlers", `{"queues":["q1"],"handlers":[],"maxConcurrency":1}`},
+		{"zero concurrency", `{"queues":["q1"],"handlers":["h1"],"maxConcurrency":0}`},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			req := httptest.NewRequest(http.MethodPost, "/workers/register", strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := app.Test(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("[%s] expected 400 Bad Request, got %d", tc.name, resp.StatusCode)
+			}
+		})
+	}
+}
+
+func TestHeartbeatWorker_Success(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	store := &mockWorkerStore{
+		heartbeatWorkerFunc: func(ctx context.Context, id string) (*heartbeatResponse, error) {
+			if id == "01WORKER1" {
+				return &heartbeatResponse{
+					ID:              id,
+					State:           "active",
+					LastHeartbeatAt: now,
+				}, nil
+			}
+			return nil, ErrWorkerNotFound
+		},
+	}
+	app, _ := setupTestApp(store, nil, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/workers/01WORKER1/heartbeat", nil)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", resp.StatusCode)
+	}
+
+	var hb heartbeatResponse
+	if err := json.NewDecoder(resp.Body).Decode(&hb); err != nil {
+		t.Fatal(err)
+	}
+	if hb.ID != "01WORKER1" || hb.State != "active" {
+		t.Fatalf("unexpected heartbeat response: %+v", hb)
+	}
+}
+
+func TestHeartbeatWorker_NotFound(t *testing.T) {
+	t.Parallel()
+
+	store := &mockWorkerStore{
+		heartbeatWorkerFunc: func(ctx context.Context, id string) (*heartbeatResponse, error) {
+			return nil, ErrWorkerNotFound
+		},
+	}
+	app, _ := setupTestApp(store, nil, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/workers/nonexistent/heartbeat", nil)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 Not Found, got %d", resp.StatusCode)
+	}
+}
+
+func TestClaimJob_Success(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	leaseExp := now.Add(30 * time.Second)
+	broadcaster := &mockBroadcaster{}
+	store := &mockWorkerStore{
+		claimJobFunc: func(ctx context.Context, id string, queues, handlers []string) (*queuecore.Job, error) {
+			return &queuecore.Job{
+				ID:             "01JOB1",
+				Queue:          "default",
+				Handler:        "send_email",
+				Status:         queuecore.StatusRunning,
+				Attempt:        1,
+				MaxAttempts:    3,
+				Priority:       5,
+				Payload:        json.RawMessage(`{"to":"test@example.com"}`),
+				LeaseExpiresAt: &leaseExp,
+				StartedAt:      &now,
+				EnqueuedAt:     now,
+			}, nil
+		},
+	}
+	app, _ := setupTestApp(store, broadcaster, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/workers/01WORKER1/claim", strings.NewReader(`{"queues":["default"]}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", resp.StatusCode)
+	}
+
+	var j jobClaimResponse
+	if err := json.NewDecoder(resp.Body).Decode(&j); err != nil {
+		t.Fatal(err)
+	}
+	if j.ID != "01JOB1" || j.LeaseExpiresAt == nil {
+		t.Fatalf("unexpected claim response: %+v", j)
+	}
+	if len(broadcaster.dirty) == 0 {
+		t.Fatal("expected broadcaster dirty event")
+	}
+}
+
+func TestClaimJob_NoContent(t *testing.T) {
+	t.Parallel()
+
+	store := &mockWorkerStore{
+		claimJobFunc: func(ctx context.Context, id string, queues, handlers []string) (*queuecore.Job, error) {
+			return nil, nil // No runnable jobs
+		},
+	}
+	app, _ := setupTestApp(store, nil, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/workers/01WORKER1/claim", nil)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204 No Content, got %d", resp.StatusCode)
+	}
+}
+
+func TestClaimJob_WorkerNotFound(t *testing.T) {
+	t.Parallel()
+
+	store := &mockWorkerStore{
+		claimJobFunc: func(ctx context.Context, id string, queues, handlers []string) (*queuecore.Job, error) {
+			return nil, ErrWorkerNotFound
+		},
+	}
+	app, _ := setupTestApp(store, nil, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/workers/nonexistent/claim", nil)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 Not Found, got %d", resp.StatusCode)
+	}
+}
+
+func TestRenewJobLease_Success(t *testing.T) {
+	t.Parallel()
+
+	leaseExp := time.Now().UTC().Add(30 * time.Second)
+	store := &mockWorkerStore{
+		renewJobLeaseFunc: func(ctx context.Context, workerID, jobID string) (*queuecore.Job, error) {
+			return &queuecore.Job{
+				ID:             jobID,
+				LeaseExpiresAt: &leaseExp,
+			}, nil
+		},
+	}
+	app, _ := setupTestApp(store, nil, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/workers/01WORKER1/jobs/01JOB1/heartbeat", nil)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", resp.StatusCode)
+	}
+
+	var res map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		t.Fatal(err)
+	}
+	if res["renewed"] != true || res["jobId"] != "01JOB1" {
+		t.Fatalf("unexpected renewal response: %+v", res)
+	}
+}
+
+func TestRenewJobLease_Conflict(t *testing.T) {
+	t.Parallel()
+
+	store := &mockWorkerStore{
+		renewJobLeaseFunc: func(ctx context.Context, workerID, jobID string) (*queuecore.Job, error) {
+			return nil, queuecore.ErrLeaseLost
+		},
+	}
+	app, _ := setupTestApp(store, nil, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/workers/01WORKER1/jobs/01JOB1/heartbeat", nil)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict, got %d", resp.StatusCode)
+	}
+}
+
+func TestCompleteJob_Success(t *testing.T) {
+	t.Parallel()
+
+	broadcaster := &mockBroadcaster{}
+	store := &mockWorkerStore{
+		completeJobFunc: func(ctx context.Context, workerID, jobID string, result json.RawMessage) (*queuecore.Job, error) {
+			return &queuecore.Job{
+				ID:     jobID,
+				Status: queuecore.StatusSucceeded,
+			}, nil
+		},
+	}
+	app, _ := setupTestApp(store, broadcaster, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/workers/01WORKER1/jobs/01JOB1/complete", strings.NewReader(`{"result":{"status":"ok"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", resp.StatusCode)
+	}
+
+	var res map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		t.Fatal(err)
+	}
+	if res["completed"] != true || res["status"] != "succeeded" {
+		t.Fatalf("unexpected complete response: %+v", res)
+	}
+	if len(broadcaster.dirty) == 0 {
+		t.Fatal("expected broadcaster dirty event")
+	}
+}
+
+func TestCompleteJob_Conflict(t *testing.T) {
+	t.Parallel()
+
+	store := &mockWorkerStore{
+		completeJobFunc: func(ctx context.Context, workerID, jobID string, result json.RawMessage) (*queuecore.Job, error) {
+			return nil, queuecore.ErrLeaseExpired
+		},
+	}
+	app, _ := setupTestApp(store, nil, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/workers/01WORKER1/jobs/01JOB1/complete", nil)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict, got %d", resp.StatusCode)
+	}
+}
+
+func TestFailJob_Success(t *testing.T) {
+	t.Parallel()
+
+	broadcaster := &mockBroadcaster{}
+	store := &mockWorkerStore{
+		failJobFunc: func(ctx context.Context, workerID, jobID string, jerr queuecore.JobError, permanent bool) (*queuecore.Job, error) {
+			return &queuecore.Job{
+				ID:     jobID,
+				Status: queuecore.StatusFailed,
+			}, nil
+		},
+	}
+	app, _ := setupTestApp(store, broadcaster, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/workers/01WORKER1/jobs/01JOB1/fail", strings.NewReader(`{"errorClass":"NetworkErr","message":"timeout","permanent":false}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", resp.StatusCode)
+	}
+
+	var res map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		t.Fatal(err)
+	}
+	if res["failed"] != true || res["status"] != "failed" || res["permanent"] != false {
+		t.Fatalf("unexpected fail response: %+v", res)
+	}
+	if len(broadcaster.dirty) == 0 {
+		t.Fatal("expected broadcaster dirty event")
+	}
+}
+
+func TestFailJob_PermanentDeadLetter(t *testing.T) {
+	t.Parallel()
+
+	store := &mockWorkerStore{
+		failJobFunc: func(ctx context.Context, workerID, jobID string, jerr queuecore.JobError, permanent bool) (*queuecore.Job, error) {
+			return &queuecore.Job{
+				ID:     jobID,
+				Status: queuecore.StatusDeadLettered,
+			}, nil
+		},
+	}
+	app, _ := setupTestApp(store, nil, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/workers/01WORKER1/jobs/01JOB1/fail", strings.NewReader(`{"error":{"class":"InvalidData","message":"bad format"},"permanent":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", resp.StatusCode)
+	}
+
+	var res map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		t.Fatal(err)
+	}
+	if res["failed"] != true || res["status"] != "dead_lettered" || res["permanent"] != true || res["terminal"] != true {
+		t.Fatalf("unexpected fail response: %+v", res)
+	}
+}
+
+func TestWorkerRoutes_AuthScopeEnforcement(t *testing.T) {
+	t.Parallel()
+
+	store := &mockWorkerStore{
+		registerWorkerFunc: func(ctx context.Context, p registerWorkerParams) (*workerResponse, error) {
+			return &workerResponse{ID: "w1"}, nil
+		},
+	}
+	authn := &auth.Authenticator{Store: auth.NewStore(nil)}
+	app, _ := setupTestApp(store, nil, authn)
+
+	// Subtest 1: Unauthenticated -> 401
+	req1 := httptest.NewRequest(http.MethodPost, "/workers/register", strings.NewReader(`{"queues":["q"],"handlers":["h"],"maxConcurrency":1}`))
+	req1.Header.Set("Content-Type", "application/json")
+	resp1, err := app.Test(req1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp1.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized, got %d", resp1.StatusCode)
 	}
 }

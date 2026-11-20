@@ -34,6 +34,18 @@ func (p Principal) HasAllScopes(want ...string) bool {
 	return true
 }
 
+func (p Principal) HasAnyScope(want ...string) bool {
+	if p.Kind == "session" && p.Role == RoleAdmin {
+		return true
+	}
+	for _, w := range want {
+		if p.HasScope(w) {
+			return true
+		}
+	}
+	return false
+}
+
 type User struct {
 	ID        string    `json:"id"`
 	Email     string    `json:"email"`

@@ -3,6 +3,7 @@ package workers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -13,6 +14,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/oklog/ulid/v2"
 
 	"github.com/Aniket-lodh/veyra/api/internal/auth"
 	queuecore "github.com/Aniket-lodh/veyra/queue-core"
@@ -34,6 +36,12 @@ type eventBroadcaster interface {
 type workerStore interface {
 	QueryWorkers(ctx context.Context) ([]workerResponse, error)
 	GetWorker(ctx context.Context, id string) (*workerResponse, error)
+	RegisterWorker(ctx context.Context, p registerWorkerParams) (*workerResponse, error)
+	HeartbeatWorker(ctx context.Context, id string) (*heartbeatResponse, error)
+	ClaimJob(ctx context.Context, id string, queues, handlers []string) (*queuecore.Job, error)
+	RenewJobLease(ctx context.Context, workerID, jobID string) (*queuecore.Job, error)
+	CompleteJob(ctx context.Context, workerID, jobID string, result json.RawMessage) (*queuecore.Job, error)
+	FailJob(ctx context.Context, workerID, jobID string, jerr queuecore.JobError, permanent bool) (*queuecore.Job, error)
 	ReleaseLease(ctx context.Context, workerID, jobID string) error
 	DrainWorker(ctx context.Context, id string) (*workerResponse, error)
 	CordonWorker(ctx context.Context, id string) (*workerResponse, error)
@@ -73,15 +81,21 @@ func newHandlerWithStore(store workerStore, broadcaster eventBroadcaster) *Handl
 // Register mounts worker read and lifecycle endpoints.
 func Register(app *fiber.App, h *Handler, authn *auth.Authenticator) {
 	app.Get("/workers", authn.Require(auth.ScopeQueueRead), h.List)
+	app.Post("/workers/register", authn.RequireAny(auth.ScopeWorkersWrite, auth.ScopeJobsWrite), h.RegisterWorker)
 	app.Get("/workers/:id", authn.Require(auth.ScopeQueueRead), h.GetByID)
-	app.Post("/workers/:id/leases/:jobId/release", authn.Require(auth.ScopeJobsWrite), h.ReleaseLease)
-	app.Post("/workers/:id/drain", authn.Require(auth.ScopeJobsWrite), h.Drain)
-	app.Post("/workers/:id/cordon", authn.Require(auth.ScopeJobsWrite), h.Cordon)
-	app.Patch("/workers/:id/cordon", authn.Require(auth.ScopeJobsWrite), h.Cordon)
-	app.Post("/workers/:id/resume", authn.Require(auth.ScopeJobsWrite), h.Resume)
-	app.Patch("/workers/:id/resume", authn.Require(auth.ScopeJobsWrite), h.Resume)
-	app.Delete("/workers/:id", authn.Require(auth.ScopeJobsWrite), h.Deregister)
-	app.Post("/workers/:id/deregister", authn.Require(auth.ScopeJobsWrite), h.Deregister)
+	app.Post("/workers/:id/heartbeat", authn.RequireAny(auth.ScopeWorkersWrite, auth.ScopeJobsWrite), h.Heartbeat)
+	app.Post("/workers/:id/claim", authn.RequireAny(auth.ScopeWorkersWrite, auth.ScopeJobsWrite), h.Claim)
+	app.Post("/workers/:id/jobs/:jobId/heartbeat", authn.RequireAny(auth.ScopeWorkersWrite, auth.ScopeJobsWrite), h.RenewJobLease)
+	app.Post("/workers/:id/jobs/:jobId/complete", authn.RequireAny(auth.ScopeWorkersWrite, auth.ScopeJobsWrite), h.CompleteJob)
+	app.Post("/workers/:id/jobs/:jobId/fail", authn.RequireAny(auth.ScopeWorkersWrite, auth.ScopeJobsWrite), h.FailJob)
+	app.Post("/workers/:id/leases/:jobId/release", authn.RequireAny(auth.ScopeWorkersWrite, auth.ScopeJobsWrite), h.ReleaseLease)
+	app.Post("/workers/:id/drain", authn.RequireAny(auth.ScopeWorkersWrite, auth.ScopeJobsWrite), h.Drain)
+	app.Post("/workers/:id/cordon", authn.RequireAny(auth.ScopeWorkersWrite, auth.ScopeJobsWrite), h.Cordon)
+	app.Patch("/workers/:id/cordon", authn.RequireAny(auth.ScopeWorkersWrite, auth.ScopeJobsWrite), h.Cordon)
+	app.Post("/workers/:id/resume", authn.RequireAny(auth.ScopeWorkersWrite, auth.ScopeJobsWrite), h.Resume)
+	app.Patch("/workers/:id/resume", authn.RequireAny(auth.ScopeWorkersWrite, auth.ScopeJobsWrite), h.Resume)
+	app.Delete("/workers/:id", authn.RequireAny(auth.ScopeWorkersWrite, auth.ScopeJobsWrite), h.Deregister)
+	app.Post("/workers/:id/deregister", authn.RequireAny(auth.ScopeWorkersWrite, auth.ScopeJobsWrite), h.Deregister)
 }
 
 // leaseResponse mirrors the frontend WorkerLease interface.
@@ -110,6 +124,354 @@ type workerResponse struct {
 	InFlight                 int             `json:"inFlight"`
 	TotalProcessed           int64           `json:"totalProcessed"`
 	Leases                   []leaseResponse `json:"leases"`
+}
+
+type registerWorkerParams struct {
+	ID                       string
+	Hostname                 string
+	PID                      int
+	Version                  string
+	Queues                   []string
+	Handlers                 []string
+	MaxConcurrency           int
+	HeartbeatIntervalSeconds int
+}
+
+type registerWorkerRequest struct {
+	ID                       string   `json:"id"`
+	Hostname                 string   `json:"hostname"`
+	PID                      int      `json:"pid"`
+	Version                  string   `json:"version"`
+	Queues                   []string `json:"queues"`
+	Handlers                 []string `json:"handlers"`
+	MaxConcurrency           int      `json:"maxConcurrency"`
+	HeartbeatIntervalSeconds int      `json:"heartbeatIntervalSeconds"`
+}
+
+type heartbeatResponse struct {
+	ID              string    `json:"id"`
+	State           string    `json:"state"`
+	LastHeartbeatAt time.Time `json:"lastHeartbeatAt"`
+}
+
+type claimRequest struct {
+	Queues   []string `json:"queues"`
+	Handlers []string `json:"handlers"`
+}
+
+type jobClaimResponse struct {
+	ID             string          `json:"id"`
+	Queue          string          `json:"queue"`
+	Handler        string          `json:"handler"`
+	Status         string          `json:"status"`
+	Attempt        int             `json:"attempt"`
+	MaxAttempts    int             `json:"maxAttempts"`
+	Priority       int             `json:"priority"`
+	Payload        json.RawMessage `json:"payload"`
+	LeaseExpiresAt *time.Time      `json:"leaseExpiresAt"`
+	StartedAt      *time.Time      `json:"startedAt"`
+	EnqueuedAt     time.Time       `json:"enqueuedAt"`
+}
+
+func toJobClaimResponse(j *queuecore.Job) jobClaimResponse {
+	return jobClaimResponse{
+		ID:             j.ID,
+		Queue:          j.Queue,
+		Handler:        j.Handler,
+		Status:         string(j.Status),
+		Attempt:        j.Attempt,
+		MaxAttempts:    j.MaxAttempts,
+		Priority:       j.Priority,
+		Payload:        j.Payload,
+		LeaseExpiresAt: j.LeaseExpiresAt,
+		StartedAt:      j.StartedAt,
+		EnqueuedAt:     j.EnqueuedAt,
+	}
+}
+
+type completeJobRequest struct {
+	Result json.RawMessage `json:"result,omitempty"`
+}
+
+type failJobRequest struct {
+	ErrorClass string `json:"errorClass"`
+	Message    string `json:"message"`
+	StackTrace string `json:"stackTrace"`
+	Permanent  bool   `json:"permanent"`
+	Error      *struct {
+		Class      string `json:"class"`
+		Message    string `json:"message"`
+		StackTrace string `json:"stackTrace"`
+	} `json:"error"`
+}
+
+// RegisterWorker handles POST /workers/register.
+func (h *Handler) RegisterWorker(c fiber.Ctx) error {
+	var req registerWorkerRequest
+	if err := json.Unmarshal(c.Body(), &req); err != nil {
+		return badRequest(c, "invalid JSON body: "+err.Error())
+	}
+
+	req.Hostname = strings.TrimSpace(req.Hostname)
+	if req.Hostname == "" {
+		req.Hostname = "external"
+	}
+	req.Version = strings.TrimSpace(req.Version)
+	if req.Version == "" {
+		req.Version = "1.0.0"
+	}
+	if req.HeartbeatIntervalSeconds <= 0 {
+		req.HeartbeatIntervalSeconds = 10
+	}
+	if req.MaxConcurrency < 1 {
+		return badRequest(c, "maxConcurrency must be at least 1")
+	}
+	if len(req.Queues) == 0 {
+		return badRequest(c, "queues must be a non-empty array")
+	}
+	if len(req.Handlers) == 0 {
+		return badRequest(c, "handlers must be a non-empty array")
+	}
+	req.ID = strings.TrimSpace(req.ID)
+	if req.ID == "" {
+		req.ID = ulid.Make().String()
+	}
+
+	ctx := c.Context()
+	worker, err := h.store.RegisterWorker(ctx, registerWorkerParams(req))
+	if err != nil {
+		return internalError(c, err)
+	}
+
+	slog.InfoContext(ctx, "workers.registered",
+		"event", "workers.registered",
+		"workerId", worker.ID,
+		"hostname", worker.Hostname,
+		"queues", worker.Queues,
+		"handlers", worker.Handlers,
+		"maxConcurrency", worker.MaxConcurrency,
+	)
+
+	if h.broadcaster != nil {
+		h.broadcaster.MarkDirty("workers", "stats")
+	}
+
+	return c.JSON(worker)
+}
+
+// Heartbeat handles POST /workers/:id/heartbeat.
+func (h *Handler) Heartbeat(c fiber.Ctx) error {
+	id, err := parseWorkerID(c)
+	if err != nil {
+		return badRequest(c, err.Error())
+	}
+
+	ctx := c.Context()
+	hb, err := h.store.HeartbeatWorker(ctx, id)
+	if err != nil {
+		if errors.Is(err, ErrWorkerNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "worker not found"})
+		}
+		return internalError(c, err)
+	}
+
+	return c.JSON(hb)
+}
+
+// Claim handles POST /workers/:id/claim.
+func (h *Handler) Claim(c fiber.Ctx) error {
+	id, err := parseWorkerID(c)
+	if err != nil {
+		return badRequest(c, err.Error())
+	}
+
+	var req claimRequest
+	if len(c.Body()) > 0 {
+		if err := json.Unmarshal(c.Body(), &req); err != nil {
+			return badRequest(c, "invalid JSON body: "+err.Error())
+		}
+	}
+
+	ctx := c.Context()
+	job, err := h.store.ClaimJob(ctx, id, req.Queues, req.Handlers)
+	if err != nil {
+		if errors.Is(err, ErrWorkerNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "worker not found"})
+		}
+		if strings.Contains(err.Error(), "no queues or handlers") {
+			return badRequest(c, err.Error())
+		}
+		return internalError(c, err)
+	}
+
+	if job == nil {
+		return c.Status(fiber.StatusNoContent).Send(nil)
+	}
+
+	if h.broadcaster != nil {
+		h.broadcaster.MarkDirty("workers", "jobs", "stats")
+	}
+
+	return c.JSON(toJobClaimResponse(job))
+}
+
+// RenewJobLease handles POST /workers/:id/jobs/:jobId/heartbeat.
+func (h *Handler) RenewJobLease(c fiber.Ctx) error {
+	id, err := parseWorkerID(c)
+	if err != nil {
+		return badRequest(c, err.Error())
+	}
+
+	rawJobID := c.Params("jobId")
+	jobID, err := url.PathUnescape(rawJobID)
+	if err != nil {
+		jobID = rawJobID
+	}
+	jobID = strings.TrimSpace(jobID)
+	if jobID == "" {
+		return badRequest(c, "job id is required")
+	}
+
+	ctx := c.Context()
+	job, err := h.store.RenewJobLease(ctx, id, jobID)
+	if err != nil {
+		if errors.Is(err, queuecore.ErrLeaseLost) || errors.Is(err, queuecore.ErrLeaseExpired) || errors.Is(err, queuecore.ErrJobNotFound) || errors.Is(err, queuecore.ErrLeaseConflict) {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+				"error": "lease lost or expired",
+			})
+		}
+		return internalError(c, err)
+	}
+
+	return c.JSON(fiber.Map{
+		"renewed":        true,
+		"jobId":          job.ID,
+		"workerId":       id,
+		"leaseExpiresAt": job.LeaseExpiresAt,
+	})
+}
+
+// CompleteJob handles POST /workers/:id/jobs/:jobId/complete.
+func (h *Handler) CompleteJob(c fiber.Ctx) error {
+	id, err := parseWorkerID(c)
+	if err != nil {
+		return badRequest(c, err.Error())
+	}
+
+	rawJobID := c.Params("jobId")
+	jobID, err := url.PathUnescape(rawJobID)
+	if err != nil {
+		jobID = rawJobID
+	}
+	jobID = strings.TrimSpace(jobID)
+	if jobID == "" {
+		return badRequest(c, "job id is required")
+	}
+
+	var req completeJobRequest
+	if len(c.Body()) > 0 {
+		if err := json.Unmarshal(c.Body(), &req); err != nil {
+			return badRequest(c, "invalid JSON body: "+err.Error())
+		}
+	}
+
+	ctx := c.Context()
+	job, err := h.store.CompleteJob(ctx, id, jobID, req.Result)
+	if err != nil {
+		if errors.Is(err, queuecore.ErrJobNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "job not found"})
+		}
+		if errors.Is(err, queuecore.ErrLeaseLost) || errors.Is(err, queuecore.ErrLeaseExpired) || errors.Is(err, queuecore.ErrLeaseConflict) {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+				"error": "lease lost or expired",
+			})
+		}
+		return internalError(c, err)
+	}
+
+	if h.broadcaster != nil {
+		h.broadcaster.MarkDirty("workers", "jobs", "stats")
+	}
+
+	return c.JSON(fiber.Map{
+		"completed": true,
+		"jobId":     job.ID,
+		"workerId":  id,
+		"status":    string(job.Status),
+	})
+}
+
+// FailJob handles POST /workers/:id/jobs/:jobId/fail.
+func (h *Handler) FailJob(c fiber.Ctx) error {
+	id, err := parseWorkerID(c)
+	if err != nil {
+		return badRequest(c, err.Error())
+	}
+
+	rawJobID := c.Params("jobId")
+	jobID, err := url.PathUnescape(rawJobID)
+	if err != nil {
+		jobID = rawJobID
+	}
+	jobID = strings.TrimSpace(jobID)
+	if jobID == "" {
+		return badRequest(c, "job id is required")
+	}
+
+	var req failJobRequest
+	if err := json.Unmarshal(c.Body(), &req); err != nil {
+		return badRequest(c, "invalid JSON body: "+err.Error())
+	}
+
+	if req.Error != nil {
+		if req.ErrorClass == "" {
+			req.ErrorClass = req.Error.Class
+		}
+		if req.Message == "" {
+			req.Message = req.Error.Message
+		}
+		if req.StackTrace == "" {
+			req.StackTrace = req.Error.StackTrace
+		}
+	}
+	if req.ErrorClass == "" {
+		req.ErrorClass = "HandlerError"
+	}
+	if strings.TrimSpace(req.Message) == "" {
+		return badRequest(c, "error message is required")
+	}
+
+	ctx := c.Context()
+	job, err := h.store.FailJob(ctx, id, jobID, queuecore.JobError{
+		Class:      req.ErrorClass,
+		Message:    req.Message,
+		StackTrace: req.StackTrace,
+		OccurredAt: time.Now().UTC(),
+	}, req.Permanent)
+	if err != nil {
+		if errors.Is(err, queuecore.ErrJobNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "job not found"})
+		}
+		if errors.Is(err, queuecore.ErrLeaseLost) || errors.Is(err, queuecore.ErrLeaseExpired) || errors.Is(err, queuecore.ErrLeaseConflict) {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+				"error": "lease lost or expired",
+			})
+		}
+		return internalError(c, err)
+	}
+
+	if h.broadcaster != nil {
+		h.broadcaster.MarkDirty("workers", "jobs", "stats")
+	}
+
+	return c.JSON(fiber.Map{
+		"failed":    true,
+		"jobId":     job.ID,
+		"workerId":  id,
+		"status":    string(job.Status),
+		"permanent": req.Permanent,
+		"terminal":  job.Status == queuecore.StatusDeadLettered,
+	})
 }
 
 // List handles GET /workers.
@@ -626,6 +988,126 @@ func (s *pgWorkerStore) DeregisterWorker(ctx context.Context, id string) error {
 	}
 
 	return nil
+}
+
+func (s *pgWorkerStore) RegisterWorker(ctx context.Context, p registerWorkerParams) (*workerResponse, error) {
+	const insertSQL = `
+		INSERT INTO workers (
+			id, hostname, pid, version, state,
+			started_at, last_heartbeat_at, heartbeat_interval_seconds,
+			queues, handlers, max_concurrency, total_processed
+		) VALUES (
+			$1, $2, $3, $4, 'active',
+			now(), now(), $5,
+			$6, $7, $8, 0
+		)
+		ON CONFLICT (id) DO UPDATE SET
+			hostname = EXCLUDED.hostname,
+			pid = EXCLUDED.pid,
+			version = EXCLUDED.version,
+			state = 'active',
+			last_heartbeat_at = now(),
+			heartbeat_interval_seconds = EXCLUDED.heartbeat_interval_seconds,
+			queues = EXCLUDED.queues,
+			handlers = EXCLUDED.handlers,
+			max_concurrency = EXCLUDED.max_concurrency
+	`
+	_, err := s.pool.Exec(ctx, insertSQL,
+		p.ID, p.Hostname, p.PID, p.Version, p.HeartbeatIntervalSeconds,
+		p.Queues, p.Handlers, p.MaxConcurrency,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("workers.RegisterWorker: %w", err)
+	}
+	return s.GetWorker(ctx, p.ID)
+}
+
+func (s *pgWorkerStore) HeartbeatWorker(ctx context.Context, id string) (*heartbeatResponse, error) {
+	const sql = `
+		UPDATE workers
+		SET last_heartbeat_at = now()
+		WHERE id = $1 AND state != 'disconnected'
+		RETURNING id, state::text, last_heartbeat_at
+	`
+	var hb heartbeatResponse
+	err := s.pool.QueryRow(ctx, sql, id).Scan(&hb.ID, &hb.State, &hb.LastHeartbeatAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrWorkerNotFound
+		}
+		return nil, fmt.Errorf("workers.HeartbeatWorker: %w", err)
+	}
+	return &hb, nil
+}
+
+func (s *pgWorkerStore) ClaimJob(ctx context.Context, id string, queues, handlers []string) (*queuecore.Job, error) {
+	var (
+		state       string
+		regQueues   []string
+		regHandlers []string
+	)
+	err := s.pool.QueryRow(ctx, "SELECT state::text, queues, handlers FROM workers WHERE id = $1", id).
+		Scan(&state, &regQueues, &regHandlers)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrWorkerNotFound
+		}
+		return nil, fmt.Errorf("workers.ClaimJob: check worker: %w", err)
+	}
+	if state == "disconnected" {
+		return nil, ErrWorkerNotFound
+	}
+	if state == "cordoned" || state == "draining" {
+		return nil, nil
+	}
+
+	claimQueues := queues
+	if len(claimQueues) == 0 {
+		claimQueues = regQueues
+	}
+	claimHandlers := handlers
+	if len(claimHandlers) == 0 {
+		claimHandlers = regHandlers
+	}
+	if len(claimQueues) == 0 || len(claimHandlers) == 0 {
+		return nil, errors.New("no queues or handlers configured for worker")
+	}
+
+	return s.repo.ClaimNextJob(ctx, id, claimQueues, claimHandlers)
+}
+
+func (s *pgWorkerStore) RenewJobLease(ctx context.Context, workerID, jobID string) (*queuecore.Job, error) {
+	return s.repo.RenewLease(ctx, queuecore.RenewParams{
+		WorkerID: workerID,
+		JobID:    jobID,
+	})
+}
+
+func (s *pgWorkerStore) CompleteJob(ctx context.Context, workerID, jobID string, result json.RawMessage) (*queuecore.Job, error) {
+	job, err := s.repo.MarkJobSucceeded(ctx, queuecore.SucceedParams{
+		WorkerID: workerID,
+		JobID:    jobID,
+		Result:   result,
+	})
+	if err != nil {
+		return nil, err
+	}
+	_, _ = s.pool.Exec(ctx, "UPDATE workers SET total_processed = total_processed + 1 WHERE id = $1", workerID)
+	return job, nil
+}
+
+func (s *pgWorkerStore) FailJob(ctx context.Context, workerID, jobID string, jerr queuecore.JobError, permanent bool) (*queuecore.Job, error) {
+	job, err := s.repo.MarkJobFailed(ctx, queuecore.FailParams{
+		WorkerID:  workerID,
+		JobID:     jobID,
+		Error:     jerr,
+		Permanent: permanent,
+	})
+	if err != nil {
+		return nil, err
+	}
+	_, _ = s.pool.Exec(ctx, "UPDATE workers SET total_processed = total_processed + 1 WHERE id = $1", workerID)
+	return job, nil
 }
 
 func badRequest(c fiber.Ctx, msg string) error {

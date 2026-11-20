@@ -884,6 +884,77 @@
         }
       }
     },
+    "/workers/register": {
+      "post": {
+        "tags": [
+          "workers"
+        ],
+        "summary": "Register external worker",
+        "description": "Registers an external worker process with declared queues, handlers, and concurrency over HTTPS without requiring direct database access.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterWorkerRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Registered worker detail",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Worker"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation error (e.g. empty queues/handlers, maxConcurrency < 1)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Insufficient scope (requires workers:write or jobs:write)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/workers/{id}": {
       "get": {
         "tags": [
@@ -1380,6 +1451,456 @@
           },
           "409": {
             "description": "Worker conflict (e.g. disconnected worker)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/workers/{id}/heartbeat": {
+      "post": {
+        "tags": [
+          "workers"
+        ],
+        "summary": "Worker heartbeat",
+        "description": "Updates the worker's last heartbeat timestamp. Returns 404 if worker was swept or disconnected, signaling the worker to re-register.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Worker ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Heartbeat recorded and current worker state returned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkerHeartbeatResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Insufficient scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Worker not found or disconnected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/workers/{id}/claim": {
+      "post": {
+        "tags": [
+          "workers"
+        ],
+        "summary": "Claim next runnable job",
+        "description": "Claims the next available runnable job matching worker's queues and handlers. Returns 204 No Content when no job is available or if worker is cordoned/draining.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Worker ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkerClaimRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Job claimed successfully with active lease",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkerClaimResponse"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "No runnable job available or worker cordoned/draining"
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Insufficient scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Worker not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/workers/{id}/jobs/{jobId}/heartbeat": {
+      "post": {
+        "tags": [
+          "workers"
+        ],
+        "summary": "Renew job lease",
+        "description": "Renews the lease for an in-flight job by 30 seconds. Returns 409 Conflict if lease was lost, expired, or reclaimed.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Worker ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "jobId",
+            "in": "path",
+            "required": true,
+            "description": "Job ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Lease extended successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkerRenewResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Insufficient scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Lease conflict (lost, expired, or claimed by another worker)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/workers/{id}/jobs/{jobId}/complete": {
+      "post": {
+        "tags": [
+          "workers"
+        ],
+        "summary": "Report job completion / success",
+        "description": "Marks the in-flight job succeeded with optional JSON result payload.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Worker ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "jobId",
+            "in": "path",
+            "required": true,
+            "description": "Job ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkerCompleteRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Job marked succeeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkerCompleteResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Insufficient scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Job not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Lease conflict (lost or expired)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/workers/{id}/jobs/{jobId}/fail": {
+      "post": {
+        "tags": [
+          "workers"
+        ],
+        "summary": "Report job failure / error",
+        "description": "Marks the in-flight job failed with errorClass, message, stackTrace, and permanent flag.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Worker ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "jobId",
+            "in": "path",
+            "required": true,
+            "description": "Job ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkerFailRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Job marked failed or dead-lettered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkerFailResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing required fields (e.g. error message)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Insufficient scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Job not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Lease conflict (lost or expired)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2595,6 +3116,277 @@
           "secret": {
             "type": "string",
             "description": "Full Bearer value; shown once"
+          }
+        }
+      },
+      "RegisterWorkerRequest": {
+        "type": "object",
+        "required": [
+          "queues",
+          "handlers",
+          "maxConcurrency"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Optional worker runtime ID (ULID); generated if omitted"
+          },
+          "hostname": {
+            "type": "string",
+            "description": "Worker host or container name",
+            "example": "worker-pool-node-1"
+          },
+          "pid": {
+            "type": "integer",
+            "description": "Process ID",
+            "example": 1234
+          },
+          "version": {
+            "type": "string",
+            "description": "Worker software version",
+            "example": "1.0.0"
+          },
+          "queues": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Queues this worker can pull from",
+            "example": [
+              "default"
+            ]
+          },
+          "handlers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Handlers this worker can execute",
+            "example": [
+              "send_email"
+            ]
+          },
+          "maxConcurrency": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum concurrent jobs this worker runs",
+            "example": 5
+          },
+          "heartbeatIntervalSeconds": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Cadence in seconds between worker heartbeats",
+            "example": 10
+          }
+        }
+      },
+      "WorkerHeartbeatResponse": {
+        "type": "object",
+        "required": [
+          "id",
+          "state",
+          "lastHeartbeatAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "active",
+              "idle",
+              "cordoned",
+              "draining"
+            ]
+          },
+          "lastHeartbeatAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "WorkerClaimRequest": {
+        "type": "object",
+        "properties": {
+          "queues": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "handlers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "WorkerClaimResponse": {
+        "type": "object",
+        "required": [
+          "id",
+          "queue",
+          "handler",
+          "status",
+          "attempt",
+          "maxAttempts",
+          "priority",
+          "payload",
+          "leaseExpiresAt",
+          "startedAt",
+          "enqueuedAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "queue": {
+            "type": "string"
+          },
+          "handler": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "example": "running"
+          },
+          "attempt": {
+            "type": "integer"
+          },
+          "maxAttempts": {
+            "type": "integer"
+          },
+          "priority": {
+            "type": "integer"
+          },
+          "payload": {
+            "type": "object"
+          },
+          "leaseExpiresAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "startedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "enqueuedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "WorkerRenewResponse": {
+        "type": "object",
+        "required": [
+          "renewed",
+          "jobId",
+          "workerId",
+          "leaseExpiresAt"
+        ],
+        "properties": {
+          "renewed": {
+            "type": "boolean",
+            "example": true
+          },
+          "jobId": {
+            "type": "string"
+          },
+          "workerId": {
+            "type": "string"
+          },
+          "leaseExpiresAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "WorkerCompleteRequest": {
+        "type": "object",
+        "properties": {
+          "result": {
+            "type": "object",
+            "description": "Arbitrary JSON execution result"
+          }
+        }
+      },
+      "WorkerCompleteResponse": {
+        "type": "object",
+        "required": [
+          "completed",
+          "jobId",
+          "workerId",
+          "status"
+        ],
+        "properties": {
+          "completed": {
+            "type": "boolean",
+            "example": true
+          },
+          "jobId": {
+            "type": "string"
+          },
+          "workerId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "example": "succeeded"
+          }
+        }
+      },
+      "WorkerFailRequest": {
+        "type": "object",
+        "properties": {
+          "errorClass": {
+            "type": "string",
+            "example": "HandlerError"
+          },
+          "message": {
+            "type": "string",
+            "example": "network timeout"
+          },
+          "stackTrace": {
+            "type": "string"
+          },
+          "permanent": {
+            "type": "boolean",
+            "example": false
+          }
+        }
+      },
+      "WorkerFailResponse": {
+        "type": "object",
+        "required": [
+          "failed",
+          "jobId",
+          "workerId",
+          "status",
+          "permanent",
+          "terminal"
+        ],
+        "properties": {
+          "failed": {
+            "type": "boolean",
+            "example": true
+          },
+          "jobId": {
+            "type": "string"
+          },
+          "workerId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "example": "failed"
+          },
+          "permanent": {
+            "type": "boolean"
+          },
+          "terminal": {
+            "type": "boolean"
           }
         }
       }
