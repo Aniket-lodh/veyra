@@ -1,8 +1,3 @@
-// Cancel primitive — SPEC.md §6.
-//
-// Operator-initiated terminal stop. One implementation; the API handler is
-// the only call site in v1. Cooperative for running jobs: clears lease
-// ownership so the worker's renewer fails and abandons without Ack/Nack.
 package queuecore
 
 import (
@@ -14,19 +9,12 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// CancelParams is the input to Cancel. jobId is required; cancel reason is
-// deferred (SPEC §6.1).
+// CancelParams is the input to Cancel.
 type CancelParams struct {
 	JobID string
 }
 
 // Cancel transitions a job to status='cancelled' per SPEC §6.2.
-//
-//   - queued / failed / running → cancelled (running also closes the open
-//     attempt with outcome='cancelled')
-//   - already cancelled → idempotent success
-//   - succeeded / dead_lettered → ErrNotCancellable
-//   - missing → ErrJobNotFound
 func (r *Repository) Cancel(ctx context.Context, p CancelParams) (*Job, error) {
 	if p.JobID == "" {
 		return nil, errors.New("queuecore.Repository.Cancel: jobID is required")
@@ -110,8 +98,7 @@ func (r *Repository) Cancel(ctx context.Context, p CancelParams) (*Job, error) {
 	updated, err := scanJob(tx.QueryRow(ctx, updateSQL, p.JobID, string(priorStatus)))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			// Row changed under us between lock and update — should not
-			// happen under FOR UPDATE, but treat as not-cancellable race.
+			// Row changed under us between lock and update — should not happen under FOR UPDATE, but treat as not-cancellable race.
 			return nil, ErrNotCancellable
 		}
 		return nil, fmt.Errorf("queuecore.Repository.Cancel: update: %w", err)

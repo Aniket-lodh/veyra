@@ -1,25 +1,16 @@
--- Snapshot of the queue right now. Useful for "what is the system doing"
--- between stress runs.
---
--- Usage:
+-- Queue snapshot for operators.
 --   docker compose exec postgres psql -U veyra veyra -f /dev/stdin < scripts/sql/queue_state.sql
---
--- Sections:
---   1. jobs by status — health-at-a-glance
---   2. in-flight leases — who is doing what and for how long
---   3. lease deadlines coming up — what's about to be reclaim-eligible
---   4. recent dead-letters — the operator's first port of call
 
 \timing on
 \pset null '(null)'
 
--- 1. Jobs by status.
+-- Jobs by status
 SELECT status, COUNT(*) AS n
 FROM jobs
 GROUP BY status
 ORDER BY n DESC;
 
--- 2. In-flight leases (running jobs and who owns them).
+-- In-flight leases
 SELECT
     j.id              AS job_id,
     j.queue,
@@ -35,7 +26,7 @@ WHERE j.status = 'running'
 ORDER BY j.lease_expires_at ASC
 LIMIT 50;
 
--- 3. Lease deadlines within the next 30s — reclaim candidates.
+-- Leases expiring within 30s (reclaim candidates)
 SELECT
     id,
     queue,
@@ -47,7 +38,7 @@ WHERE status = 'running'
   AND lease_expires_at <= now() + INTERVAL '30 seconds'
 ORDER BY lease_expires_at ASC;
 
--- 4. Recent dead-letters.
+-- Recent dead-letters
 SELECT
     id,
     queue,
@@ -62,12 +53,7 @@ WHERE status = 'dead_lettered'
 ORDER BY dead_lettered_at DESC
 LIMIT 20;
 
--- 5. Failures by handler and error class — the "what is failing, and why"
---    aggregate. Covers both still-retrying (failed) and terminal
---    (dead_lettered) jobs, so a class spiking shows up before it exhausts
---    its retry budget, not only after. Ordered by volume so the loudest
---    failure is on top. This is the operator's one-look answer to
---    "which workload is unhealthy, and how".
+-- Failures by handler and error class
 SELECT
     handler,
     status,

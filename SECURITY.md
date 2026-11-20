@@ -23,7 +23,11 @@ prefer otherwise.
 
 ## Scope notes
 
-- Credentials (SMTP, database) belong in environment variables on the worker and
-  API, never in job payloads. Payloads are stored in plain text in Postgres.
-- The `/internal/*` debug routes are for development. The production nginx overlay
-  blocks them. Do not expose them publicly.
+- Credentials (SMTP, database, API keys) belong in environment variables or a
+  secrets manager on the worker and API, never in job payloads. Payloads are
+  stored in plain text in Postgres.
+- **Auth.** Operators use email/password sessions. Machine clients use API keys
+  from the dashboard. Passwords are bcrypt-hashed; API key secrets are stored
+  as SHA-256 digests only. Never put secrets in query strings, frontend builds, or git.
+- The `/internal/*` debug routes require the `debug` scope **and** the production
+  nginx overlay blocks them at the edge. Do not expose them publicly.

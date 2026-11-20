@@ -1,10 +1,8 @@
-// Package jobs is the HTTP layer for queue operations. The Job model and the
-// SQL that drives it live in github.com/Aniket-lodh/veyra/queue-core; this
-// package only wraps queuecore in fiber handlers and the request/response DTOs
-// that match the frozen frontend contract.
+// Package jobs is the HTTP layer for queue operations.
 package jobs
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +14,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/oklog/ulid/v2"
 
+	"github.com/Aniket-lodh/veyra/api/internal/auth"
 	queuecore "github.com/Aniket-lodh/veyra/queue-core"
 )
 
@@ -27,31 +26,33 @@ const (
 	maxListLimit     = 200
 )
 
-// Handler holds the dependencies the job HTTP routes need. Routes register
-// against it via Register so main() stays a wiring file.
-type Handler struct {
-	repo *queuecore.Repository
+type jobRepository interface {
+	Create(ctx context.Context, p queuecore.CreateParams) (*queuecore.Job, error)
+	Cancel(ctx context.Context, p queuecore.CancelParams) (*queuecore.Job, error)
+	GetByID(ctx context.Context, id string) (*queuecore.Job, error)
+	List(ctx context.Context, p queuecore.ListParams) ([]*queuecore.Job, error)
+	Count(ctx context.Context, p queuecore.ListParams) (int, error)
+	ListAttempts(ctx context.Context, jobID string) ([]*queuecore.Attempt, error)
 }
 
-func NewHandler(repo *queuecore.Repository) *Handler {
+// Handler holds the dependencies the job HTTP routes need.
+type Handler struct {
+	repo jobRepository
+}
+
+func NewHandler(repo jobRepository) *Handler {
 	return &Handler{repo: repo}
 }
 
 // Register mounts the job routes on the fiber app.
-func Register(app *fiber.App, h *Handler) {
-	app.Post("/jobs", h.Create)
-	app.Get("/jobs", h.List)
-	app.Get("/jobs/:id", h.GetByID)
-	app.Post("/jobs/:id/cancel", h.Cancel)
+func Register(app *fiber.App, h *Handler, authn *auth.Authenticator) {
+	app.Post("/jobs", authn.Require(auth.ScopeJobsWrite), h.Create)
+	app.Get("/jobs", authn.Require(auth.ScopeJobsRead), h.List)
+	app.Get("/jobs/:id", authn.Require(auth.ScopeJobsRead), h.GetByID)
+	app.Post("/jobs/:id/cancel", authn.Require(auth.ScopeJobsWrite), h.Cancel)
 }
 
-// -----------------------------------------------------------------------------
-// Request and response DTOs
-// -----------------------------------------------------------------------------
-
-// createRequest is the POST /jobs body. Optional fields are pointers so we
-// can apply defaults only when the caller omitted them, rather than treating
-// a zero value as "unset".
+// createRequest is the POST /jobs body.
 type createRequest struct {
 	Handler        string                     `json:"handler"`
 	Queue          string                     `json:"queue"`
@@ -63,9 +64,7 @@ type createRequest struct {
 	IdempotencyKey *string                    `json:"idempotencyKey,omitempty"`
 }
 
-// jobResponse is the API view of a Job. Field names and the seven-value
-// status enum match the frozen frontend contract in
-// apps/frontend/app/src/lib/types.ts.
+// jobResponse is the API view of a Job.
 type jobResponse struct {
 	ID             string `json:"id"`
 	Handler        string `json:"handler"`
@@ -96,9 +95,7 @@ type jobResponse struct {
 	Attempts []attemptResponse `json:"attempts"`
 }
 
-// attemptResponse is the API view of one job_attempts row. Matches the
-// frontend `JobAttempt` interface. DurationMs is derived (ended - started)
-// for closed attempts; nil while in-flight.
+// attemptResponse is the API view of one job_attempts row.
 type attemptResponse struct {
 	AttemptNumber int        `json:"attemptNumber"`
 	WorkerID      string     `json:"workerId"`
@@ -110,9 +107,7 @@ type attemptResponse struct {
 	ErrorMessage  *string    `json:"errorMessage"`
 }
 
-// toAttemptResponse converts the stored shape to the API shape, renaming
-// the lease_lost outcome to "lease-lost" (mirroring dead_lettered →
-// dead-lettered) and computing duration_ms.
+// toAttemptResponse converts the stored shape to the API shape, renaming the lease_lost outcome to "lease-lost" (mirroring dead_lettered →…
 func toAttemptResponse(a *queuecore.Attempt) attemptResponse {
 	var (
 		outcome    *string
@@ -141,10 +136,7 @@ func toAttemptResponse(a *queuecore.Attempt) attemptResponse {
 	}
 }
 
-// toResponse maps a stored Job to the API shape, deriving the API-only
-// "scheduled" status and renaming "dead_lettered" → "dead-lettered". The
-// attempts slice is empty by default; callers that have a populated
-// attempt list (e.g. GET /jobs/:id) assign it after.
+// toResponse maps a stored Job to the API shape, deriving the API-only "scheduled" status and renaming "dead_lettered" → "dead-lettered".
 func toResponse(j *queuecore.Job) jobResponse {
 	var idempotencyKey any
 	if j.IdempotencyKey != nil {
@@ -182,8 +174,7 @@ func toResponse(j *queuecore.Job) jobResponse {
 	}
 }
 
-// deriveAPIStatus converts the 6-value storage enum to the 7-value API
-// vocabulary. See "Status mapping" in docs/architecture/database-schema.md.
+// deriveAPIStatus converts the 6-value storage enum to the 7-value API vocabulary.
 func deriveAPIStatus(status queuecore.JobStatus, scheduledFor time.Time, now time.Time) string {
 	if status == queuecore.StatusQueued && scheduledFor.After(now) {
 		return "scheduled"
@@ -194,17 +185,21 @@ func deriveAPIStatus(status queuecore.JobStatus, scheduledFor time.Time, now tim
 	return string(status)
 }
 
-// -----------------------------------------------------------------------------
-// Handlers
-// -----------------------------------------------------------------------------
-
-// Create handles POST /jobs. Returns 201 with the new job, or the existing
-// job on an idempotency-key hit (also 201; the response itself signals which
-// row the caller now owns).
+// Create handles POST /jobs.
 func (h *Handler) Create(c fiber.Ctx) error {
 	var req createRequest
 	if err := json.Unmarshal(c.Body(), &req); err != nil {
 		return badRequest(c, "invalid JSON body: "+err.Error())
+	}
+
+	headerKey := strings.TrimSpace(c.Get("Idempotency-Key"))
+	if req.IdempotencyKey != nil && strings.TrimSpace(*req.IdempotencyKey) != "" {
+		bodyKey := strings.TrimSpace(*req.IdempotencyKey)
+		if headerKey != "" && headerKey != bodyKey {
+			return badRequest(c, "Idempotency-Key header and request body idempotencyKey do not match")
+		}
+	} else if headerKey != "" {
+		req.IdempotencyKey = &headerKey
 	}
 
 	params, err := buildCreateParams(req)
@@ -214,6 +209,11 @@ func (h *Handler) Create(c fiber.Ctx) error {
 
 	job, err := h.repo.Create(c.Context(), params)
 	if err != nil {
+		if errors.Is(err, queuecore.ErrIdempotencyConflict) {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+				"error": "idempotency key conflict: parameters do not match existing job",
+			})
+		}
 		return internalError(c, err)
 	}
 	slog.InfoContext(c.Context(), "jobs.create",
@@ -223,15 +223,15 @@ func (h *Handler) Create(c fiber.Ctx) error {
 		"handler", job.Handler,
 		"priority", job.Priority,
 		"maxAttempts", job.MaxAttempts,
+		"isReplay", job.IsReplay,
 	)
+	if job.IsReplay {
+		c.Set("Idempotent-Replay", "true")
+	}
 	return c.Status(fiber.StatusCreated).JSON(toResponse(job))
 }
 
-// Cancel handles POST /jobs/:id/cancel. Spec: queue-core SPEC §6.
-//
-//	200 — cancelled (or already cancelled; idempotent)
-//	404 — unknown job id
-//	409 — job is succeeded or dead-lettered (not cancellable)
+// Cancel handles POST /jobs/:id/cancel.
 func (h *Handler) Cancel(c fiber.Ctx) error {
 	id := c.Params("id")
 	if id == "" {
@@ -267,8 +267,7 @@ func (h *Handler) Cancel(c fiber.Ctx) error {
 	return c.JSON(resp)
 }
 
-// GetByID handles GET /jobs/:id. 404 on miss. Populates `attempts` from
-// the job_attempts table — the timeline drives the Job Details screen.
+// GetByID handles GET /jobs/:id.
 func (h *Handler) GetByID(c fiber.Ctx) error {
 	id := c.Params("id")
 	if id == "" {
@@ -294,21 +293,7 @@ func (h *Handler) GetByID(c fiber.Ctx) error {
 	return c.JSON(resp)
 }
 
-// List handles GET /jobs. Query params:
-//
-//	limit       int, default 50, max 200
-//	offset      int, default 0
-//	status      repeatable; API status names (queued|scheduled|running|
-//	            succeeded|failed|dead-lettered|cancelled). Multiple values
-//	            are OR'd. "scheduled" widens the queue's status filter to
-//	            include queued rows whose scheduled_for is in the future.
-//	queue       repeatable; matches jobs.queue exactly. Multiple OR'd.
-//	handler     repeatable; matches jobs.handler exactly. Multiple OR'd.
-//	            (Use this to isolate one workload, e.g. ?handler=http_request.)
-//	search      case-insensitive prefix match on id and handler.
-//
-// Response includes `totalCount` so the frontend can render
-// "showing N of M" pagination footers without a second round-trip.
+// List handles GET /jobs.
 func (h *Handler) List(c fiber.Ctx) error {
 	limit, err := parsePositiveQuery(c, "limit", defaultListLimit)
 	if err != nil {
@@ -358,13 +343,7 @@ func (h *Handler) List(c fiber.Ctx) error {
 	})
 }
 
-// -----------------------------------------------------------------------------
-// Helpers
-// -----------------------------------------------------------------------------
-
-// buildCreateParams validates the request and resolves defaults. Pure: no
-// I/O, no time.Now() for stored values (scheduled_for default is applied by
-// the database via COALESCE).
+// buildCreateParams validates the request and resolves defaults.
 func buildCreateParams(req createRequest) (queuecore.CreateParams, error) {
 	handler := strings.TrimSpace(req.Handler)
 	if handler == "" {
@@ -441,12 +420,7 @@ func parsePositiveQuery(c fiber.Ctx, key string, def int) (int, error) {
 	return v, nil
 }
 
-// repeatedQuery reads every occurrence of `key` from the URL query string,
-// e.g. `?queue=default&queue=email` yields ["default", "email"]. Fiber v3's
-// c.Query / c.Queries collapses repeats; we drop to fasthttp's QueryArgs
-// to honour all of them. (Fiber v3 changed c.Context() to return Go's
-// stdlib context.Context — the fasthttp request context lives on
-// c.RequestCtx() now.) Empty inputs are skipped.
+// repeatedQuery reads every occurrence of `key` from the URL query string, e.g.
 func repeatedQuery(c fiber.Ctx, key string) []string {
 	raw := c.RequestCtx().QueryArgs().PeekMulti(key)
 	if len(raw) == 0 {
@@ -465,11 +439,7 @@ func repeatedQuery(c fiber.Ctx, key string) []string {
 	return out
 }
 
-// parseStatusFilter reads repeated ?status= query values and translates the
-// frontend's 7-value API vocabulary to the 6-value storage enum. The
-// "scheduled" name maps to the same storage value as "queued" (both are
-// status='queued' under the hood; visibility is the scheduled_for split,
-// which List does not currently slice). Unknown status names produce 400.
+// parseStatusFilter reads repeated ?status= query values and translates the frontend's 7-value API vocabulary to the 6-value storage enum.
 func parseStatusFilter(c fiber.Ctx) ([]queuecore.JobStatus, error) {
 	raw := repeatedQuery(c, "status")
 	if len(raw) == 0 {
@@ -491,10 +461,7 @@ func parseStatusFilter(c fiber.Ctx) ([]queuecore.JobStatus, error) {
 	return out, nil
 }
 
-// apiStatusToStorage maps an API status name (7 values) to the storage
-// enum (6 values). "scheduled" and "queued" share the storage value
-// "queued"; the visibility distinction is derived at render time, not in
-// the filter.
+// apiStatusToStorage maps an API status name (7 values) to the storage enum (6 values).
 func apiStatusToStorage(api string) (queuecore.JobStatus, bool) {
 	switch api {
 	case "queued", "scheduled":
@@ -519,15 +486,12 @@ func badRequest(c fiber.Ctx, msg string) error {
 }
 
 func internalError(c fiber.Ctx, err error) error {
-	// Always log the cause — the response body alone is not enough for
-	// operators (the access log records the 500, but not WHY). Surface the
-	// wrapped error string in the body for the dev-loop; redaction for
-	// production is a future ingress concern.
+	// Always log the cause — the response body alone is not enough for operators (the access log records the 500, but not WHY).
 	slog.ErrorContext(c.Context(), "jobs.internal_error",
 		"event", "jobs.internal_error",
 		"path", c.Path(),
 		"method", c.Method(),
 		"err", err.Error(),
 	)
-	return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
 }

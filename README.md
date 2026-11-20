@@ -33,7 +33,8 @@ The design favors correctness over throughput. Every queue operation is written 
 - **Built-in handlers.** `http_request` for outbound HTTP calls with rich result metadata,
   `send_email` for SMTP delivery, and `noop` for testing.
 - **Operator console.** A React dashboard for queue stats, jobs, job attempts, workers, and
-  cancellation.
+  cancellation. Live updates use SSE invalidation (`GET /events`) driven by Postgres
+  NOTIFY — the UI refetches REST only when something changed (ADR-0009).
 - **REST API.** Enqueue, inspect, cancel, and list jobs. Swagger UI is available in development.
 
 ## Status
@@ -44,8 +45,8 @@ end to end. The HTTP API and the queue spec may still change before 1.0. See
 
 ### Known limitations
 
-- **No authentication or authorization.** Run the API on a trusted network. Do not expose
-  it to the internet.
+- **Auth:** operators sign in (first visit creates the admin). Apps and scripts
+  use API keys from the dashboard. `GET /health` and login/signup stay public.
 - **Jobs wait for a capable worker.** A worker only claims jobs for handlers it runs. A job whose
   handler no worker runs (for example, from a typo) stays queued. Operators see it in queue depth
   and can cancel it. The API does not check handler names yet, so this is the main way to get stuck jobs.
@@ -69,21 +70,6 @@ cp deployments/compose/.env.example deployments/compose/.env
 scripts/dev/up.sh 2        # Postgres, API on :8008, and two workers
 ```
 
-In another terminal, enqueue a job:
-
-```bash
-curl -X POST http://localhost:8008/jobs \
-  -H 'Content-Type: application/json' \
-  -d '{"handler":"noop","queue":"default","payload":{"hello":"world"}}'
-```
-
-List jobs and queue stats:
-
-```bash
-curl http://localhost:8008/jobs
-curl http://localhost:8008/queue/stats
-```
-
 To run the operator console against that API:
 
 ```bash
@@ -92,7 +78,16 @@ pnpm install
 VITE_API_PROXY_TARGET=http://localhost:8008 pnpm dev
 ```
 
-Then open the URL Vite prints, usually <http://localhost:5173>.
+Open the URL Vite prints (usually <http://localhost:5173>). On first boot,
+create the admin account; afterwards sign in. Mint machine API keys under
+**API keys** in the sidebar, then:
+
+```bash
+curl -X POST http://localhost:8008/jobs \
+  -H "Authorization: Bearer $VEYRA_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"handler":"noop","queue":"default","payload":{"hello":"world"}}'
+```
 
 Stop the stack with `make down`. The database volume is kept.
 

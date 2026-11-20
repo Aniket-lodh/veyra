@@ -1,23 +1,14 @@
-// Worker Detail — Phase 2, screen #4b (drilldown from Workers View).
-//
-// Reuses the /workers list query rather than introducing a /workers/:id
-// endpoint. The roster is tiny (tens of workers at most on a single-VPS
-// deployment), so the cost of "find one in the array" client-side is
-// near zero, and there's only one query key to invalidate when leases
-// change.
-//
-// "Recent jobs processed" — present in the scaffolded version — is NOT
-// rendered here yet. Materialising it requires either (a) a per-worker
-// filter on GET /jobs or (b) a /workers/:id/attempts endpoint. Neither
-// is in Phase 0's surface, and growing backend scope mid-Phase 2 is
-// against the agreed plan. Add when an operator actually asks.
-import { Badge, type BadgeTone } from '@/components/ui/badge';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
-  DescriptionItem,
-  DescriptionList,
-} from '@/components/ui/description-list';
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import {
   Table,
   TableBody,
@@ -34,213 +25,518 @@ import {
   jobsByHandlerPath,
   jobsByQueuePath,
 } from '@/lib/routes';
-import type { WorkerState } from '@/lib/types';
+import { cn } from '@/lib/utils';
+import {
+  formatDurationMs,
+  formatLeaseTimeRemaining,
+  formatUptime,
+  getHeartbeatOverdueDurationMs,
+  getWorkerLifecycle,
+  getWorkerStatusBadgeProps,
+  isHeartbeatStale,
+} from '@/lib/workers-helpers';
+import {
+  Activity01Icon,
+  Alert02Icon,
+  ArrowLeft01Icon,
+  Copy01Icon,
+  MoreHorizontalIcon,
+  Refresh01Icon,
+  Tick01Icon,
+} from '@hugeicons/core-free-icons';
+import { HugeiconsIcon } from '@hugeicons/react';
+import { useCallback, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-
-const WORKER_STATE_TONE: Record<WorkerState, BadgeTone> = {
-  active: 'success',
-  idle: 'muted',
-  draining: 'info',
-  disconnected: 'danger',
-};
-
-const WORKER_STATE_LABEL: Record<WorkerState, string> = {
-  active: 'Active',
-  idle: 'Idle',
-  draining: 'Draining',
-  disconnected: 'Disconnected',
-};
 
 export function WorkerDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { data, isLoading, isError, error } = useWorkers();
+  const { data, isLoading, isFetching, isError, error, refetch } = useWorkers();
 
-  const worker = data?.workers.find((w) => w.id === id);
+  // Find worker in current fleet query
+  const worker = useMemo(
+    () => data?.workers.find((w) => w.id === id),
+    [data?.workers, id],
+  );
 
+  // Copy feedback state
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+
+  const handleCopy = useCallback((text: string, key: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedKey(key);
+    setTimeout(() => {
+      setCopiedKey((curr) => (curr === key ? null : curr));
+    }, 2000);
+  }, []);
+
+  // Worker Not Found State
   if (!id || (data && !worker)) {
     return (
       <div className="space-y-4">
-        <Breadcrumb id={id} />
-        <p className="text-xs">Worker not found.</p>
-        <Button asChild variant="outline" size="sm">
-          <Link to={ROUTES.workers}>Back to workers</Link>
-        </Button>
+        <Breadcrumb id={id} hostname={undefined} />
+        <Card className="border-border-subtle bg-surface-base p-8 text-center">
+          <div className="mx-auto max-w-sm space-y-3">
+            <h3 className="text-text-primary text-sm font-semibold">
+              Worker Not Found
+            </h3>
+            <p className="text-text-muted text-xs">
+              No worker with ID <code className="font-mono">{id ?? '—'}</code>{' '}
+              is currently registered in the fleet. The node may have been
+              reaped or disconnected.
+            </p>
+            <Button
+              asChild
+              variant="outline"
+              size="sm"
+              className="mt-2 text-xs"
+            >
+              <Link to={ROUTES.workers}>
+                <HugeiconsIcon
+                  icon={ArrowLeft01Icon}
+                  className="mr-1.5 h-3.5 w-3.5"
+                />
+                Back to Fleet Roster
+              </Link>
+            </Button>
+          </div>
+        </Card>
       </div>
     );
   }
 
+  // Error State
   if (isError) {
     return (
       <div className="space-y-4">
-        <Breadcrumb id={id} />
+        <Breadcrumb id={id} hostname={undefined} />
         <div
           role="alert"
-          className="border-destructive/40 bg-destructive/10 text-destructive rounded-md border px-3 py-2 text-xs"
+          className="border-status-danger-border bg-status-danger-bg text-status-danger-text flex items-center justify-between rounded-md border p-3 text-xs"
         >
-          Failed to load worker: {error?.message ?? 'unknown error'}
+          <div className="flex items-center gap-2">
+            <HugeiconsIcon icon={Alert02Icon} className="h-4 w-4 shrink-0" />
+            <span>
+              Failed to load worker details:{' '}
+              {error?.message ?? 'Unknown server error'}
+            </span>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => refetch()}
+            className="h-7 text-xs"
+          >
+            Retry
+          </Button>
         </div>
       </div>
     );
   }
 
+  // Loading State (Only if initial load has no cached data)
   if (isLoading || !worker) {
     return (
       <div className="space-y-4">
-        <Breadcrumb id={id} />
-        <p className="text-muted-foreground text-xs">Loading…</p>
+        <Breadcrumb id={id} hostname={undefined} />
+        <div className="space-y-4">
+          <div className="bg-surface-elevated h-6 w-48 animate-pulse rounded" />
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <div
+                key={i}
+                className="bg-surface-base border-border-subtle h-20 animate-pulse rounded-md border p-3"
+              />
+            ))}
+          </div>
+          <div className="bg-surface-base border-border-subtle h-48 animate-pulse rounded-md border" />
+        </div>
       </div>
     );
   }
 
+  // Shared lifecycle & status calculation from workers-helpers.ts
+  const lifecycle = getWorkerLifecycle(worker);
+  const badgeProps = getWorkerStatusBadgeProps(lifecycle);
+  const isStale = isHeartbeatStale(
+    worker.lastHeartbeatAt,
+    worker.heartbeatIntervalSeconds,
+  );
+  const overdueMs = getHeartbeatOverdueDurationMs(
+    worker.lastHeartbeatAt,
+    worker.heartbeatIntervalSeconds,
+  );
+  const utilPct =
+    worker.maxConcurrency > 0
+      ? Math.min(
+          100,
+          Math.round((worker.inFlight / worker.maxConcurrency) * 100),
+        )
+      : 0;
+
   return (
     <div className="space-y-6">
-      <div className="space-y-3">
-        <Breadcrumb id={worker.id} />
-        <div className="flex items-start justify-between gap-4">
-          <div className="space-y-1">
-            <div className="flex items-center gap-2">
-              <h2 className="font-mono text-base font-semibold">
-                {worker.hostname}
-              </h2>
-              <Badge tone={WORKER_STATE_TONE[worker.state]}>
-                {WORKER_STATE_LABEL[worker.state]}
-              </Badge>
-            </div>
-            <p className="text-muted-foreground text-xs">
-              Started {formatRelative(worker.startedAt)} · processed{' '}
-              {worker.totalProcessed.toLocaleString()} jobs lifetime
-            </p>
+      {/* Navigation Breadcrumb */}
+      <Breadcrumb id={worker.id} hostname={worker.hostname} />
+
+      {/* Primary Worker Identity Header */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="space-y-1.5">
+          <div className="flex flex-wrap items-center gap-2.5">
+            <h2 className="text-text-primary font-mono text-base font-semibold tracking-tight">
+              {worker.hostname}
+            </h2>
+            {/* Calm status badge with steady semantic dot */}
+            <Badge tone={badgeProps.tone}>
+              <span
+                className={cn(
+                  'mr-1.5 inline-block h-1.5 w-1.5 rounded-full',
+                  badgeProps.dotColorClass,
+                )}
+              />
+              {badgeProps.label}
+            </Badge>
+            {isStale && worker.state !== 'disconnected' && (
+              <span
+                className="text-status-warning-text bg-status-warning-bg border-status-warning-border rounded border px-1.5 py-0.5 text-[0.625rem] font-medium"
+                title="Heartbeat older than 3× interval — runtime may have died without deregistering."
+              >
+                overdue by {formatDurationMs(overdueMs)}
+              </span>
+            )}
           </div>
+
+          <div className="text-text-muted flex flex-wrap items-center gap-2 font-mono text-xs">
+            <span className="flex items-center gap-1">
+              <span className="text-text-secondary">ULID:</span>
+              <span className="text-text-primary font-medium">{worker.id}</span>
+              <button
+                type="button"
+                onClick={() => handleCopy(worker.id, 'worker-id')}
+                className="text-text-muted hover:text-text-primary p-0.5 transition-colors"
+                title="Copy Worker ULID"
+                aria-label="Copy Worker ULID"
+              >
+                <HugeiconsIcon
+                  icon={copiedKey === 'worker-id' ? Tick01Icon : Copy01Icon}
+                  className={cn(
+                    'h-3.5 w-3.5',
+                    copiedKey === 'worker-id' && 'text-status-success-text',
+                  )}
+                />
+              </button>
+            </span>
+            <span>·</span>
+            <span>PID {worker.pid}</span>
+            <span>·</span>
+            <span>{worker.version}</span>
+          </div>
+        </div>
+
+        {/* Action Controls */}
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() =>
+              handleCopy(JSON.stringify(worker, null, 2), 'worker-json')
+            }
+            className="text-xs"
+            title="Export structured JSON diagnostics"
+          >
+            <HugeiconsIcon
+              icon={copiedKey === 'worker-json' ? Tick01Icon : Copy01Icon}
+              className="mr-1.5 h-3.5 w-3.5"
+            />
+            {copiedKey === 'worker-json' ? 'Copied Diagnostics' : 'Export JSON'}
+          </Button>
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => refetch()}
+            disabled={isFetching}
+            className="text-xs"
+            title="Force refresh worker details"
+          >
+            <HugeiconsIcon
+              icon={Refresh01Icon}
+              className={cn('h-3.5 w-3.5', isFetching && 'animate-spin')}
+            />
+            Refresh
+          </Button>
+
+          {/* Operational Dropdown Menu (Gated controls disabled with pending-backend badges) */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 w-8 p-0"
+                aria-label="Worker fleet operations"
+              >
+                <HugeiconsIcon
+                  icon={MoreHorizontalIcon}
+                  className="h-3.5 w-3.5"
+                />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56">
+              <DropdownMenuLabel className="text-text-muted text-[0.625rem] font-medium tracking-wider uppercase">
+                Fleet Operations (Pending API)
+              </DropdownMenuLabel>
+
+              <DropdownMenuItem
+                disabled
+                title="Backend capability pending: POST /workers/:id/drain"
+                className="text-text-disabled cursor-not-allowed justify-between"
+              >
+                <span>Drain Worker</span>
+                <span className="border-border-subtle bg-surface-elevated text-text-muted rounded px-1 py-0.5 text-[0.5625rem]">
+                  API Pending
+                </span>
+              </DropdownMenuItem>
+
+              <DropdownMenuItem
+                disabled
+                title="Backend capability pending: PATCH /workers/:id/cordon"
+                className="text-text-disabled cursor-not-allowed justify-between"
+              >
+                <span>Cordon / Pause</span>
+                <span className="border-border-subtle bg-surface-elevated text-text-muted rounded px-1 py-0.5 text-[0.5625rem]">
+                  API Pending
+                </span>
+              </DropdownMenuItem>
+
+              <DropdownMenuItem
+                disabled
+                title="Backend capability pending: POST /workers/:id/leases/:jobId/release"
+                className="text-text-disabled cursor-not-allowed justify-between"
+              >
+                <span>Force Release Leases</span>
+                <span className="border-border-subtle bg-surface-elevated text-text-muted rounded px-1 py-0.5 text-[0.5625rem]">
+                  API Pending
+                </span>
+              </DropdownMenuItem>
+
+              <DropdownMenuSeparator />
+
+              <DropdownMenuItem
+                disabled
+                title="Backend capability pending: DELETE /workers/:id"
+                className="text-text-disabled cursor-not-allowed justify-between"
+              >
+                <span className="text-status-danger-text/60">
+                  Deregister Worker
+                </span>
+                <span className="border-border-subtle bg-surface-elevated text-text-muted rounded px-1 py-0.5 text-[0.5625rem]">
+                  API Pending
+                </span>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-3">
-        <Card>
-          <CardHeader>
-            <CardTitle>Identity</CardTitle>
+      {/* Operational Summary Metric Strip */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        {/* Concurrency Slots & Utilization */}
+        <Card className="border-border-subtle bg-surface-base">
+          <CardHeader className="p-3 pb-1">
+            <CardTitle className="text-text-muted text-[0.6875rem] font-medium tracking-wider uppercase">
+              Concurrency Slots
+            </CardTitle>
           </CardHeader>
-          <CardContent>
-            <DescriptionList>
-              <DescriptionItem label="Hostname" mono>
-                {worker.hostname}
-              </DescriptionItem>
-              <DescriptionItem label="Worker ID" mono>
-                {worker.id}
-              </DescriptionItem>
-              <DescriptionItem label="PID">{worker.pid}</DescriptionItem>
-              <DescriptionItem label="Version" mono>
-                {worker.version}
-              </DescriptionItem>
-              <DescriptionItem label="Started">
-                {formatDateTimeUTC(worker.startedAt)}
-                <span className="text-muted-foreground">
-                  {' '}
-                  ({formatRelative(worker.startedAt)})
-                </span>
-              </DescriptionItem>
-            </DescriptionList>
+          <CardContent className="p-3 pt-0">
+            <div className="flex items-baseline gap-1.5">
+              <span className="text-text-primary text-xl font-semibold tabular-nums">
+                {worker.inFlight}
+              </span>
+              <span className="text-text-muted text-xs tabular-nums">
+                / {worker.maxConcurrency} slots
+              </span>
+              <span className="text-text-muted ml-auto text-xs tabular-nums">
+                {utilPct}%
+              </span>
+            </div>
+            <div className="bg-surface-elevated mt-2 h-1.5 w-full overflow-hidden rounded-full">
+              <div
+                className={cn(
+                  'h-full rounded-full transition-all duration-300',
+                  utilPct > 85
+                    ? 'bg-status-warning-solid'
+                    : 'bg-status-success-solid',
+                )}
+                style={{ width: `${utilPct}%` }}
+              />
+            </div>
           </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader>
-            <CardTitle>Heartbeat &amp; concurrency</CardTitle>
+        {/* Heartbeat & Sweeper Cadence */}
+        <Card className="border-border-subtle bg-surface-base">
+          <CardHeader className="p-3 pb-1">
+            <CardTitle className="text-text-muted text-[0.6875rem] font-medium tracking-wider uppercase">
+              Heartbeat Health
+            </CardTitle>
           </CardHeader>
-          <CardContent>
-            <DescriptionList>
-              <DescriptionItem label="Last heartbeat">
-                {formatDateTimeUTC(worker.lastHeartbeatAt)}
-                <span className="text-muted-foreground">
-                  {' '}
-                  ({formatRelative(worker.lastHeartbeatAt)})
-                </span>
-              </DescriptionItem>
-              <DescriptionItem label="Interval">
-                {worker.heartbeatIntervalSeconds}s
-              </DescriptionItem>
-              <DescriptionItem label="Max concurrency">
-                {worker.maxConcurrency}
-              </DescriptionItem>
-              <DescriptionItem label="In-flight">
-                <span className="tabular-nums">
-                  {worker.inFlight}
-                  <span className="text-muted-foreground">
-                    {' / '}
-                    {worker.maxConcurrency}
-                  </span>
-                </span>
-              </DescriptionItem>
-              <DescriptionItem label="Total processed">
-                {worker.totalProcessed.toLocaleString()}
-              </DescriptionItem>
-            </DescriptionList>
+          <CardContent className="p-3 pt-0">
+            <div
+              className={cn(
+                'text-xl font-semibold tabular-nums',
+                isStale ? 'text-status-warning-text' : 'text-text-primary',
+              )}
+              title={`Last received: ${formatDateTimeUTC(worker.lastHeartbeatAt)}`}
+            >
+              {formatRelative(worker.lastHeartbeatAt)}
+            </div>
+            <div className="text-text-muted mt-1 text-[0.6875rem] tabular-nums">
+              every {worker.heartbeatIntervalSeconds}s · sweeper:{' '}
+              {worker.heartbeatIntervalSeconds * 3}s
+            </div>
           </CardContent>
         </Card>
 
-        <Card className="col-span-2">
-          <CardHeader>
-            <CardTitle>Capabilities</CardTitle>
+        {/* Runtime & Uptime */}
+        <Card className="border-border-subtle bg-surface-base">
+          <CardHeader className="p-3 pb-1">
+            <CardTitle className="text-text-muted text-[0.6875rem] font-medium tracking-wider uppercase">
+              Uptime
+            </CardTitle>
           </CardHeader>
-          <CardContent>
-            <DescriptionList>
-              <DescriptionItem label="Subscribed queues">
-                <div className="flex flex-wrap gap-1">
-                  {worker.queues.length === 0 ? (
-                    <span className="text-muted-foreground text-[0.6875rem]">
-                      —
-                    </span>
-                  ) : (
-                    worker.queues.map((q) => (
-                      <Link
-                        key={q}
-                        to={jobsByQueuePath(q)}
-                        className="bg-muted text-foreground hover:bg-muted/70 rounded-sm px-1.5 py-0.5 font-mono text-[0.6875rem]"
-                      >
-                        {q}
-                      </Link>
-                    ))
-                  )}
-                </div>
-              </DescriptionItem>
-              <DescriptionItem label="Handlers">
-                <div className="flex flex-wrap gap-1">
-                  {worker.handlers.length === 0 ? (
-                    <span className="text-muted-foreground text-[0.6875rem]">
-                      —
-                    </span>
-                  ) : (
-                    worker.handlers.map((h) => (
-                      <Link
-                        key={h}
-                        to={jobsByHandlerPath(h)}
-                        className="bg-muted text-foreground hover:bg-muted/70 rounded-sm px-1.5 py-0.5 font-mono text-[0.6875rem]"
-                      >
-                        {h}
-                      </Link>
-                    ))
-                  )}
-                </div>
-              </DescriptionItem>
-            </DescriptionList>
+          <CardContent className="p-3 pt-0">
+            <div className="text-text-primary text-xl font-semibold tabular-nums">
+              {formatUptime(worker.startedAt)}
+            </div>
+            <div
+              className="text-text-muted mt-1 text-[0.6875rem] tabular-nums"
+              title={`Started: ${formatDateTimeUTC(worker.startedAt)}`}
+            >
+              Started {formatRelative(worker.startedAt)}
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Total Processed Throughput */}
+        <Card className="border-border-subtle bg-surface-base">
+          <CardHeader className="p-3 pb-1">
+            <CardTitle className="text-text-muted text-[0.6875rem] font-medium tracking-wider uppercase">
+              Total Processed
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="p-3 pt-0">
+            <div className="text-text-primary font-mono text-xl font-semibold tabular-nums">
+              {worker.totalProcessed.toLocaleString()}
+            </div>
+            <div className="text-text-muted mt-1 text-[0.6875rem]">
+              Cumulative completed jobs
+            </div>
           </CardContent>
         </Card>
       </div>
 
-      <div className="space-y-2">
-        <h3 className="text-muted-foreground text-[0.6875rem] font-medium tracking-wide uppercase">
-          Active leases
-        </h3>
-        <div className="border-border rounded-md border">
+      {/* Subscribed Queues & Registered Handlers */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        {/* Queues Card */}
+        <Card className="border-border-subtle bg-surface-base">
+          <CardHeader className="p-4 pb-2">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-text-muted text-[0.6875rem] font-medium tracking-wider uppercase">
+                Subscribed Queues ({worker.queues.length})
+              </CardTitle>
+            </div>
+          </CardHeader>
+          <CardContent className="p-4 pt-1">
+            {worker.queues.length === 0 ? (
+              <p className="text-text-muted text-xs">
+                No subscribed queues found.
+              </p>
+            ) : (
+              <div className="flex flex-wrap gap-1.5">
+                {worker.queues.map((q) => (
+                  <Link
+                    key={q}
+                    to={jobsByQueuePath(q)}
+                    className="border-border-subtle bg-surface-canvas text-text-primary hover:border-border-strong hover:bg-surface-elevated rounded px-2 py-1 font-mono text-xs transition-colors"
+                    title={`View jobs in queue: ${q}`}
+                  >
+                    {q}
+                  </Link>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Handlers Card */}
+        <Card className="border-border-subtle bg-surface-base">
+          <CardHeader className="p-4 pb-2">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-text-muted text-[0.6875rem] font-medium tracking-wider uppercase">
+                Registered Handlers ({worker.handlers.length})
+              </CardTitle>
+            </div>
+          </CardHeader>
+          <CardContent className="p-4 pt-1">
+            {worker.handlers.length === 0 ? (
+              <p className="text-text-muted text-xs">
+                No registered handlers found.
+              </p>
+            ) : (
+              <div className="flex flex-wrap gap-1.5">
+                {worker.handlers.map((h) => (
+                  <Link
+                    key={h}
+                    to={jobsByHandlerPath(h)}
+                    className="border-border-subtle bg-surface-canvas text-text-primary hover:border-border-strong hover:bg-surface-elevated rounded px-2 py-1 font-mono text-xs transition-colors"
+                    title={`View jobs handled by: ${h}`}
+                  >
+                    {h}
+                  </Link>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Active Running Leases Section */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-text-primary text-sm font-semibold tracking-tight">
+              Active Running Leases
+            </h3>
+            <p className="text-text-muted text-xs">
+              {worker.leases.length} active lease
+              {worker.leases.length === 1 ? '' : 's'} held by this worker
+              runtime
+            </p>
+          </div>
+        </div>
+
+        <div className="border-border-subtle bg-surface-base overflow-hidden rounded-md border">
           <Table>
             <TableHeader>
-              <TableRow>
-                <TableHead>Job ID</TableHead>
-                <TableHead>Handler</TableHead>
-                <TableHead>Queue</TableHead>
-                <TableHead className="text-right">Attempt</TableHead>
-                <TableHead>Leased at</TableHead>
-                <TableHead>Lease expires</TableHead>
+              <TableRow className="border-border-subtle bg-surface-canvas/60">
+                <TableHead className="text-text-muted text-[0.6875rem] font-medium tracking-wider uppercase">
+                  Job ID
+                </TableHead>
+                <TableHead className="text-text-muted text-[0.6875rem] font-medium tracking-wider uppercase">
+                  Handler
+                </TableHead>
+                <TableHead className="text-text-muted text-[0.6875rem] font-medium tracking-wider uppercase">
+                  Queue
+                </TableHead>
+                <TableHead className="text-text-muted text-right text-[0.6875rem] font-medium tracking-wider uppercase">
+                  Attempt
+                </TableHead>
+                <TableHead className="text-text-muted text-[0.6875rem] font-medium tracking-wider uppercase">
+                  Leased At
+                </TableHead>
+                <TableHead className="text-text-muted text-right text-[0.6875rem] font-medium tracking-wider uppercase">
+                  Lease TTL Remaining
+                </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -248,64 +544,168 @@ export function WorkerDetailPage() {
                 <TableRow>
                   <TableCell
                     colSpan={6}
-                    className="text-muted-foreground text-center text-xs"
+                    className="text-text-muted py-8 text-center text-xs"
                   >
-                    No active leases.
+                    No active leases. Worker is idle and ready for work.
                   </TableCell>
                 </TableRow>
               ) : (
-                worker.leases.map((l) => (
-                  <TableRow
-                    key={l.jobId}
-                    className="hover:bg-muted/40 cursor-pointer"
-                    onClick={() => navigate(jobDetailPath(l.jobId))}
-                  >
-                    <TableCell className="font-mono text-[0.6875rem]">
-                      {l.jobId}
-                    </TableCell>
-                    <TableCell>{l.handler}</TableCell>
-                    <TableCell className="text-muted-foreground">
-                      {l.queue}
-                    </TableCell>
-                    <TableCell className="text-right tabular-nums">
-                      {l.attempt}
-                    </TableCell>
-                    <TableCell className="text-muted-foreground tabular-nums">
-                      {formatRelative(l.leasedAt)}
-                    </TableCell>
-                    <TableCell className="text-muted-foreground tabular-nums">
-                      {formatRelative(l.leaseExpiresAt)}
-                    </TableCell>
-                  </TableRow>
-                ))
+                worker.leases.map((l) => {
+                  const ttl = formatLeaseTimeRemaining(l.leaseExpiresAt);
+                  return (
+                    <TableRow
+                      key={l.jobId}
+                      className="border-border-subtle hover:bg-surface-elevated/60 group cursor-pointer transition-colors"
+                      onClick={() => navigate(jobDetailPath(l.jobId))}
+                    >
+                      {/* Job ID */}
+                      <TableCell className="py-2.5">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-text-primary font-mono text-xs font-medium underline underline-offset-2">
+                            {l.jobId}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleCopy(l.jobId, `job-${l.jobId}`);
+                            }}
+                            className="text-text-muted hover:text-text-primary p-0.5 opacity-0 transition-opacity group-hover:opacity-100"
+                            title="Copy Job ID"
+                            aria-label="Copy Job ID"
+                          >
+                            <HugeiconsIcon
+                              icon={
+                                copiedKey === `job-${l.jobId}`
+                                  ? Tick01Icon
+                                  : Copy01Icon
+                              }
+                              className={cn(
+                                'h-3 w-3',
+                                copiedKey === `job-${l.jobId}` &&
+                                  'text-status-success-text',
+                              )}
+                            />
+                          </button>
+                        </div>
+                      </TableCell>
+
+                      {/* Handler */}
+                      <TableCell className="py-2.5">
+                        <Link
+                          to={jobsByHandlerPath(l.handler)}
+                          onClick={(e) => e.stopPropagation()}
+                          className="text-text-secondary hover:text-text-primary font-mono text-xs transition-colors"
+                        >
+                          {l.handler}
+                        </Link>
+                      </TableCell>
+
+                      {/* Queue */}
+                      <TableCell className="py-2.5">
+                        <Link
+                          to={jobsByQueuePath(l.queue)}
+                          onClick={(e) => e.stopPropagation()}
+                          className="border-border-subtle bg-surface-canvas text-text-secondary hover:border-border-strong rounded px-1.5 py-0.5 font-mono text-[0.625rem] transition-colors"
+                        >
+                          {l.queue}
+                        </Link>
+                      </TableCell>
+
+                      {/* Attempt */}
+                      <TableCell className="text-text-muted py-2.5 text-right font-mono text-xs tabular-nums">
+                        #{l.attempt}
+                      </TableCell>
+
+                      {/* Leased At */}
+                      <TableCell className="py-2.5">
+                        <span
+                          className="text-text-muted text-xs tabular-nums"
+                          title={`Leased at: ${formatDateTimeUTC(l.leasedAt)}`}
+                        >
+                          {formatRelative(l.leasedAt)}
+                        </span>
+                      </TableCell>
+
+                      {/* Lease Remaining TTL */}
+                      <TableCell className="py-2.5 text-right font-mono text-xs tabular-nums">
+                        <span
+                          className={cn(
+                            ttl.expired
+                              ? 'text-status-danger-text font-medium'
+                              : ttl.remainingMs < 5000
+                                ? 'text-status-warning-text'
+                                : 'text-text-primary',
+                          )}
+                          title={`Expires: ${formatDateTimeUTC(l.leaseExpiresAt)}`}
+                        >
+                          {ttl.label}
+                        </span>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })
               )}
             </TableBody>
           </Table>
         </div>
       </div>
 
-      <p className="text-muted-foreground text-[0.6875rem]">
-        Recent jobs by this worker live in{' '}
-        <Link to={ROUTES.jobs} className="text-foreground hover:underline">
-          the jobs list
-        </Link>{' '}
-        once the api exposes per-worker filtering.
-      </p>
+      {/* Historical Jobs Notice */}
+      <div className="border-border-subtle bg-surface-canvas/50 text-text-muted flex items-start gap-2.5 rounded-md border p-3.5 text-xs">
+        <HugeiconsIcon
+          icon={Activity01Icon}
+          className="text-text-secondary mt-0.5 h-4 w-4 shrink-0"
+        />
+        <div className="space-y-1">
+          <p className="text-text-primary font-medium">
+            Historical Job Execution Log
+          </p>
+          <p className="text-text-muted leading-relaxed">
+            Historical jobs executed by this worker can be viewed in the{' '}
+            <Link
+              to={ROUTES.jobs}
+              className="text-text-primary font-medium underline underline-offset-2 hover:opacity-80"
+            >
+              Jobs Console
+            </Link>
+            . Dedicated per-worker historical filtering (e.g.,{' '}
+            <code className="bg-surface-elevated rounded px-1 py-0.5 font-mono text-[0.6875rem]">
+              GET /jobs?worker_id=...
+            </code>
+            ) is logged for future backend implementation.
+          </p>
+        </div>
+      </div>
     </div>
   );
 }
 
-function Breadcrumb({ id }: { id: string | undefined }) {
+function Breadcrumb({
+  id,
+  hostname,
+}: {
+  id: string | undefined;
+  hostname: string | undefined;
+}) {
   return (
-    <div className="text-xs">
+    <div className="flex items-center gap-1.5 text-xs">
       <Link
         to={ROUTES.workers}
-        className="text-muted-foreground hover:underline"
+        className="text-text-muted hover:text-text-primary flex items-center gap-1 transition-colors"
       >
-        Workers
-      </Link>{' '}
-      <span className="text-muted-foreground">/</span>{' '}
-      <span className="font-mono text-[0.6875rem]">{id ?? '—'}</span>
+        <HugeiconsIcon icon={ArrowLeft01Icon} className="h-3 w-3" />
+        <span>Workers</span>
+      </Link>
+      <span className="text-text-muted">/</span>
+      <span className="text-text-primary font-mono text-xs font-medium">
+        {hostname ?? id ?? '—'}
+      </span>
+      {hostname && id && (
+        <span className="text-text-muted font-mono text-[0.6875rem]">
+          (…{id.slice(-8)})
+        </span>
+      )}
     </div>
   );
 }

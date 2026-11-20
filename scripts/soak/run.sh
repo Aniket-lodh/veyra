@@ -1,63 +1,5 @@
 #!/usr/bin/env bash
-# run.sh — long-running soak harness.
-#
-# Three concurrent loops against the running compose stack:
-#
-#   1. enqueue loop    — POSTs N jobs every ENQUEUE_INTERVAL seconds
-#   2. chaos loop      — kills a random worker every CHAOS_INTERVAL seconds
-#   3. snapshot loop   — appends one snapshot to the logfile every
-#                        SNAPSHOT_INTERVAL seconds
-#
-# Why all three together: a soak harness without chaos is just a stress
-# test; chaos without snapshots is just "did anything explode visibly."
-# Drift detection requires the time series.
-#
-# Run on the host (NOT in a container — it docker-compose-execs from
-# outside):
-#
-#   ./scripts/soak/run.sh
-#
-# Knobs (env):
-#
-#   SOAK_DURATION_SECONDS    total run length (default 86400 = 24h)
-#   ENQUEUE_INTERVAL         seconds between enqueue bursts (default 30)
-#   ENQUEUE_BURST            jobs per burst (default 5)
-#   CHAOS_INTERVAL           seconds between chaos events (default 600 = 10m)
-#                            set to 0 to disable chaos
-#   CHAOS_KINDS              space-separated rotation of chaos actions, run
-#                            round-robin. Available kinds:
-#                              - worker_term         (kill one random worker, SIGTERM)
-#                              - worker_kill         (kill one random worker, SIGKILL)
-#                              - worker_fleet_collapse (kill ALL workers simultaneously
-#                                via in-container pkill — the fleet-collapse scenario
-#                                that exercises tick reclaim under "zero workers" load)
-#                              - api_restart         (docker compose restart api)
-#                              - pg_restart          (docker compose restart postgres)
-#                            Default: "worker_term worker_kill api_restart pg_restart".
-#                            For a targeted resurrection soak: "worker_kill" or
-#                            "worker_term worker_kill". For the post-A2 reclaim soak:
-#                            "worker_fleet_collapse". See the
-#                            feedback-targeted-soak-before-burner memory.
-#   SNAPSHOT_INTERVAL        seconds between snapshots (default 60)
-#   VEYRA_API_URL            api base url (default http://localhost:8008)
-#                            under the prod overlay nginx fronts the api at
-#                            http://127.0.0.1:8088
-#   DOCKER_COMPOSE_FILES     compose file flags for chaos + snapshot (default
-#                            -f deployments/compose/docker-compose.yml).
-#                            For the prod overlay pass both:
-#                              "-f deployments/compose/docker-compose.yml \
-#                               -f deployments/compose/docker-compose.prod.yml"
-#   LOG_DIR                  output directory (default ./soak-logs)
-#
-# Chaos rotation. The chaos loop cycles deterministically through four
-# actions every CHAOS_INTERVAL seconds, in this order:
-#   1. worker SIGTERM     (graceful — exercises the clean-shutdown path)
-#   2. worker SIGKILL     (hard crash — exercises the stale-worker sweeper)
-#   3. api restart        (exercises scheduler recovery + worker reconnect)
-#   4. postgres restart   (exercises pgx pool reconnect + lease durability)
-#
-# Cleanly stops on Ctrl-C (SIGINT) or SIGTERM. The summary line at the end
-# tells you what was actually generated.
+# Long-running soak: enqueue + chaos + snapshot loops against compose.
 
 set -euo pipefail
 
@@ -70,9 +12,7 @@ ENQUEUE_BURST="${ENQUEUE_BURST:-5}"
 CHAOS_INTERVAL="${CHAOS_INTERVAL:-600}"
 CHAOS_KINDS="${CHAOS_KINDS:-worker_term worker_kill api_restart pg_restart}"
 SNAPSHOT_INTERVAL="${SNAPSHOT_INTERVAL:-60}"
-# Parse CHAOS_KINDS into an array up front; the loop dispatches into
-# chaos_action_<kind> by index. Unknown kinds emit a single warning line
-# at startup so a typo doesn't silently no-op the entire chaos loop.
+# Parse CHAOS_KINDS into an array up front; the loop dispatches into chaos_action_<kind> by index.
 read -ra CHAOS_ACTIONS <<< "$CHAOS_KINDS"
 VEYRA_API_URL="${VEYRA_API_URL:-http://localhost:8008}"
 DOCKER_COMPOSE_FILES="${DOCKER_COMPOSE_FILES:--f $REPO_ROOT/deployments/compose/docker-compose.yml}"
@@ -117,8 +57,6 @@ cleanup() {
         if [ -n "$dlq_line" ]; then
             echo "  $dlq_line"
         else
-            # Zero dead-lettered rows ⇒ the GROUP BY emits nothing for
-            # that status. That is GOOD news, not a missing snapshot.
             if grep -q '^ts=.* jobs_total:' "$SNAPSHOT_LOG" 2>/dev/null; then
                 echo "  0 (no dead-lettered jobs across the run)"
             else
@@ -131,17 +69,8 @@ cleanup() {
             | awk -F= '{print $NF}' | sort -n | tail -1 \
             | xargs -I{} echo "  {}"
         echo
-        # Worker recovery — the headline invariant for chaos. Count of
-        # successful recoveries, min/max recovery_seconds, and (loudly)
-        # the count of recovery failures. A failing soak surfaces here,
-        # not 9,000 lines deep in the snapshot stream.
         echo "Worker recovery:"
         local rec_ok rec_fail rec_min rec_max
-        # NB: `grep -c` prints "0" AND exits 1 on no-match, so the old
-        # `|| echo 0` appended a SECOND zero → "0\n0", which then blew up
-        # `[ -gt ]` with "integer expression expected" and exited the
-        # whole summary non-zero. Capture grep's stdout, and only on its
-        # nonzero exit overwrite with a clean single 0.
         rec_ok=$(grep -c 'worker_recovery_seconds=' "$CHAOS_LOG" 2>/dev/null) || rec_ok=0
         rec_fail=$(grep -c 'chaos.recovery.failed' "$CHAOS_LOG" 2>/dev/null) || rec_fail=0
         if [ "$rec_ok" -gt 0 ]; then
@@ -159,16 +88,8 @@ cleanup() {
             echo "  failed     : 0"
         fi
         echo
-        # Fleet-collapse summary (only meaningful when CHAOS_KINDS includes
-        # worker_fleet_collapse). The per-fleet recovery counts and the
-        # per-fleet max recovery time both surface here so the headline
-        # invariant — "every fleet collapse recovered within bound" — is
-        # one line, not buried in a 20MB chaos log.
         local fleet_ok fleet_fail fleet_max
-        # The summary line carries `recovered=N expected=N` BETWEEN
-        # "summary" and "outcome=", so the pattern must allow fields in
-        # between — the old adjacent-match counted zero even on success.
-        # Same grep -c double-zero fix as the worker-recovery block above.
+        # The summary line carries `recovered=N expected=N` BETWEEN "summary" and "outcome=", so the pattern must allow fields in between — the old adjacent-match counted zero even on success.
         fleet_ok=$(grep -cE 'chaos\.fleet\.recovery\.summary .*outcome=success' "$CHAOS_LOG" 2>/dev/null) || fleet_ok=0
         fleet_fail=$(grep -cE 'chaos\.fleet\.recovery\.summary .*outcome=failed' "$CHAOS_LOG" 2>/dev/null) || fleet_fail=0
         if [ "$fleet_ok" -gt 0 ] || [ "$fleet_fail" -gt 0 ]; then
@@ -186,13 +107,6 @@ cleanup() {
             fi
         fi
         echo
-        # Reclaim tick health. If the tick is alive, every CHAOS_INTERVAL
-        # window should contain multiple `queue.reclaim.tick` lines from
-        # the api logs. We do NOT grep the api logs here (that's a soak-
-        # external concern); instead we surface the count of tick events
-        # observed in the snapshot stream — the snapshot harness captures
-        # them via emit_recent_errors's log scan. Future enhancement: tail
-        # the api container directly.
         local reclaim_requeued
         reclaim_requeued=$(grep -oE 'queue\.reclaim\.tick[^"]*reclaimedRequeued=[0-9]+' "$SNAPSHOT_LOG" 2>/dev/null \
             | grep -oE 'reclaimedRequeued=[0-9]+' | awk -F= '{s+=$2} END {print s+0}')
@@ -220,40 +134,20 @@ enqueue_loop() {
     done
 }
 
-# --- Chaos loop --------------------------------------------------------------
-#
-# Cycles deterministically: SIGTERM → SIGKILL → api restart → postgres restart.
-# Round-robin (not random) so an operator looking at the chaos log can predict
-# what's next and correlate snapshot dips with the right action. Per-action
-# logs are tagged `chaos.kind=<tag>` so grep can extract per-action time series.
-#
-# Worker-kill actions are paired with a bounded recovery assertion that emits
-# `worker_recovery_seconds=<n>` on success and `chaos.recovery.failed ...` on
-# timeout — chaos that proves death without proving recovery is a half-test.
-# See docs/SOAK_REPORT.md run 20260526T122313Z, finding A1.
+# --- Chaos loop -------------------------------------------------------------- Cycles deterministically: SIGTERM → SIGKILL → api restart → postgres restart.
 
-# Kill-then-assert helper. `signal` is SIGTERM or SIGKILL; `kind` is the log
-# label (worker_term / worker_kill). Both the kill line and the recovery
-# assertion line are appended to CHAOS_LOG, each prefixed with `chaos.kind=`
-# so per-action time series remain greppable.
+# Kill-then-assert helper.
 chaos_kill_with_assertion() {
     local signal="$1"
     local kind="$2"
     local ts
     ts=$(date -u +%H:%M:%SZ)
 
-    # `|| true` so a missing target / no-match exit doesn't bubble up under
-    # set -e and kill the chaos loop. The error line itself is already in
-    # the captured output.
     local kill_out
     kill_out=$(bash "$REPO_ROOT/scripts/chaos/kill-random-worker.sh" "$signal" 2>&1) || true
     echo "[$ts] chaos.kind=$kind $kill_out" >> "$CHAOS_LOG"
 
-    # Parse the structured fields. If any is missing the kill failed and
-    # there is nothing to assert against. baseline_rc must come from the
-    # kill script — capturing it in the assertion is racy under
-    # `unless-stopped` (the daemon restarts faster than the first
-    # `docker inspect` lands).
+    # Parse the structured fields.
     local target killed_at baseline_rc
     target=$(echo "$kill_out" | grep -oE 'chaos\.target=[^ ]+' | head -1 | cut -d= -f2 || true)
     killed_at=$(echo "$kill_out" | grep -oE 'chaos\.killed_at=[0-9]+' | head -1 | cut -d= -f2 || true)
@@ -272,23 +166,14 @@ chaos_kill_with_assertion() {
 chaos_action_worker_term() { chaos_kill_with_assertion SIGTERM worker_term; }
 chaos_action_worker_kill() { chaos_kill_with_assertion SIGKILL worker_kill; }
 
-# Fleet-collapse chaos action — kill ALL workers simultaneously and
-# assert every one of them comes back within the bound. The reclaim
-# tick is expected to requeue any in-flight rows during the gap. See
-# SOAK_REPORT.md A2 / project-phase-real-workloads memory for the
-# motivating reclaim-soak scenario.
 chaos_action_worker_fleet_collapse() {
     local ts; ts=$(date -u +%H:%M:%SZ)
     local kill_out
     kill_out=$(bash "$REPO_ROOT/scripts/chaos/kill-all-workers.sh" SIGKILL 2>&1) || true
-    # Tag every line of the multi-line kill output with the chaos.kind
-    # prefix so post-soak grep cleanly extracts per-action time series.
     while IFS= read -r line; do
         echo "[$ts] chaos.kind=worker_fleet_collapse $line" >> "$CHAOS_LOG"
     done <<< "$kill_out"
 
-    # The recovery assertion reads the kill output from stdin so it knows
-    # which containers to poll and what their pre-kill baselines were.
     local recovery_out
     recovery_out=$(echo "$kill_out" | bash "$REPO_ROOT/scripts/chaos/expect-fleet-resurrection.sh" 60 2>&1) || true
     local rts; rts=$(date -u +%H:%M:%SZ)

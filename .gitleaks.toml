@@ -1,0 +1,8 @@
+title = "Veyra Gitleaks Config"
+
+[allowlist]
+description = "Ignore test suites, fixtures, and mock tokens"
+paths = [
+  '''.*_test\.go$''',
+  '''.*\.test\.ts$'''
+]
