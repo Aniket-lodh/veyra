@@ -35,18 +35,15 @@ func (c SMTPConfig) Configured() bool {
 	return strings.TrimSpace(c.Host) != ""
 }
 
-// MailSender is the single network boundary for send_email.
 type MailSender interface {
 	Send(ctx context.Context, msg *gomail.Msg) error
 }
 
-// SendEmail delivers one outbound email described by the job payload over SMTP.
 type SendEmail struct {
 	cfg    SMTPConfig
 	sender MailSender
 }
 
-// NewSendEmail builds the handler.
 func NewSendEmail(cfg SMTPConfig) *SendEmail {
 	cfg.TLS = normalizeSMTPTLS(cfg.TLS)
 	if cfg.Port <= 0 {
@@ -55,7 +52,6 @@ func NewSendEmail(cfg SMTPConfig) *SendEmail {
 	return &SendEmail{cfg: cfg, sender: newGoMailSender(cfg)}
 }
 
-// NewSendEmailWithSender is for tests — inject a MailSender without dialing.
 func NewSendEmailWithSender(cfg SMTPConfig, sender MailSender) *SendEmail {
 	cfg.TLS = normalizeSMTPTLS(cfg.TLS)
 	if cfg.Port <= 0 {
@@ -230,7 +226,6 @@ func parseSendEmailPayload(raw json.RawMessage, defaultFrom string) (*parsedEmai
 	}, nil
 }
 
-// parseAddressList accepts a JSON string, array of strings, null, or omitted.
 func parseAddressList(raw json.RawMessage, field string) ([]string, error) {
 	if len(raw) == 0 || string(raw) == "null" {
 		return nil, nil
@@ -355,7 +350,6 @@ func normalizeSMTPTLS(v string) string {
 	}
 }
 
-// goMailSender wraps go-mail Client. One production MailSender impl.
 type goMailSender struct {
 	client *gomail.Client
 }

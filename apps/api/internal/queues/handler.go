@@ -1,4 +1,3 @@
-// Package queues serves operational queue control endpoints (pause, resume).
 package queues
 
 import (
@@ -41,7 +40,6 @@ func NewHandler(repo queueRepository, broadcaster ...eventBroadcaster) *Handler 
 	return &Handler{repo: repo, broadcaster: b}
 }
 
-// Register mounts queue pause and resume routes on the fiber app.
 func Register(app *fiber.App, h *Handler, authn *auth.Authenticator) {
 	app.Post("/queues/:name/pause", authn.Require(auth.ScopeJobsWrite), h.Pause)
 	app.Post("/queues/:name/resume", authn.Require(auth.ScopeJobsWrite), h.Resume)
@@ -69,7 +67,6 @@ func toResponse(qs *queuecore.QueueState) queueStateResponse {
 	}
 }
 
-// validateQueueName validates and normalizes an input queue name.
 func validateQueueName(raw string) (string, error) {
 	decoded, err := url.PathUnescape(raw)
 	if err != nil {
@@ -90,7 +87,6 @@ func validateQueueName(raw string) (string, error) {
 	return trimmed, nil
 }
 
-// Pause pauses job claiming on the named queue.
 func (h *Handler) Pause(c fiber.Ctx) error {
 	queueName, err := validateQueueName(c.Params("name"))
 	if err != nil {
@@ -132,7 +128,6 @@ func (h *Handler) Pause(c fiber.Ctx) error {
 	return c.Status(fiber.StatusOK).JSON(toResponse(qs))
 }
 
-// Resume resumes job claiming on the named queue.
 func (h *Handler) Resume(c fiber.Ctx) error {
 	queueName, err := validateQueueName(c.Params("name"))
 	if err != nil {

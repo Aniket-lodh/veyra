@@ -27,7 +27,6 @@ const (
 	errorBodySnippetMaxBytes = 200
 )
 
-// httpRequestPayload is the job payload for the http_request handler.
 type httpRequestPayload struct {
 	URL            string            `json:"url"`
 	Method         string            `json:"method"`         // default POST
@@ -36,10 +35,6 @@ type httpRequestPayload struct {
 	TimeoutSeconds *int              `json:"timeoutSeconds"` // per-request; default 30, capped at 300
 }
 
-// decodeBody returns the string representation of the request body.
-// If raw is empty or null, returns "".
-// If raw is a JSON string (e.g. "hello"), unmarshals to the string value ("hello").
-// If raw is a JSON object, array, or other JSON literal, returns the raw JSON string verbatim.
 func decodeBody(raw json.RawMessage) string {
 	if len(raw) == 0 || string(raw) == "null" {
 		return ""
@@ -51,17 +46,14 @@ func decodeBody(raw json.RawMessage) string {
 	return string(raw)
 }
 
-// HTTPRequest performs one outbound HTTP request described by the job payload.
 type HTTPRequest struct {
 	client *http.Client
 }
 
-// NewHTTPRequest builds the handler with a shared client.
 func NewHTTPRequest() *HTTPRequest {
 	return &HTTPRequest{client: &http.Client{}}
 }
 
-// Handle executes the request and maps the outcome to (result, error): - 2xx → success, rich result JSON
 func (h *HTTPRequest) Handle(ctx context.Context, job *queuecore.Job) (json.RawMessage, error) {
 	var p httpRequestPayload
 	if err := json.Unmarshal(job.Payload, &p); err != nil {
@@ -104,7 +96,6 @@ func (h *HTTPRequest) Handle(ctx context.Context, job *queuecore.Job) (json.RawM
 		req.Header.Set("User-Agent", "veyra-worker/http_request")
 	}
 
-	// Delivery-identity headers.
 	req.Header.Set("X-Veyra-Job-Id", job.ID)
 	req.Header.Set("X-Veyra-Attempt", strconv.Itoa(job.Attempt))
 	if req.Header.Get("Idempotency-Key") == "" {
@@ -201,7 +192,6 @@ func classifyTransportError(err error, method, url string, elapsed time.Duration
 	return &Error{Class: "connection", Message: fmt.Sprintf("%s %s failed after %dms: %v", method, url, elapsed.Milliseconds(), err)}
 }
 
-// bodySnippet renders a short, single-line excerpt for embedding in a failure message.
 func bodySnippet(b []byte) string {
 	s := strings.TrimSpace(string(b))
 	if s == "" {

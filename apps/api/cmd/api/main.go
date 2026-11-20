@@ -52,7 +52,6 @@ func main() {
 		"envFileMissing", envMissing,
 	)
 
-	// Signal-aware root context.
 	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -128,7 +127,6 @@ func main() {
 		}
 	}()
 
-	// Stale-worker sweeper.
 	sweeper := workers.NewSweeper(dbPool, cfg.SweeperInterval)
 	go func() {
 		if err := sweeper.Run(rootCtx); err != nil {
@@ -136,7 +134,6 @@ func main() {
 		}
 	}()
 
-	// Retry scheduler.
 	retryScheduler := retries.NewScheduler(dbPool, cfg.RetryInterval, cfg.RetryBatchLimit)
 	go func() {
 		if err := retryScheduler.Run(rootCtx); err != nil {
@@ -144,7 +141,6 @@ func main() {
 		}
 	}()
 
-	// Reclaim driver.
 	reclaimDriver := reclaim.NewDriver(dbPool, cfg.ReclaimInterval, cfg.ReclaimBatchLimit)
 	go func() {
 		if err := reclaimDriver.Run(rootCtx); err != nil {
@@ -152,7 +148,6 @@ func main() {
 		}
 	}()
 
-	// Completion webhook dispatcher.
 	callbackDispatcher := callbacks.NewDispatcher(dbPool, callbacks.Config{
 		Interval:    cfg.CallbackInterval,
 		BatchLimit:  cfg.CallbackBatchLimit,
@@ -200,10 +195,8 @@ func main() {
 	} else {
 		slog.Info("service.shutdown.complete", "service", serviceName)
 	}
-	// The defer above closes dbPool.
 }
 
-// exitFatal emits one structured ERROR line and exits 1.
 func exitFatal(event string, err error) {
 	slog.Error(event, "err", err.Error())
 	os.Exit(1)

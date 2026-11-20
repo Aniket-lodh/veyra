@@ -1,4 +1,3 @@
-// Package runtime is the worker lifecycle loop.
 package runtime
 
 import (
@@ -18,7 +17,6 @@ import (
 	"github.com/Aniket-lodh/veyra/worker/internal/handler"
 )
 
-// Config is the worker's startup configuration.
 type Config struct {
 	Pool     *pgxpool.Pool
 	Repo     *queuecore.Repository
@@ -26,30 +24,26 @@ type Config struct {
 
 	Hostname string
 	Version  string
-	Queues   []string // dequeue capability filter (passed to ClaimNextJob)
+	Queues   []string
 
-	HeartbeatInterval    time.Duration // workers.last_heartbeat_at update cadence — proves the RUNTIME is alive
-	LeaseRenewalInterval time.Duration // per-job RenewLease cadence — proves THIS JOB EXECUTION is healthy (queuecore SPEC §4)
-	PollInterval         time.Duration // ClaimNextJob cadence when the queue is idle
-	MaxConcurrency       int           // advertised on the workers row and sets the max concurrent job execution pool size
+	HeartbeatInterval    time.Duration
+	LeaseRenewalInterval time.Duration
+	PollInterval         time.Duration
+	MaxConcurrency       int
 }
 
-// Worker is one runtime.
 type Worker struct {
 	cfg Config
 
 	runtimeID string
 }
 
-// New builds a Worker with a fresh runtime ULID.
 func New(cfg Config) *Worker {
 	return &Worker{cfg: cfg, runtimeID: ulid.Make().String()}
 }
 
-// RuntimeID exposes the ULID main.go logs at startup.
 func (w *Worker) RuntimeID() string { return w.runtimeID }
 
-// Run is the entry point.
 func (w *Worker) Run(ctx context.Context) error {
 	if err := w.register(ctx); err != nil {
 		return fmt.Errorf("runtime: register: %w", err)
@@ -81,7 +75,6 @@ func (w *Worker) Run(ctx context.Context) error {
 	var hbWg sync.WaitGroup
 	hbWg.Go(func() { w.heartbeatLoop(heartbeatCtx) })
 
-	// Poll loop blocks until ctx done.
 	w.pollLoop(ctx, sem, &jobsWg, lifetimeCtx)
 
 	slog.Info("worker.shutdown.begin",
@@ -90,7 +83,6 @@ func (w *Worker) Run(ctx context.Context) error {
 		"action", "draining in-flight jobs, then stopping heartbeat and deregistering",
 	)
 
-	// Wait for in-flight jobs to drain cleanly with a timeout.
 	drainDone := make(chan struct{})
 	go func() {
 		jobsWg.Wait()
@@ -109,11 +101,9 @@ func (w *Worker) Run(ctx context.Context) error {
 		<-drainDone
 	}
 
-	// Stop heartbeat loop and wait for it.
 	heartbeatCancel()
 	hbWg.Wait()
 
-	// Best-effort deregister with a fresh short-lived ctx.
 	dctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := w.deregister(dctx); err != nil {
@@ -132,7 +122,6 @@ func (w *Worker) Run(ctx context.Context) error {
 	return nil
 }
 
-// register INSERTs the workers row.
 func (w *Worker) register(ctx context.Context) error {
 	const sql = `
 		INSERT INTO workers (
@@ -159,7 +148,6 @@ func (w *Worker) register(ctx context.Context) error {
 	return nil
 }
 
-// deregister moves the workers row into state='disconnected'.
 func (w *Worker) deregister(ctx context.Context) error {
 	const sql = `UPDATE workers SET state = 'disconnected' WHERE id = $1`
 	if _, err := w.cfg.Pool.Exec(ctx, sql, w.runtimeID); err != nil {
@@ -168,7 +156,6 @@ func (w *Worker) deregister(ctx context.Context) error {
 	return nil
 }
 
-// heartbeatLoop runs until ctx is cancelled.
 func (w *Worker) heartbeatLoop(ctx context.Context) {
 	t := time.NewTicker(w.cfg.HeartbeatInterval)
 	defer t.Stop()
@@ -186,7 +173,6 @@ func (w *Worker) heartbeatLoop(ctx context.Context) {
 				continue
 			}
 			if !ok {
-				// The workers row for this runtime no longer exists, so the runtime's identity is gone and every lease guard we hold is stale.
 				slog.ErrorContext(ctx, "worker.heartbeat.runtime_evicted",
 					"workerId", w.runtimeID,
 					"reason", "0_rows_affected",
@@ -200,7 +186,6 @@ func (w *Worker) heartbeatLoop(ctx context.Context) {
 	}
 }
 
-// heartbeat does one UPDATE.
 func (w *Worker) heartbeat(ctx context.Context) (bool, error) {
 	const sql = `UPDATE workers SET last_heartbeat_at = now() WHERE id = $1`
 	cmd, err := w.cfg.Pool.Exec(ctx, sql, w.runtimeID)
@@ -210,7 +195,6 @@ func (w *Worker) heartbeat(ctx context.Context) (bool, error) {
 	return cmd.RowsAffected() == 1, nil
 }
 
-// pollLoop is the main loop. It acquires a concurrency slot before calling ClaimNextJob.
 func (w *Worker) pollLoop(ctx context.Context, sem chan struct{}, jobsWg *sync.WaitGroup, lifetimeCtx context.Context) {
 	for {
 		if ctx.Err() != nil {
@@ -258,7 +242,6 @@ func (w *Worker) pollLoop(ctx context.Context, sem chan struct{}, jobsWg *sync.W
 	}
 }
 
-// executeJob is the per-job lifecycle: log start, spawn the lease renewer, dispatch to the registered handler.
 func (w *Worker) executeJob(ctx context.Context, job *queuecore.Job) {
 	slog.InfoContext(ctx, "worker.execute.start",
 		"workerId", w.runtimeID,
@@ -316,7 +299,6 @@ func (w *Worker) executeJob(ctx context.Context, job *queuecore.Job) {
 	w.ackJob(ctx, job, start, result)
 }
 
-// runLeaseRenewer is the per-job renewal loop.
 func (w *Worker) runLeaseRenewer(jobCtx context.Context, jobCancel context.CancelFunc, job *queuecore.Job) {
 	t := time.NewTicker(w.cfg.LeaseRenewalInterval)
 	defer t.Stop()
@@ -368,7 +350,6 @@ func (w *Worker) runLeaseRenewer(jobCtx context.Context, jobCancel context.Cance
 	}
 }
 
-// ackJob calls MarkJobSucceeded with the result payload the handler returned (may be nil).
 func (w *Worker) ackJob(ctx context.Context, job *queuecore.Job, start time.Time, result json.RawMessage) {
 	if _, err := w.cfg.Repo.MarkJobSucceeded(ctx, queuecore.SucceedParams{
 		WorkerID: w.runtimeID,
@@ -386,7 +367,6 @@ func (w *Worker) ackJob(ctx context.Context, job *queuecore.Job, start time.Time
 	)
 }
 
-// nackJob calls MarkJobFailed with the handler's failure.
 func (w *Worker) nackJob(ctx context.Context, job *queuecore.Job, start time.Time, cause error) {
 	class := "HandlerError"
 	message := cause.Error()
@@ -425,7 +405,6 @@ func (w *Worker) nackJob(ctx context.Context, job *queuecore.Job, start time.Tim
 	)
 }
 
-// logCompletionError emits the right log level depending on which sentinel the completion call returned.
 func (w *Worker) logCompletionError(ctx context.Context, event string, job *queuecore.Job, err error) {
 	leaseLost := errors.Is(err, queuecore.ErrLeaseLost)
 	leaseExpired := errors.Is(err, queuecore.ErrLeaseExpired)
@@ -443,7 +422,6 @@ func (w *Worker) logCompletionError(ctx context.Context, event string, job *queu
 	)
 }
 
-// ctxErrString renders ctx.Err() as a short string ("<nil>" when alive).
 func ctxErrString(ctx context.Context) string {
 	if err := ctx.Err(); err != nil {
 		return err.Error()
@@ -451,7 +429,6 @@ func ctxErrString(ctx context.Context) string {
 	return "<nil>"
 }
 
-// sleep returns true if the duration elapsed, false if ctx was cancelled first.
 func sleep(ctx context.Context, d time.Duration) bool {
 	if d <= 0 {
 		return ctx.Err() == nil

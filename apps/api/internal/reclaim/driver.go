@@ -1,4 +1,3 @@
-// Package reclaim runs the api-side periodic reclaim driver.
 package reclaim
 
 import (
@@ -14,14 +13,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Driver is the long-running goroutine handle.
 type Driver struct {
 	pool       *pgxpool.Pool
 	interval   time.Duration
 	batchLimit int
 }
 
-// NewDriver constructs the periodic reclaim driver.
 func NewDriver(pool *pgxpool.Pool, interval time.Duration, batchLimit int) *Driver {
 	return &Driver{
 		pool:       pool,
@@ -30,7 +27,6 @@ func NewDriver(pool *pgxpool.Pool, interval time.Duration, batchLimit int) *Driv
 	}
 }
 
-// Run drives one tick per `interval`.
 func (d *Driver) Run(ctx context.Context) error {
 	if d.interval <= 0 {
 		return fmt.Errorf("reclaim.Driver: interval must be > 0, got %v", d.interval)
@@ -48,7 +44,6 @@ func (d *Driver) Run(ctx context.Context) error {
 	t := time.NewTicker(d.interval)
 	defer t.Stop()
 
-	// Immediate tick on boot so an api restart catches any reclaimable row that accumulated during the downtime.
 	if err := d.tick(ctx); err != nil {
 		slog.ErrorContext(ctx, "queue.reclaim.tick_failed",
 			"err", err.Error(),
@@ -72,7 +67,6 @@ func (d *Driver) Run(ctx context.Context) error {
 	}
 }
 
-// tick runs one reclaim sweep.
 func (d *Driver) tick(ctx context.Context) error {
 	tickStart := time.Now()
 
@@ -209,7 +203,6 @@ func (d *Driver) tick(ctx context.Context) error {
 	return nil
 }
 
-// safeSavepointSuffix returns a name fragment safe to embed in "SAVEPOINT <name>" without quoting.
 func safeSavepointSuffix(id string) string {
 	out := make([]byte, 0, len(id))
 	for i := 0; i < len(id); i++ {

@@ -5,72 +5,134 @@
 <h1 align="center">Veyra</h1>
 
 <p align="center">
-  A durable job queue and workflow runner built on PostgreSQL.<br />
-  Queue behavior is explicit, specified, and inspectable.
+  A durable distributed job queue and workflow runner built on PostgreSQL.<br />
+  Queue semantics are explicit, specified, and transactional.
 </p>
 
 <p align="center">
   <a href="LICENSE"><img alt="License: AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-blue" /></a>
   <a href="https://github.com/Aniket-lodh/veyra/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Aniket-lodh/veyra/actions/workflows/ci.yml/badge.svg" /></a>
+  <a href="https://www.npmjs.com/package/@veyra/sdk"><img alt="npm: @veyra/sdk" src="https://img.shields.io/badge/npm-%40veyra%2Fsdk-informational" /></a>
 </p>
 
 ---
 
-Veyra stores jobs, leases, retries, and dead letters in one PostgreSQL database.
-Workers claim jobs with `SELECT ... FOR UPDATE SKIP LOCKED`, heartbeat their
-leases, and report results. An operator console shows queue state live. There is no
-separate message broker to run.
+Veyra coordinates jobs, leases, retries, dead letters, and completion callbacks in a single PostgreSQL database. Workers claim jobs using `SELECT ... FOR UPDATE SKIP LOCKED`, renew their leases through heartbeats, and report execution results. An operator console streams live system state over SSE. There is no separate message broker or orchestrator to deploy or maintain.
 
-The design favors correctness over throughput. Every queue operation is written down in
-[`packages/queue-core/SPEC.md`](packages/queue-core/SPEC.md) before it is implemented.
+Every queue state transition is formally specified in [`packages/queue-core/SPEC.md`](packages/queue-core/SPEC.md).
 
 ## Features
 
-- **Durable queue on PostgreSQL.** Enqueue, lease, ack, nack, cancel, and reclaim are
-  transactional. A crashed worker's lease expires, and another worker picks the job up.
-- **Retries with backoff.** Exponential or fixed backoff with jitter. Handlers can mark a
-  failure as permanent so it dead-letters at once.
-- **Built-in handlers.** `http_request` for outbound HTTP calls with rich result metadata,
-  `send_email` for SMTP delivery, and `noop` for testing.
-- **Operator console.** A React dashboard for queue stats, jobs, job attempts, workers, and
-  cancellation. Live updates use SSE invalidation (`GET /events`) driven by Postgres
-  NOTIFY — the UI refetches REST only when something changed (ADR-0009).
-- **REST API.** Enqueue, inspect, cancel, and list jobs. Swagger UI is available in development.
+- **Transactional Queue on PostgreSQL:** Enqueue, claim, lease heartbeat, complete, fail, cancel, pause, and reclaim operations are atomic. If a worker terminates, its lease expires safely and the job is automatically reclaimed.
+- **Configurable Retries & Backoff:** Exponential or fixed backoff with jitter. Handlers can designate errors as permanent via non-retryable signals to dead-letter immediately.
+- **Completion Webhooks:** Outbound webhook dispatch on terminal job events (`succeeded`, `failed`, `dead_lettered`, `cancelled`) with configurable timeouts, retries, and HMAC-SHA256 payload signing.
+- **Queue Controls:** Operational pause/resume per queue, bulk Dead Letter Queue (DLQ) replaying, and cancellation of in-flight or queued jobs.
+- **Fleet Management:** Worker heartbeat tracking, active lease inspection, operator-initiated lease force-release, draining, cordoning, and safe deregistration.
+- **First-Class TypeScript SDK (`@veyra/sdk`):** Zero-dependency TypeScript and Node.js client and worker engine with concurrency control, automatic lease renewals, and abort signals.
+- **Built-in Go Worker Handlers:** `http_request` for outbound webhooks with response captures, `send_email` for SMTP delivery, and `noop` for load testing.
+- **Live Operator Console:** React dashboard with zero-polling live updates powered by Postgres `NOTIFY` and Server-Sent Events (SSE) invalidation.
 
-## Status
+---
 
-Veyra is early-stage and runnable. The API, worker, queue core, and operator console work
-end to end. The HTTP API and the queue spec may still change before 1.0. See
-[CHANGELOG.md](CHANGELOG.md).
+## Architecture Overview
 
-### Known limitations
+```text
+ ┌────────────────────────────────────────────────────────────────────────┐
+ │                     Operator Console (React / Vite)                   │
+ └──────────────┬──────────────────────────────────────────▲──────────────┘
+                │ REST API                                 │ SSE (/events)
+                ▼                                          │
+ ┌─────────────────────────────────────────────────────────┴──────────────┐
+ │                              Veyra API                                 │
+ │   - REST Router (Go / Fiber)         - Worker Sweeper Loop             │
+ │   - SSE Live Event Hub & Listener    - Retry Scheduler Loop            │
+ │   - API Key & Session Auth           - Reclaim Driver Loop             │
+ │   - Completion Webhook Dispatcher                                      │
+ └──────────────┬──────────────────────────────────────────▲──────────────┘
+                │ pgx                                      │ pgx
+                ▼                                          │
+ ┌─────────────────────────────────────────────────────────┴──────────────┐
+ │                             PostgreSQL                                 │
+ │   - jobs, job_attempts, workers, queue_states, api_keys, users         │
+ │   - Transactional Primitives: SELECT ... FOR UPDATE SKIP LOCKED        │
+ └──────────────▲──────────────────────────────────────────▲──────────────┘
+                │ pgx                                      │ HTTP Worker Protocol
+ ┌──────────────┴──────────────┐            ┌──────────────┴──────────────┐
+ │        Go Workers           │            │  TypeScript SDK Workers     │
+ │  (apps/worker)              │            │  (@veyra/sdk)               │
+ │  - http_request, send_email │            │  - Custom handlers          │
+ │  - Heartbeats & leases      │            │  - Lease renewals & signals │
+ └─────────────────────────────┘            └─────────────────────────────┘
+```
 
-- **Auth:** operators sign in (first visit creates the admin). Apps and scripts
-  use API keys from the dashboard. `GET /health` and login/signup stay public.
-- **Jobs wait for a capable worker.** A worker only claims jobs for handlers it runs. A job whose
-  handler no worker runs (for example, from a typo) stays queued. Operators see it in queue depth
-  and can cancel it. The API does not check handler names yet, so this is the main way to get stuck jobs.
-- **No pause, drain, or dead-letter replay** yet. Operator console actions for these are planned.
-- **No payload size limit** yet. The planned limit is 256 KiB.
-- **Reclaim grace is fixed at 10 seconds** in code.
-- **Partial test coverage.** Cancel, Nack permanence, backoff math, and the built-in handlers are
-  tested. Enqueue, claim, ack, lease renewal, the retry scheduler, and the reclaim tick are not
-  yet covered by automated tests. The API package has no tests. Each spec section lists its gaps.
+- **`packages/queue-core`**: Core domain model, SQL queries, and queue primitives (claim, succeed, fail, cancel, pause/resume, DLQ replay, reclaim).
+- **`apps/api`**: Public REST API, operator endpoints, SSE live notifications, and background engines (sweeper, retry scheduler, reclaim driver, callback dispatcher).
+- **`apps/worker`**: Compiled Go worker executing built-in handlers (`http_request`, `send_email`, `noop`).
+- **`packages/sdk-ts` (`@veyra/sdk`)**: TypeScript/Node.js SDK providing both a client for job management and a worker engine for custom business logic.
+- **`apps/frontend/app`**: Operator console for inspecting queues, jobs, attempts, workers, and metrics.
 
+---
 
-## Quick start
+## Repository Layout
 
-You need Docker with the Compose plugin.
+```text
+apps/
+  api/              Go HTTP REST API, SSE streaming, and background loops
+  worker/           Go worker runtime with built-in handlers
+  frontend/app/     React + Vite operator console
+packages/
+  queue-core/       Queue semantics, database models, and SQL primitives
+  sdk-ts/           Zero-dependency TypeScript SDK (@veyra/sdk)
+deployments/
+  compose/          Docker Compose manifests and environment examples
+  docker/           Dockerfiles (API, worker) and nginx configuration
+docs/
+  architecture/     System architecture and database schema specifications
+  decisions/        Architecture Decision Records (ADRs)
+  runbooks/         Operational runbooks
+scripts/            Development, stress, chaos, and SQL administration scripts
+```
+
+---
+
+## Local Setup & Self-Hosting
+
+### Prerequisites
+
+- Docker and Docker Compose
+- Go 1.24+ (for local Go development)
+- Node.js 18+ and pnpm (for TypeScript SDK and operator console)
+
+### 1. Start the Local Dev Stack
 
 ```bash
 git clone https://github.com/Aniket-lodh/veyra.git
 cd veyra
 
+# Prepare environment configuration
 cp deployments/compose/.env.example deployments/compose/.env
-scripts/dev/up.sh 2        # Postgres, API on :8008, and two workers
+
+# Launch Postgres, API (on port 8008), and 2 Go workers
+scripts/dev/up.sh 2
 ```
 
-To run the operator console against that API:
+The database volume persists across restarts. To stop the stack, run `make down`.
+
+### 2. Database Migrations
+
+Migrations run automatically on API startup. They are stored in `apps/api/migrations/`:
+
+- `000001_create_jobs_table`
+- `000002_create_workers_and_job_attempts`
+- `000003_create_api_keys`
+- `000004_create_users_and_sessions`
+- `000005_ui_live_notify`
+- `000006_workers_ui_notify_no_heartbeat`
+- `000007_create_queue_states_table`
+- `000008_add_worker_cordoned_state`
+- `000009_add_job_completion_webhooks`
+
+### 3. Launch the Operator Console
 
 ```bash
 cd apps/frontend/app
@@ -78,103 +140,190 @@ pnpm install
 VITE_API_PROXY_TARGET=http://localhost:8008 pnpm dev
 ```
 
-Open the URL Vite prints (usually <http://localhost:5173>). On first boot,
-create the admin account; afterwards sign in. Mint machine API keys under
-**API keys** in the sidebar, then:
+Navigate to <http://localhost:5173>. On initial visit, create the admin credentials. Afterwards, generate API keys under **API Keys** in the sidebar.
+
+---
+
+## Environment Variables
+
+Configuration is loaded from environment variables. Refer to the corresponding `.env.example` templates:
+
+| Service | Environment Template | Key Configurations |
+|---|---|---|
+| **Compose** | `deployments/compose/.env.example` | Postgres credentials, worker count, log level |
+| **API** | `apps/api/.env.example` | `PORT`, `DB_*`, `ENABLE_DEBUG_ENDPOINTS`, `VEYRA_CALLBACK_*` |
+| **Worker** | `apps/worker/.env.example` | `VEYRA_WORKER_QUEUES`, `VEYRA_WORKER_MAX_CONCURRENCY`, `VEYRA_SMTP_*` |
+| **Frontend** | `apps/frontend/app/.env.example` | `VITE_API_PROXY_TARGET`, `VITE_STATUS_PAGE_URL` |
+
+> [!IMPORTANT]
+> Never commit `.env` files to source control. Always update `.env.example` when introducing configuration settings.
+
+---
+
+## TypeScript SDK & Worker Protocol
+
+The `@veyra/sdk` package interacts with Veyra over HTTP without requiring direct database access.
+
+### Installation
 
 ```bash
-curl -X POST http://localhost:8008/jobs \
-  -H "Authorization: Bearer $VEYRA_API_KEY" \
-  -H 'Content-Type: application/json' \
-  -d '{"handler":"noop","queue":"default","payload":{"hello":"world"}}'
+pnpm add @veyra/sdk
 ```
 
-Stop the stack with `make down`. The database volume is kept.
+### 1. Enqueueing Jobs with Completion Webhooks
 
-## Architecture
+```typescript
+import { VeyraClient } from '@veyra/sdk';
 
-```text
- Operator console (React)
-          │  HTTP
-          ▼
- API (Go, Fiber)  ── migrations, sweeper, retry scheduler, reclaim driver
-          │  pgx
-          ▼
- PostgreSQL  ◀── queue state, leases, attempts, workers
-          ▲  pgx
-          │
- Workers (Go)  ── claim, execute handler, heartbeat, ack or nack
+const client = new VeyraClient({
+  baseUrl: process.env.VEYRA_API_URL || 'http://localhost:8080',
+  apiKey: process.env.VEYRA_API_KEY || 'veyra_...',
+  defaultQueue: 'default',
+});
+
+const job = await client.enqueue({
+  queue: 'reports',
+  handler: 'generate_pdf',
+  payload: { reportId: 'rep_108', format: 'landscape' },
+  priority: 5,
+  maxAttempts: 3,
+  backoff: { kind: 'exponential', baseSeconds: 30, capSeconds: 3600 },
+  idempotencyKey: 'report-gen-rep_108',
+  callbackUrl: 'https://api.example.com/webhooks/reports',
+});
+
+console.log('Enqueued job ID:', job.id);
 ```
 
-- `apps/api`: HTTP API and background loops.
-- `apps/worker`: job runner and handler registry.
-- `packages/queue-core`: queue semantics, shared by the API and the worker.
-- `apps/frontend/app`: operator console.
+### 2. Running Custom Worker Handlers
 
-For more detail, read [`docs/architecture/system-overview.md`](docs/architecture/system-overview.md)
-and [`docs/architecture/database-schema.md`](docs/architecture/database-schema.md).
+```typescript
+import { VeyraClient, NonRetryableError } from '@veyra/sdk';
 
-## Repository layout
+const client = new VeyraClient({
+  baseUrl: process.env.VEYRA_API_URL || 'http://localhost:8080',
+  apiKey: process.env.VEYRA_API_KEY || 'veyra_...',
+});
 
-```text
-apps/
-  api/              Go HTTP API and background loops
-  worker/           Go worker and handlers
-  frontend/app/     React operator console
-packages/
-  queue-core/       Queue semantics and SQL (spec: SPEC.md)
-deployments/
-  compose/          Docker Compose stacks and .env.example
-  docker/           Dockerfiles and nginx config
-docs/
-  architecture/     System and schema design
-  decisions/        Architecture decision records (ADRs)
-  runbooks/         Operational procedures
-scripts/            Dev, stress, chaos, soak, and SQL helpers
+const worker = client.createWorker({
+  queues: ['reports'],
+  concurrency: 4,               // Max simultaneous active jobs
+  pollIntervalMs: 1_000,        // Backoff interval when queue is empty (204 No Content)
+  heartbeatIntervalMs: 10_000,  // Worker health heartbeat interval
+  leaseHeartbeatIntervalMs: 10_000, // In-flight lease renewal cadence
+});
+
+worker.registerHandler('generate_pdf', async (job, ctx) => {
+  // Check if lease was lost to abort long-running computations early
+  if (ctx.signal.aborted) {
+    throw new Error('Lease lost or expired; halting execution');
+  }
+
+  const { reportId } = job.payload as { reportId?: string };
+  if (!reportId) {
+    // Fails permanently without consuming retry budget
+    throw new NonRetryableError('reportId is missing');
+  }
+
+  // Execute processing logic...
+  return { generated: true, url: `https://storage.example.com/${reportId}.pdf` };
+});
+
+await worker.start();
 ```
 
-## Configuration
+### 3. Webhook Delivery & HMAC Signature Verification
 
-Each app reads its settings from environment variables and documents them in its
-`.env.example`:
+When configured with `VEYRA_CALLBACK_SECRET`, Veyra signs completion webhook requests using HMAC-SHA256 and includes the digest in the `X-Veyra-Signature` header:
 
-- [`deployments/compose/.env.example`](deployments/compose/.env.example): Compose settings
-- [`apps/api/.env.example`](apps/api/.env.example): API settings
-- [`apps/worker/.env.example`](apps/worker/.env.example): worker settings, including SMTP
-- [`apps/frontend/app/.env.example`](apps/frontend/app/.env.example): console settings
+```typescript
+import crypto from 'node:crypto';
 
-Never commit a real `.env` file.
+export function verifyVeyraWebhook(
+  rawBody: Buffer | string,
+  signatureHeader: string | undefined,
+  secret: string
+): boolean {
+  if (!signatureHeader || !signatureHeader.startsWith('sha256=')) {
+    return false;
+  }
+  const expectedSig = signatureHeader.slice('sha256='.length);
+  const actualSig = crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
 
-The default database password (`veyra`) is for local development only. Change it for any
-shared or public deployment.
+  return crypto.timingSafeEqual(
+    Buffer.from(actualSig, 'hex'),
+    Buffer.from(expectedSig, 'hex')
+  );
+}
+```
 
-## Development
+---
+
+## Verification & Commands
+
+### Go Modules (`packages/queue-core`, `apps/api`, `apps/worker`)
 
 ```bash
-make help               # list all commands
-make test               # Go unit tests and frontend typecheck
-make test-integration   # queue tests against real Postgres (needs Docker)
-make lint               # gofmt, golangci-lint, and frontend lint
+# Run unit tests across all Go modules
+cd packages/queue-core && go test ./...
+cd ../../apps/api && go test ./...
+cd ../../apps/worker && go test ./...
+
+# Run queue-core integration tests against PostgreSQL (requires running database)
+cd packages/queue-core && go test -tags integration -count=1 ./...
+
+# Format and lint Go code
+gofmt -w apps packages scripts
+cd packages/queue-core && golangci-lint run
+cd ../../apps/api && golangci-lint run
+cd ../../apps/worker && golangci-lint run
 ```
 
-The project rules for contributors and AI coding agents live in [`CLAUDE.md`](CLAUDE.md)
-and the nearest `CLAUDE.md` in each directory.
+### TypeScript SDK (`packages/sdk-ts`)
 
-## Contributing
+```bash
+cd packages/sdk-ts
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) before you open a pull request. Queue-semantics changes
-need a spec update first. Follow [AI_POLICY.md](AI_POLICY.md) for AI-assisted work.
+# Run tests
+pnpm test
 
-Please follow the [Code of Conduct](CODE_OF_CONDUCT.md). Report vulnerabilities through
-[SECURITY.md](SECURITY.md), not public issues.
+# Typecheck
+pnpm typecheck
+
+# Build distribution bundle
+pnpm build
+```
+
+### Operator Console (`apps/frontend/app`)
+
+```bash
+cd apps/frontend/app
+
+# Run test suite
+pnpm test
+
+# Typecheck
+pnpm typecheck
+
+# Lint and format checks
+pnpm lint:check
+
+# Production build
+pnpm build
+```
+
+### Docker Image Builds
+
+```bash
+# Build API image
+docker build -f deployments/docker/api.Dockerfile -t veyra-api:local .
+
+# Build Worker image
+docker build -f deployments/docker/worker.Dockerfile -t veyra-worker:local .
+```
+
+---
 
 ## License
 
-Veyra is free software: you can redistribute it and/or modify it under the terms of the
-[GNU Affero General Public License v3.0](LICENSE), or any later version.
-
-Copyright (C) 2026 Aniket Lodh
-
-This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY.
-See the license for details. If you run a modified version of Veyra as a network service,
-the AGPL requires you to offer its source code to the users of that service.
+Veyra is distributed under the terms of the [GNU Affero General Public License v3.0](LICENSE). The TypeScript SDK (`@veyra/sdk`) is distributed under the [Apache-2.0 License](packages/sdk-ts/LICENSE).

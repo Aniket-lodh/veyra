@@ -194,7 +194,6 @@ WHERE id = $1`, id)
 	return nil
 }
 
-// GetKeyByID returns metadata for a single key by ID, without exposing secret hashes.
 func (s *Store) GetKeyByID(ctx context.Context, id string) (ListedKey, error) {
 	if s == nil || s.pool == nil {
 		return ListedKey{}, ErrKeyNotFound
@@ -221,7 +220,6 @@ WHERE id = $1`
 	return k, nil
 }
 
-// ValidatePrincipal re-verifies that a principal is still active, unrevoked, unexpired, and holds queue:read scope.
 func (s *Store) ValidatePrincipal(ctx context.Context, p Principal) error {
 	if s == nil || s.pool == nil {
 		return nil

@@ -1,4 +1,3 @@
-// Package jobs is the HTTP layer for queue operations.
 package jobs
 
 import (
@@ -42,7 +41,6 @@ type eventBroadcaster interface {
 	MarkDirty(resources ...string)
 }
 
-// Handler holds the dependencies the job HTTP routes need.
 type Handler struct {
 	repo        jobRepository
 	broadcaster eventBroadcaster
@@ -56,7 +54,6 @@ func NewHandler(repo jobRepository, broadcaster ...eventBroadcaster) *Handler {
 	return &Handler{repo: repo, broadcaster: b}
 }
 
-// Register mounts the job routes on the fiber app.
 func Register(app *fiber.App, h *Handler, authn *auth.Authenticator) {
 	app.Post("/jobs", authn.Require(auth.ScopeJobsWrite), h.Create)
 	app.Post("/jobs/validate", authn.Require(auth.ScopeJobsWrite), h.Validate)
@@ -67,7 +64,6 @@ func Register(app *fiber.App, h *Handler, authn *auth.Authenticator) {
 	app.Post("/jobs/:id/cancel", authn.Require(auth.ScopeJobsWrite), h.Cancel)
 }
 
-// createRequest is the POST /jobs body.
 type createRequest struct {
 	Handler        string                     `json:"handler"`
 	Queue          string                     `json:"queue"`
@@ -80,7 +76,6 @@ type createRequest struct {
 	CallbackURL    *string                    `json:"callbackUrl,omitempty"`
 }
 
-// jobResponse is the API view of a Job.
 type jobResponse struct {
 	ID             string `json:"id"`
 	Handler        string `json:"handler"`
@@ -118,7 +113,6 @@ type jobResponse struct {
 	IsReplay bool              `json:"isReplay"`
 }
 
-// attemptResponse is the API view of one job_attempts row.
 type attemptResponse struct {
 	AttemptNumber int        `json:"attemptNumber"`
 	WorkerID      string     `json:"workerId"`
@@ -130,7 +124,6 @@ type attemptResponse struct {
 	ErrorMessage  *string    `json:"errorMessage"`
 }
 
-// toAttemptResponse converts the stored shape to the API shape, renaming the lease_lost outcome to "lease-lost" (mirroring dead_lettered →…
 func toAttemptResponse(a *queuecore.Attempt) attemptResponse {
 	var (
 		outcome    *string
@@ -159,7 +152,6 @@ func toAttemptResponse(a *queuecore.Attempt) attemptResponse {
 	}
 }
 
-// toResponse maps a stored Job to the API shape, deriving the API-only "scheduled" status and renaming "dead_lettered" → "dead-lettered".
 func toResponse(j *queuecore.Job) jobResponse {
 	var idempotencyKey any
 	if j.IdempotencyKey != nil {
@@ -222,7 +214,6 @@ func deriveAPIStatus(status queuecore.JobStatus, scheduledFor time.Time, now tim
 	return string(status)
 }
 
-// Create handles POST /jobs.
 func (h *Handler) Create(c fiber.Ctx) error {
 	var req createRequest
 	if err := json.Unmarshal(c.Body(), &req); err != nil {
@@ -271,8 +262,6 @@ func (h *Handler) Create(c fiber.Ctx) error {
 	return c.Status(fiber.StatusCreated).JSON(toResponse(job))
 }
 
-// Validate handles POST /jobs/validate.
-// It applies identical validation rules as Create without persisting the job or broadcasting events.
 func (h *Handler) Validate(c fiber.Ctx) error {
 	var req createRequest
 	if err := json.Unmarshal(c.Body(), &req); err != nil {
@@ -307,7 +296,6 @@ func (h *Handler) Validate(c fiber.Ctx) error {
 	})
 }
 
-// Cancel handles POST /jobs/:id/cancel.
 func (h *Handler) Cancel(c fiber.Ctx) error {
 	id := c.Params("id")
 	if id == "" {
@@ -343,20 +331,17 @@ func (h *Handler) Cancel(c fiber.Ctx) error {
 	return c.JSON(resp)
 }
 
-// replayDLQRequest is the POST /jobs/dlq/replay body.
 type replayDLQRequest struct {
 	Queue   *string `json:"queue,omitempty"`
 	Handler *string `json:"handler,omitempty"`
 	Limit   *int    `json:"limit,omitempty"`
 }
 
-// replayDLQResponse is the response body for POST /jobs/dlq/replay.
 type replayDLQResponse struct {
 	ReplayedCount int      `json:"replayedCount"`
 	JobIDs        []string `json:"jobIds"`
 }
 
-// Retry handles POST /jobs/:id/retry.
 func (h *Handler) Retry(c fiber.Ctx) error {
 	id := c.Params("id")
 	if id == "" {
@@ -395,7 +380,6 @@ func (h *Handler) Retry(c fiber.Ctx) error {
 	return c.JSON(resp)
 }
 
-// ReplayDLQ handles POST /jobs/dlq/replay.
 func (h *Handler) ReplayDLQ(c fiber.Ctx) error {
 	var req replayDLQRequest
 	if len(c.Body()) > 0 {
@@ -454,7 +438,6 @@ func (h *Handler) ReplayDLQ(c fiber.Ctx) error {
 	})
 }
 
-// GetByID handles GET /jobs/:id.
 func (h *Handler) GetByID(c fiber.Ctx) error {
 	id := c.Params("id")
 	if id == "" {
@@ -480,7 +463,6 @@ func (h *Handler) GetByID(c fiber.Ctx) error {
 	return c.JSON(resp)
 }
 
-// List handles GET /jobs.
 func (h *Handler) List(c fiber.Ctx) error {
 	limit, err := parsePositiveQuery(c, "limit", defaultListLimit)
 	if err != nil {
@@ -536,7 +518,6 @@ func (h *Handler) List(c fiber.Ctx) error {
 	})
 }
 
-// buildCreateParams validates the request and resolves defaults.
 func buildCreateParams(req createRequest) (queuecore.CreateParams, error) {
 	handler := strings.TrimSpace(req.Handler)
 	if handler == "" {
@@ -620,7 +601,6 @@ func buildCreateParams(req createRequest) (queuecore.CreateParams, error) {
 	}, nil
 }
 
-// validateCallbackURL validates that raw is a non-empty HTTP/HTTPS URL with host, bounded to 2048 chars.
 func validateCallbackURL(raw string) (string, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
@@ -658,7 +638,6 @@ func parsePositiveQuery(c fiber.Ctx, key string, def int) (int, error) {
 	return v, nil
 }
 
-// repeatedQuery reads every occurrence of `key` from the URL query string, e.g.
 func repeatedQuery(c fiber.Ctx, key string) []string {
 	raw := c.RequestCtx().QueryArgs().PeekMulti(key)
 	if len(raw) == 0 {
@@ -677,7 +656,6 @@ func repeatedQuery(c fiber.Ctx, key string) []string {
 	return out
 }
 
-// parseStatusFilter reads repeated ?status= query values and translates the frontend's 7-value API vocabulary to the 6-value storage enum.
 func parseStatusFilter(c fiber.Ctx) ([]queuecore.JobStatus, error) {
 	raw := repeatedQuery(c, "status")
 	if len(raw) == 0 {
@@ -699,7 +677,6 @@ func parseStatusFilter(c fiber.Ctx) ([]queuecore.JobStatus, error) {
 	return out, nil
 }
 
-// apiStatusToStorage maps an API status name (7 values) to the storage enum (6 values).
 func apiStatusToStorage(api string) (queuecore.JobStatus, bool) {
 	switch api {
 	case "queued", "scheduled":
@@ -719,7 +696,6 @@ func apiStatusToStorage(api string) (queuecore.JobStatus, bool) {
 	}
 }
 
-// parseWorkerIDFilter reads and validates optional worker_id / workerId query parameter.
 func parseWorkerIDFilter(c fiber.Ctx) (string, error) {
 	rawSnake := strings.TrimSpace(c.Query("worker_id"))
 	rawCamel := strings.TrimSpace(c.Query("workerId"))
@@ -754,7 +730,6 @@ func badRequest(c fiber.Ctx, msg string) error {
 }
 
 func internalError(c fiber.Ctx, err error) error {
-	// Always log the cause — the response body alone is not enough for operators (the access log records the 500, but not WHY).
 	slog.ErrorContext(c.Context(), "jobs.internal_error",
 		"event", "jobs.internal_error",
 		"path", c.Path(),

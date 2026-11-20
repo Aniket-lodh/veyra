@@ -50,7 +50,6 @@ func NewRepository(pool *pgxpool.Pool) *Repository {
 	return &Repository{pool: pool}
 }
 
-// CreateParams is the input to Create.
 type CreateParams struct {
 	ID             string
 	Handler        string
@@ -59,7 +58,7 @@ type CreateParams struct {
 	MaxAttempts    int
 	Backoff        BackoffStrategy
 	Payload        json.RawMessage
-	ScheduledFor   *time.Time // nil → DB default (now())
+	ScheduledFor   *time.Time
 	IdempotencyKey *string
 	CallbackURL    *string
 }
@@ -173,7 +172,6 @@ func equalJSON(a, b []byte) bool {
 	return reflect.DeepEqual(v1, v2)
 }
 
-// GetByID returns the job with the given id, or ErrJobNotFound.
 func (r *Repository) GetByID(ctx context.Context, id string) (*Job, error) {
 	const query = `SELECT ` + jobColumns + ` FROM jobs WHERE id = $1`
 	job, err := scanJob(r.pool.QueryRow(ctx, query, id))
@@ -186,18 +184,16 @@ func (r *Repository) GetByID(ctx context.Context, id string) (*Job, error) {
 	return job, nil
 }
 
-// ListParams is the input to List and Count.
 type ListParams struct {
 	Limit    int
 	Offset   int
-	Statuses []JobStatus // empty = any status
-	Queues   []string    // empty = any queue
-	Handlers []string    // empty = any handler; exact match, multiple OR'd
-	Search   string      // empty = no search; case-insensitive prefix on id and handler
-	WorkerID string      // empty = no worker filter; matches current_worker_id or job_attempts.worker_id
+	Statuses []JobStatus
+	Queues   []string
+	Handlers []string
+	Search   string
+	WorkerID string
 }
 
-// List returns jobs ordered by enqueue time, newest first, narrowed by p's filters.
 func (r *Repository) List(ctx context.Context, p ListParams) ([]*Job, error) {
 	where, args := buildListFilters(p)
 	query := `SELECT ` + jobColumns + ` FROM jobs` + where +
@@ -225,7 +221,6 @@ func (r *Repository) List(ctx context.Context, p ListParams) ([]*Job, error) {
 	return jobs, nil
 }
 
-// Count returns the total number of jobs matching p's filters (ignoring Limit and Offset).
 func (r *Repository) Count(ctx context.Context, p ListParams) (int, error) {
 	where, args := buildListFilters(p)
 	query := `SELECT count(*) FROM jobs` + where
@@ -291,11 +286,8 @@ func (r *Repository) ClaimNextJob(ctx context.Context, workerID string, queues, 
 	if err != nil {
 		return nil, fmt.Errorf("queuecore.Repository.ClaimNextJob: begin tx: %w", err)
 	}
-	// Safe to call after Commit — pgx returns ErrTxClosed, which we discard.
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// (0) Check worker lifecycle state if registered.
-	// Workers in draining, cordoned, or disconnected states must not claim new jobs.
 	var workerState string
 	err = tx.QueryRow(ctx, "SELECT state::text FROM workers WHERE id = $1", workerID).Scan(&workerState)
 	if err == nil {
@@ -313,7 +305,6 @@ func (r *Repository) ClaimNextJob(ctx context.Context, workerID string, queues, 
 		}
 	}
 
-	// (1) Pick one candidate under a row lock.
 	const selectCandidateSQL = `
 		SELECT id, status::text, attempt, max_attempts, current_worker_id
 		FROM jobs
@@ -400,7 +391,6 @@ func (r *Repository) ClaimNextJob(ctx context.Context, workerID string, queues, 
 		}
 	}
 
-	// (3) Queued path — fresh candidate.
 	const claimUpdateSQL = `
 		UPDATE jobs
 		SET status            = 'running',
@@ -415,7 +405,6 @@ func (r *Repository) ClaimNextJob(ctx context.Context, workerID string, queues, 
 		return nil, fmt.Errorf("queuecore.Repository.ClaimNextJob: claim update: %w", err)
 	}
 
-	// (4) Append the in-flight attempt row.
 	const insertAttemptSQL = `
 		INSERT INTO job_attempts (job_id, attempt_number, worker_id, started_at)
 		VALUES ($1, $2, $3, now())
@@ -455,20 +444,17 @@ func (r *Repository) ClaimNextJob(ctx context.Context, workerID string, queues, 
 	return claimed, nil
 }
 
-// SucceedParams is the input to MarkJobSucceeded.
 type SucceedParams struct {
 	WorkerID string
 	JobID    string
 	Result   json.RawMessage
 }
 
-// RenewParams is the input to RenewLease.
 type RenewParams struct {
 	WorkerID string
 	JobID    string
 }
 
-// FailParams is the input to MarkJobFailed.
 type FailParams struct {
 	WorkerID  string
 	JobID     string
@@ -493,7 +479,6 @@ func (r *Repository) MarkJobSucceeded(ctx context.Context, p SucceedParams) (*Jo
 
 	attempt, _, err := r.lockJobForCompletion(ctx, tx, "queue.ack.guard_failed", p.WorkerID, p.JobID)
 	if err != nil {
-		// Sentinels propagate through %w; pgx errors carry their wrap from the helper.
 		return nil, fmt.Errorf("queuecore.Repository.MarkJobSucceeded: %w", err)
 	}
 
@@ -542,7 +527,7 @@ func (r *Repository) MarkJobSucceeded(ctx context.Context, p SucceedParams) (*Jo
 	return job, nil
 }
 
-// MarkJobFailed closes the in-flight attempt with outcome='failed' and either dead-letters the job (permanent.
+// MarkJobFailed closes the in-flight attempt with outcome='failed' and either dead-letters or reschedules the job.
 func (r *Repository) MarkJobFailed(ctx context.Context, p FailParams) (*Job, error) {
 	if p.WorkerID == "" {
 		return nil, errors.New("queuecore.Repository.MarkJobFailed: workerID is required")
@@ -609,7 +594,6 @@ func (r *Repository) MarkJobFailed(ctx context.Context, p FailParams) (*Job, err
 	)
 
 	if terminal {
-		// Permanent and budget-exhausted share the same row shape (§7.3).
 		const updateDeadLetterSQL = `
 			UPDATE jobs
 			SET status            = 'dead_lettered',
@@ -674,7 +658,6 @@ func (r *Repository) MarkJobFailed(ctx context.Context, p FailParams) (*Job, err
 			"errorClass", p.Error.Class,
 		)
 	}
-	// Retry-scheduled event mirrors SPEC §3.5.10.
 	if !terminal && job.NextRetryAt != nil {
 		slog.InfoContext(ctx, "queue.retry.scheduled",
 			"event", "queue.retry.scheduled",
@@ -711,7 +694,6 @@ func (r *Repository) RenewLease(ctx context.Context, p RenewParams) (*Job, error
 		return nil, fmt.Errorf("queuecore.Repository.RenewLease: %w", err)
 	}
 
-	// Single-column UPDATE: only lease_expires_at moves.
 	const renewSQL = `
 		UPDATE jobs
 		SET lease_expires_at = now() + INTERVAL '30 seconds'
@@ -740,7 +722,7 @@ func (r *Repository) RenewLease(ctx context.Context, p RenewParams) (*Job, error
 	return job, nil
 }
 
-// lockJobForCompletion is the shared lock+guard path for Ack, Nack, and RenewLease — every operation that.
+// lockJobForCompletion is the shared lock and guard path for Ack, Nack, and RenewLease.
 func (r *Repository) lockJobForCompletion(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -864,7 +846,6 @@ func scanJob(row pgx.Row) (*Job, error) {
 	return &j, nil
 }
 
-// ListAttempts returns the full attempt history for a job, oldest attempt first.
 func (r *Repository) ListAttempts(ctx context.Context, jobID string) ([]*Attempt, error) {
 	const query = `
 		SELECT job_id, attempt_number, worker_id,
@@ -905,7 +886,6 @@ func (r *Repository) ListAttempts(ctx context.Context, jobID string) ([]*Attempt
 	return out, nil
 }
 
-// QueueStats returns a single snapshot of queue health used by the operator dashboard.
 func (r *Repository) QueueStats(ctx context.Context) (*QueueStats, error) {
 	const totalsSQL = `
 		SELECT
@@ -976,7 +956,6 @@ func (r *Repository) QueueStats(ctx context.Context) (*QueueStats, error) {
 	return &QueueStats{Totals: totals, PerQueue: perQueue}, nil
 }
 
-// ListRunningLeases returns every job currently held under lease, narrowed to the given worker ids when the slice is non-empty.
 func (r *Repository) ListRunningLeases(ctx context.Context, workerIDs []string) ([]*RunningLease, error) {
 	var (
 		query string
@@ -1103,7 +1082,6 @@ func (r *Repository) ResumeQueue(ctx context.Context, p ResumeQueueParams) (*Que
 	return &qs, nil
 }
 
-// GetQueueState returns the current pause state of a queue, returning paused=false if not found.
 func (r *Repository) GetQueueState(ctx context.Context, queueName string) (*QueueState, error) {
 	queueName = strings.TrimSpace(queueName)
 	if queueName == "" {

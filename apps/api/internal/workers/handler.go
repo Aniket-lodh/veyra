@@ -1,4 +1,3 @@
-// Package workers is the HTTP layer and sweeper for the workers table.
 package workers
 
 import (
@@ -20,13 +19,10 @@ import (
 	queuecore "github.com/Aniket-lodh/veyra/queue-core"
 )
 
-// ErrWorkerNotFound is returned when no worker with the given ID exists.
 var ErrWorkerNotFound = errors.New("worker not found")
 
-// ErrWorkerConflict is returned when an invalid state transition is attempted (e.g. on a disconnected worker).
 var ErrWorkerConflict = errors.New("worker conflict")
 
-// ErrActiveLeases is returned when attempting to deregister a worker with active leases.
 var ErrActiveLeases = errors.New("cannot deregister worker with active leases")
 
 type eventBroadcaster interface {
@@ -49,7 +45,6 @@ type workerStore interface {
 	DeregisterWorker(ctx context.Context, id string) error
 }
 
-// Handler is the apps/api binding for workers-table reads and lease operations.
 type Handler struct {
 	store       workerStore
 	broadcaster eventBroadcaster
@@ -70,7 +65,6 @@ func NewHandler(pool *pgxpool.Pool, repo *queuecore.Repository, broadcaster ...e
 	}
 }
 
-// newHandlerWithStore creates a Handler with an injected store (for testing).
 func newHandlerWithStore(store workerStore, broadcaster eventBroadcaster) *Handler {
 	return &Handler{
 		store:       store,
@@ -78,7 +72,6 @@ func newHandlerWithStore(store workerStore, broadcaster eventBroadcaster) *Handl
 	}
 }
 
-// Register mounts worker read and lifecycle endpoints.
 func Register(app *fiber.App, h *Handler, authn *auth.Authenticator) {
 	app.Get("/workers", authn.Require(auth.ScopeQueueRead), h.List)
 	app.Post("/workers/register", authn.RequireAny(auth.ScopeWorkersWrite, auth.ScopeJobsWrite), h.RegisterWorker)
@@ -98,7 +91,6 @@ func Register(app *fiber.App, h *Handler, authn *auth.Authenticator) {
 	app.Post("/workers/:id/deregister", authn.RequireAny(auth.ScopeWorkersWrite, auth.ScopeJobsWrite), h.Deregister)
 }
 
-// leaseResponse mirrors the frontend WorkerLease interface.
 type leaseResponse struct {
 	JobID          string `json:"jobId"`
 	Handler        string `json:"handler"`
@@ -108,7 +100,6 @@ type leaseResponse struct {
 	LeaseExpiresAt string `json:"leaseExpiresAt"`
 }
 
-// workerResponse mirrors the frontend Worker interface.
 type workerResponse struct {
 	ID                       string          `json:"id"`
 	Hostname                 string          `json:"hostname"`
@@ -205,7 +196,6 @@ type failJobRequest struct {
 	} `json:"error"`
 }
 
-// RegisterWorker handles POST /workers/register.
 func (h *Handler) RegisterWorker(c fiber.Ctx) error {
 	var req registerWorkerRequest
 	if err := json.Unmarshal(c.Body(), &req); err != nil {
@@ -259,7 +249,6 @@ func (h *Handler) RegisterWorker(c fiber.Ctx) error {
 	return c.JSON(worker)
 }
 
-// Heartbeat handles POST /workers/:id/heartbeat.
 func (h *Handler) Heartbeat(c fiber.Ctx) error {
 	id, err := parseWorkerID(c)
 	if err != nil {
@@ -278,7 +267,6 @@ func (h *Handler) Heartbeat(c fiber.Ctx) error {
 	return c.JSON(hb)
 }
 
-// Claim handles POST /workers/:id/claim.
 func (h *Handler) Claim(c fiber.Ctx) error {
 	id, err := parseWorkerID(c)
 	if err != nil {
@@ -315,7 +303,6 @@ func (h *Handler) Claim(c fiber.Ctx) error {
 	return c.JSON(toJobClaimResponse(job))
 }
 
-// RenewJobLease handles POST /workers/:id/jobs/:jobId/heartbeat.
 func (h *Handler) RenewJobLease(c fiber.Ctx) error {
 	id, err := parseWorkerID(c)
 	if err != nil {
@@ -351,7 +338,6 @@ func (h *Handler) RenewJobLease(c fiber.Ctx) error {
 	})
 }
 
-// CompleteJob handles POST /workers/:id/jobs/:jobId/complete.
 func (h *Handler) CompleteJob(c fiber.Ctx) error {
 	id, err := parseWorkerID(c)
 	if err != nil {
@@ -401,7 +387,6 @@ func (h *Handler) CompleteJob(c fiber.Ctx) error {
 	})
 }
 
-// FailJob handles POST /workers/:id/jobs/:jobId/fail.
 func (h *Handler) FailJob(c fiber.Ctx) error {
 	id, err := parseWorkerID(c)
 	if err != nil {
@@ -474,7 +459,6 @@ func (h *Handler) FailJob(c fiber.Ctx) error {
 	})
 }
 
-// List handles GET /workers.
 func (h *Handler) List(c fiber.Ctx) error {
 	ctx := c.Context()
 	out, err := h.store.QueryWorkers(ctx)
@@ -484,7 +468,6 @@ func (h *Handler) List(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"workers": out})
 }
 
-// GetByID handles GET /workers/:id.
 func (h *Handler) GetByID(c fiber.Ctx) error {
 	id, err := parseWorkerID(c)
 	if err != nil {
@@ -503,7 +486,6 @@ func (h *Handler) GetByID(c fiber.Ctx) error {
 	return c.JSON(worker)
 }
 
-// ReleaseLease handles POST /workers/:id/leases/:jobId/release.
 func (h *Handler) ReleaseLease(c fiber.Ctx) error {
 	workerID, err := parseWorkerID(c)
 	if err != nil {
@@ -553,7 +535,6 @@ func (h *Handler) ReleaseLease(c fiber.Ctx) error {
 	})
 }
 
-// Drain handles POST /workers/:id/drain.
 func (h *Handler) Drain(c fiber.Ctx) error {
 	id, err := parseWorkerID(c)
 	if err != nil {
@@ -585,7 +566,6 @@ func (h *Handler) Drain(c fiber.Ctx) error {
 	return c.JSON(worker)
 }
 
-// Cordon handles POST & PATCH /workers/:id/cordon.
 func (h *Handler) Cordon(c fiber.Ctx) error {
 	id, err := parseWorkerID(c)
 	if err != nil {
@@ -617,7 +597,6 @@ func (h *Handler) Cordon(c fiber.Ctx) error {
 	return c.JSON(worker)
 }
 
-// Resume handles POST & PATCH /workers/:id/resume.
 func (h *Handler) Resume(c fiber.Ctx) error {
 	id, err := parseWorkerID(c)
 	if err != nil {
@@ -649,7 +628,6 @@ func (h *Handler) Resume(c fiber.Ctx) error {
 	return c.JSON(worker)
 }
 
-// Deregister handles DELETE /workers/:id and POST /workers/:id/deregister.
 func (h *Handler) Deregister(c fiber.Ctx) error {
 	id, err := parseWorkerID(c)
 	if err != nil {
@@ -695,7 +673,6 @@ func parseWorkerID(c fiber.Ctx) (string, error) {
 	return id, nil
 }
 
-// pgWorkerStore implements workerStore backed by Postgres pool and queuecore.Repository.
 type pgWorkerStore struct {
 	pool *pgxpool.Pool
 	repo *queuecore.Repository

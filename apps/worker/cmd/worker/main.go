@@ -25,19 +25,17 @@ const (
 	serviceName   = "veyra-worker"
 	workerVersion = "0.1.0"
 
-	heartbeatInterval = 10 * time.Second
-	// leaseRenewalInterval is the per-job RenewLease cadence.
+	heartbeatInterval     = 10 * time.Second
 	leaseRenewalInterval  = 10 * time.Second
 	pollInterval          = 1 * time.Second
 	simulatedExecution    = 5 * time.Second
-	defaultFailurePercent = 20 // rand.IntN(100) < n → simulated nack. Override via VEYRA_WORKER_FAILURE_PERCENT for soak storms.
-	defaultMaxConcurrency = 1  // default max concurrent jobs
+	defaultFailurePercent = 20
+	defaultMaxConcurrency = 1
 
 	dbPingTimeout = 5 * time.Second
 )
 
 func main() {
-	// .env first, then logger — env values configure the logger.
 	envMissing := godotenv.Load() != nil
 
 	appEnv := envOr("APP_ENV", "development")
@@ -54,7 +52,6 @@ func main() {
 	failurePercent := loadFailurePercent()
 	maxConcurrency := loadMaxConcurrency()
 
-	// The handler registry is the worker's static set of executable handlers, built once here before Run.
 	registry := handler.NewRegistry()
 	registry.Register("noop", handler.NewNoop(simulatedExecution, failurePercent))
 	registry.Register("http_request", handler.NewHTTPRequest())
@@ -141,7 +138,6 @@ func main() {
 	)
 }
 
-// loadDatabaseURL prefers VEYRA_WORKER_DATABASE_URL when set; otherwise it assembles a URL from the same DB_* env vars the api uses.
 func loadDatabaseURL() string {
 	if u := strings.TrimSpace(os.Getenv("VEYRA_WORKER_DATABASE_URL")); u != "" {
 		return u
@@ -165,7 +161,6 @@ func loadDatabaseURL() string {
 	return u.String()
 }
 
-// loadFailurePercent reads VEYRA_WORKER_FAILURE_PERCENT and clamps it to [0, 100].
 func loadFailurePercent() int {
 	raw := strings.TrimSpace(os.Getenv("VEYRA_WORKER_FAILURE_PERCENT"))
 	if raw == "" {
@@ -189,7 +184,6 @@ func loadFailurePercent() int {
 	}
 }
 
-// loadMaxConcurrency reads VEYRA_WORKER_MAX_CONCURRENCY and clamps it to >= 1.
 func loadMaxConcurrency() int {
 	raw := strings.TrimSpace(os.Getenv("VEYRA_WORKER_MAX_CONCURRENCY"))
 	if raw == "" {
@@ -234,7 +228,6 @@ func envOr(key, def string) string {
 	return def
 }
 
-// loadSMTPConfig reads VEYRA_SMTP_* for the send_email handler.
 func loadSMTPConfig() handler.SMTPConfig {
 	port := 587
 	if raw := strings.TrimSpace(os.Getenv("VEYRA_SMTP_PORT")); raw != "" {
@@ -254,7 +247,6 @@ func loadSMTPConfig() handler.SMTPConfig {
 	}
 }
 
-// exitFatal emits one structured ERROR line and exits 1.
 func exitFatal(event string, err error) {
 	slog.Error(event, "err", err.Error())
 	os.Exit(1)

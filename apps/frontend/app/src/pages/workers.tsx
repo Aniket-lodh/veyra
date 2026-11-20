@@ -187,7 +187,6 @@ export function WorkersPage() {
 
   return (
     <div className="space-y-6">
-      {/* Page Header */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-text-primary text-base font-semibold tracking-tight">
@@ -244,8 +243,6 @@ export function WorkersPage() {
           </Button>
         </div>
       </div>
-
-      {/* Error Banner */}
       {isError && (
         <div
           role="alert"
@@ -268,10 +265,7 @@ export function WorkersPage() {
           </Button>
         </div>
       )}
-
-      {/* Fleet Capacity & Health KPI Strip */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-        {/* Total Workers */}
         <Card className="border-border-subtle bg-surface-base">
           <CardHeader className="p-3 pb-1">
             <CardTitle className="text-text-muted text-[0.6875rem] font-medium tracking-wider uppercase">
@@ -287,8 +281,6 @@ export function WorkersPage() {
             </div>
           </CardContent>
         </Card>
-
-        {/* Busy / Leased */}
         <Card className="border-border-subtle bg-surface-base">
           <CardHeader className="p-3 pb-1">
             <CardTitle className="text-text-muted text-[0.6875rem] font-medium tracking-wider uppercase">
@@ -305,8 +297,6 @@ export function WorkersPage() {
             </div>
           </CardContent>
         </Card>
-
-        {/* Idle */}
         <Card className="border-border-subtle bg-surface-base">
           <CardHeader className="p-3 pb-1">
             <CardTitle className="text-text-muted text-[0.6875rem] font-medium tracking-wider uppercase">
@@ -322,8 +312,6 @@ export function WorkersPage() {
             </div>
           </CardContent>
         </Card>
-
-        {/* Stale / Degraded */}
         <Card className="border-border-subtle bg-surface-base">
           <CardHeader className="p-3 pb-1">
             <CardTitle className="text-text-muted text-[0.6875rem] font-medium tracking-wider uppercase">
@@ -348,8 +336,6 @@ export function WorkersPage() {
             </div>
           </CardContent>
         </Card>
-
-        {/* Fleet Concurrency Utilization */}
         <Card className="border-border-subtle bg-surface-base col-span-2 sm:col-span-1">
           <CardHeader className="p-3 pb-1">
             <CardTitle className="text-text-muted text-[0.6875rem] font-medium tracking-wider uppercase">
@@ -377,11 +363,8 @@ export function WorkersPage() {
           </CardContent>
         </Card>
       </div>
-
-      {/* Filter Tabs & Toolbar */}
       <div className="space-y-3">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          {/* Segmented Filter Tabs */}
           <div className="border-border-subtle bg-surface-canvas flex flex-wrap gap-1 rounded-md border p-0.5">
             <button
               type="button"
@@ -459,10 +442,7 @@ export function WorkersPage() {
               </span>
             </button>
           </div>
-
-          {/* Search, Queue & Sort Controls */}
           <div className="flex flex-wrap items-center gap-2">
-            {/* Search Input */}
             <div className="relative min-w-[200px] flex-1 sm:w-64 sm:flex-none">
               <HugeiconsIcon
                 icon={Search01Icon}
@@ -486,8 +466,6 @@ export function WorkersPage() {
                 </button>
               )}
             </div>
-
-            {/* Queue Filter */}
             <select
               aria-label="Filter workers by queue"
               value={selectedQueue}
@@ -501,8 +479,6 @@ export function WorkersPage() {
                 </option>
               ))}
             </select>
-
-            {/* Sort Dropdown */}
             <select
               aria-label="Sort workers"
               value={sortBy}
@@ -515,8 +491,6 @@ export function WorkersPage() {
               <option value="processed_desc">Total Processed</option>
               <option value="hostname_asc">Hostname (A-Z)</option>
             </select>
-
-            {/* Reset Filters Button */}
             {hasActiveFilters && (
               <Button
                 variant="ghost"
@@ -530,8 +504,6 @@ export function WorkersPage() {
           </div>
         </div>
       </div>
-
-      {/* Main Workers Table */}
       <div className="border-border-subtle bg-surface-base overflow-hidden rounded-md border">
         <Table>
           <TableHeader>
@@ -672,7 +644,6 @@ export function WorkersPage() {
                     role="button"
                     aria-label={`Inspect worker ${w.hostname}`}
                   >
-                    {/* Worker & Host */}
                     <TableCell className="py-2.5">
                       <div className="flex flex-col">
                         <div className="flex items-center gap-1.5">
@@ -711,8 +682,6 @@ export function WorkersPage() {
                         </div>
                       </div>
                     </TableCell>
-
-                    {/* Worker ID */}
                     <TableCell className="py-2.5">
                       <div className="flex items-center gap-1.5">
                         <span
@@ -747,8 +716,6 @@ export function WorkersPage() {
                         </button>
                       </div>
                     </TableCell>
-
-                    {/* Status & Heartbeat */}
                     <TableCell className="py-2.5">
                       <div className="flex flex-col gap-0.5">
                         <div className="flex items-center gap-1.5">
@@ -772,8 +739,6 @@ export function WorkersPage() {
                         )}
                       </div>
                     </TableCell>
-
-                    {/* Subscribed Queues */}
                     <TableCell className="py-2.5">
                       <div className="flex flex-wrap gap-1">
                         {w.queues.map((q) => (
@@ -793,8 +758,6 @@ export function WorkersPage() {
                         ))}
                       </div>
                     </TableCell>
-
-                    {/* In Flight / Concurrency */}
                     <TableCell className="py-2.5 text-right tabular-nums">
                       <div className="flex items-center justify-end gap-2">
                         <div className="text-right">
@@ -822,13 +785,9 @@ export function WorkersPage() {
                         </div>
                       </div>
                     </TableCell>
-
-                    {/* Total Processed */}
                     <TableCell className="text-text-primary py-2.5 text-right font-mono text-xs tabular-nums">
                       {w.totalProcessed.toLocaleString()}
                     </TableCell>
-
-                    {/* Heartbeat */}
                     <TableCell className="py-2.5 text-right">
                       <div className="flex flex-col items-end">
                         <span
@@ -842,8 +801,6 @@ export function WorkersPage() {
                         </span>
                       </div>
                     </TableCell>
-
-                    {/* Actions Menu */}
                     <TableCell className="py-2.5 text-right">
                       <div className="flex items-center justify-end gap-1">
                         <Button
@@ -930,8 +887,6 @@ export function WorkersPage() {
                             </DropdownMenuItem>
 
                             <DropdownMenuSeparator />
-
-                            {/* Operational Controls */}
                             <DropdownMenuLabel className="text-text-muted text-[0.625rem] font-medium tracking-wider uppercase">
                               Fleet Operations
                             </DropdownMenuLabel>
@@ -1068,8 +1023,6 @@ export function WorkersPage() {
           </TableBody>
         </Table>
       </div>
-
-      {/* Refinement 1: Live-Synced Quick Inspector Drawer (Radix Dialog) */}
       <Dialog
         open={!!selectedWorkerId}
         onOpenChange={(open) => {
@@ -1079,7 +1032,6 @@ export function WorkersPage() {
         <DialogContent className="border-border-strong bg-surface-base max-h-[88vh] gap-0 overflow-hidden p-0 sm:max-w-3xl">
           {selectedWorker ? (
             <div className="flex max-h-[88vh] flex-col">
-              {/* Drawer Header */}
               <div className="border-border-subtle bg-surface-canvas/60 flex items-center justify-between border-b px-6 py-4">
                 <div className="space-y-1">
                   <div className="flex items-center gap-2">
@@ -1160,12 +1112,8 @@ export function WorkersPage() {
                   </DialogClose>
                 </div>
               </div>
-
-              {/* Drawer Body - Scrollable */}
               <div className="flex-1 space-y-6 overflow-y-auto p-6 text-xs">
-                {/* Diagnostics 2-Column Grid */}
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                  {/* Runtime & Uptime */}
                   <div className="border-border-subtle bg-surface-canvas/40 space-y-2 rounded-md border p-3.5">
                     <div className="text-text-muted flex items-center gap-1.5 text-[0.6875rem] font-medium tracking-wider uppercase">
                       <HugeiconsIcon
@@ -1197,8 +1145,6 @@ export function WorkersPage() {
                       </div>
                     </div>
                   </div>
-
-                  {/* Heartbeat & Sweeper Diagnostics */}
                   <div className="border-border-subtle bg-surface-canvas/40 space-y-2 rounded-md border p-3.5">
                     <div className="text-text-muted flex items-center gap-1.5 text-[0.6875rem] font-medium tracking-wider uppercase">
                       <HugeiconsIcon
@@ -1256,8 +1202,6 @@ export function WorkersPage() {
                     </div>
                   </div>
                 </div>
-
-                {/* Subscribed Queues & Registered Handlers */}
                 <div className="space-y-3">
                   <div>
                     <h4 className="text-text-muted text-[0.6875rem] font-medium tracking-wider uppercase">
@@ -1295,8 +1239,6 @@ export function WorkersPage() {
                     </div>
                   </div>
                 </div>
-
-                {/* Active Running Leases (Live Refetched) */}
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
                     <h4 className="text-text-muted text-[0.6875rem] font-medium tracking-wider uppercase">
@@ -1442,8 +1384,6 @@ export function WorkersPage() {
                   )}
                 </div>
               </div>
-
-              {/* Drawer Footer */}
               <div className="border-border-subtle bg-surface-canvas/60 flex items-center justify-between border-t px-6 py-3">
                 <Button
                   variant="outline"
@@ -1490,8 +1430,6 @@ export function WorkersPage() {
           )}
         </DialogContent>
       </Dialog>
-
-      {/* Force-Release Lease Confirmation Dialog */}
       <Dialog
         open={!!releaseTarget}
         onOpenChange={(open) => {
@@ -1594,8 +1532,6 @@ export function WorkersPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-
-      {/* Drain Worker Confirmation Dialog */}
       <Dialog
         open={!!drainTarget}
         onOpenChange={(open) => {
@@ -1652,8 +1588,6 @@ export function WorkersPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-
-      {/* Deregister Worker Confirmation Dialog */}
       <Dialog
         open={!!deregisterTarget}
         onOpenChange={(open) => {
@@ -1713,8 +1647,6 @@ export function WorkersPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-
-      {/* Connect External Worker SDK Dialog */}
       <Dialog open={showConnectModal} onOpenChange={setShowConnectModal}>
         <DialogContent className="border-border-subtle bg-surface-base max-w-2xl">
           <DialogHeader>

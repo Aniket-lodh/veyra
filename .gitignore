@@ -53,6 +53,7 @@ vendor/
 
 # --- Node / frontend (pnpm + Vite) ---
 node_modules/
+.pnpm-store/
 dist/
 dist-ssr/
 coverage/

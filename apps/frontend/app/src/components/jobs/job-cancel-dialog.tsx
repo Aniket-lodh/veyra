@@ -96,7 +96,6 @@ export function JobCancelDialog({
         </DialogHeader>
 
         <div className="space-y-3 py-1">
-          {/* Target Job Metadata */}
           <div className="border-border-subtle bg-surface-elevated/60 space-y-2 rounded-md border p-3 text-xs">
             <div className="flex items-center justify-between">
               <span className="text-text-muted">Job ID:</span>
@@ -140,8 +139,6 @@ export function JobCancelDialog({
               </span>
             </div>
           </div>
-
-          {/* Operational Impact Notice */}
           {isRunning ? (
             <div className="border-status-warning-border bg-status-warning-bg text-status-warning-text flex items-start gap-2 rounded-md border p-2.5 text-xs">
               <HugeiconsIcon
@@ -161,8 +158,6 @@ export function JobCancelDialog({
               Succeeded or dead-lettered jobs cannot be cancelled.
             </p>
           )}
-
-          {/* Error Banner */}
           {errorMsg && (
             <div
               role="alert"

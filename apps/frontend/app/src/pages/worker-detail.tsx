@@ -235,17 +235,13 @@ export function WorkerDetailPage() {
 
   return (
     <div className="space-y-6">
-      {/* Navigation Breadcrumb */}
       <Breadcrumb id={worker.id} hostname={worker.hostname} />
-
-      {/* Primary Worker Identity Header */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="space-y-1.5">
           <div className="flex flex-wrap items-center gap-2.5">
             <h2 className="text-text-primary font-mono text-base font-semibold tracking-tight">
               {worker.hostname}
             </h2>
-            {/* Calm status badge with steady semantic dot */}
             <Badge tone={badgeProps.tone}>
               <span
                 className={cn(
@@ -291,8 +287,6 @@ export function WorkerDetailPage() {
             <span>{worker.version}</span>
           </div>
         </div>
-
-        {/* Action Controls */}
         <div className="flex items-center gap-2">
           <Button
             variant="outline"
@@ -335,8 +329,6 @@ export function WorkerDetailPage() {
             <HugeiconsIcon icon={Task01Icon} className="mr-1.5 h-3.5 w-3.5" />
             View Jobs
           </Button>
-
-          {/* Operational Dropdown Menu (Gated controls disabled with pending-backend badges) */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
@@ -492,10 +484,7 @@ export function WorkerDetailPage() {
           </DropdownMenu>
         </div>
       </div>
-
-      {/* Operational Summary Metric Strip */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        {/* Concurrency Slots & Utilization */}
         <Card className="border-border-subtle bg-surface-base">
           <CardHeader className="p-3 pb-1">
             <CardTitle className="text-text-muted text-[0.6875rem] font-medium tracking-wider uppercase">
@@ -527,8 +516,6 @@ export function WorkerDetailPage() {
             </div>
           </CardContent>
         </Card>
-
-        {/* Heartbeat & Sweeper Cadence */}
         <Card className="border-border-subtle bg-surface-base">
           <CardHeader className="p-3 pb-1">
             <CardTitle className="text-text-muted text-[0.6875rem] font-medium tracking-wider uppercase">
@@ -551,8 +538,6 @@ export function WorkerDetailPage() {
             </div>
           </CardContent>
         </Card>
-
-        {/* Runtime & Uptime */}
         <Card className="border-border-subtle bg-surface-base">
           <CardHeader className="p-3 pb-1">
             <CardTitle className="text-text-muted text-[0.6875rem] font-medium tracking-wider uppercase">
@@ -571,8 +556,6 @@ export function WorkerDetailPage() {
             </div>
           </CardContent>
         </Card>
-
-        {/* Total Processed Throughput */}
         <Card className="border-border-subtle bg-surface-base">
           <CardHeader className="p-3 pb-1">
             <CardTitle className="text-text-muted text-[0.6875rem] font-medium tracking-wider uppercase">
@@ -589,10 +572,7 @@ export function WorkerDetailPage() {
           </CardContent>
         </Card>
       </div>
-
-      {/* Subscribed Queues & Registered Handlers */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        {/* Queues Card */}
         <Card className="border-border-subtle bg-surface-base">
           <CardHeader className="p-4 pb-2">
             <div className="flex items-center justify-between">
@@ -622,8 +602,6 @@ export function WorkerDetailPage() {
             )}
           </CardContent>
         </Card>
-
-        {/* Handlers Card */}
         <Card className="border-border-subtle bg-surface-base">
           <CardHeader className="p-4 pb-2">
             <div className="flex items-center justify-between">
@@ -654,8 +632,6 @@ export function WorkerDetailPage() {
           </CardContent>
         </Card>
       </div>
-
-      {/* Active Running Leases Section */}
       <div id="active-leases-section" className="space-y-3">
         <div className="flex items-center justify-between">
           <div>
@@ -723,7 +699,6 @@ export function WorkerDetailPage() {
                       className="border-border-subtle hover:bg-surface-elevated/60 group cursor-pointer transition-colors"
                       onClick={() => navigate(jobDetailPath(l.jobId))}
                     >
-                      {/* Job ID */}
                       <TableCell className="py-2.5">
                         <div className="flex items-center gap-1.5">
                           <span className="text-text-primary font-mono text-xs font-medium underline underline-offset-2">
@@ -754,8 +729,6 @@ export function WorkerDetailPage() {
                           </button>
                         </div>
                       </TableCell>
-
-                      {/* Handler */}
                       <TableCell className="py-2.5">
                         <Link
                           to={jobsByHandlerPath(l.handler)}
@@ -765,8 +738,6 @@ export function WorkerDetailPage() {
                           {l.handler}
                         </Link>
                       </TableCell>
-
-                      {/* Queue */}
                       <TableCell className="py-2.5">
                         <Link
                           to={jobsByQueuePath(l.queue)}
@@ -776,13 +747,9 @@ export function WorkerDetailPage() {
                           {l.queue}
                         </Link>
                       </TableCell>
-
-                      {/* Attempt */}
                       <TableCell className="text-text-muted py-2.5 text-right font-mono text-xs tabular-nums">
                         #{l.attempt}
                       </TableCell>
-
-                      {/* Leased At */}
                       <TableCell className="py-2.5">
                         <span
                           className="text-text-muted text-xs tabular-nums"
@@ -791,8 +758,6 @@ export function WorkerDetailPage() {
                           {formatRelative(l.leasedAt)}
                         </span>
                       </TableCell>
-
-                      {/* Lease Remaining TTL */}
                       <TableCell className="py-2.5 text-right font-mono text-xs tabular-nums">
                         <span
                           className={cn(
@@ -807,8 +772,6 @@ export function WorkerDetailPage() {
                           {ttl.label}
                         </span>
                       </TableCell>
-
-                      {/* Actions */}
                       <TableCell className="py-2.5 text-right">
                         <Button
                           type="button"
@@ -832,8 +795,6 @@ export function WorkerDetailPage() {
           </Table>
         </div>
       </div>
-
-      {/* Historical Jobs Notice */}
       <div className="border-border-subtle bg-surface-canvas/50 text-text-muted flex items-start gap-2.5 rounded-md border p-3.5 text-xs">
         <HugeiconsIcon
           icon={Activity01Icon}
@@ -859,8 +820,6 @@ export function WorkerDetailPage() {
           </p>
         </div>
       </div>
-
-      {/* Force-Release Lease Confirmation Dialog */}
       <Dialog
         open={!!releaseTargetLease}
         onOpenChange={(open) => {
@@ -963,8 +922,6 @@ export function WorkerDetailPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-
-      {/* Drain Worker Confirmation Dialog */}
       <Dialog
         open={isDrainDialogOpen}
         onOpenChange={(open) => {
@@ -1021,8 +978,6 @@ export function WorkerDetailPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-
-      {/* Deregister Worker Confirmation Dialog */}
       <Dialog
         open={isDeregisterDialogOpen}
         onOpenChange={(open) => {

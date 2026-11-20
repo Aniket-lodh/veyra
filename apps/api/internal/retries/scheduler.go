@@ -1,4 +1,3 @@
-// Package retries runs the retry scheduler.
 package retries
 
 import (
@@ -11,7 +10,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Scheduler is the long-running goroutine handle.
 type Scheduler struct {
 	pool       *pgxpool.Pool
 	interval   time.Duration
@@ -26,7 +24,6 @@ func NewScheduler(pool *pgxpool.Pool, interval time.Duration, batchLimit int) *S
 	}
 }
 
-// Run drives one tick per `interval`.
 func (s *Scheduler) Run(ctx context.Context) error {
 	if s.interval <= 0 {
 		return fmt.Errorf("retries.Scheduler: interval must be > 0, got %v", s.interval)
@@ -44,7 +41,6 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	t := time.NewTicker(s.interval)
 	defer t.Stop()
 
-	// Immediate tick on boot so an api restart promotes any backlog that accumulated during the downtime.
 	if err := s.tick(ctx); err != nil {
 		slog.ErrorContext(ctx, "queue.retry.scheduler.tick_failed",
 			"event", "queue.retry.scheduler.tick_failed",
@@ -71,7 +67,6 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	}
 }
 
-// tick runs one promotion sweep.
 func (s *Scheduler) tick(ctx context.Context) error {
 	const promoteSQL = `
 		WITH due AS (
@@ -115,7 +110,6 @@ func (s *Scheduler) tick(ctx context.Context) error {
 			}
 			continue
 		}
-		// One event per row promoted.
 		slog.InfoContext(ctx, "queue.retry.promoted",
 			"event", "queue.retry.promoted",
 			"jobId", id,

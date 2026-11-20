@@ -128,7 +128,6 @@ export function QuickEnqueueDialog({
           </DialogHeader>
 
           <div className="space-y-3 py-1 text-xs">
-            {/* Handler & Queue Row */}
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
                 <Label htmlFor="quick-handler">Handler</Label>
@@ -165,8 +164,6 @@ export function QuickEnqueueDialog({
                 </datalist>
               </div>
             </div>
-
-            {/* Priority & Max Attempts Row */}
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
                 <Label htmlFor="quick-priority">Priority (0-9)</Label>
@@ -194,8 +191,6 @@ export function QuickEnqueueDialog({
                 />
               </div>
             </div>
-
-            {/* Optional Idempotency Key */}
             <div className="space-y-1">
               <Label htmlFor="quick-idempotency">
                 Idempotency Key (Optional)
@@ -209,8 +204,6 @@ export function QuickEnqueueDialog({
                 className="bg-surface-base border-border-subtle h-8 font-mono text-xs"
               />
             </div>
-
-            {/* Payload JSON */}
             <div className="space-y-1">
               <div className="flex items-center justify-between">
                 <Label htmlFor="quick-payload">Payload (JSON)</Label>
@@ -226,8 +219,6 @@ export function QuickEnqueueDialog({
                 className="bg-surface-base border-border-subtle resize-y font-mono text-[0.6875rem] leading-relaxed"
               />
             </div>
-
-            {/* Error Banner */}
             {submitError && (
               <div
                 role="alert"
@@ -240,8 +231,6 @@ export function QuickEnqueueDialog({
                 <span>{submitError}</span>
               </div>
             )}
-
-            {/* Guided Link Notice */}
             <div className="border-border-subtle bg-surface-elevated/40 flex items-center justify-between rounded-md border px-3 py-2 text-[0.6875rem]">
               <span className="text-text-muted">
                 Need exponential backoff presets or custom scheduling?

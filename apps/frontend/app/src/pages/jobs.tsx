@@ -238,7 +238,6 @@ export function JobsPage() {
 
   return (
     <div className="space-y-6">
-      {/* Page Header */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-text-primary text-base font-semibold tracking-tight">
@@ -365,8 +364,6 @@ export function JobsPage() {
           </Button>
         </div>
       </div>
-
-      {/* Error Alert Banner */}
       {isError && (
         <div
           role="alert"
@@ -388,10 +385,7 @@ export function JobsPage() {
           </Button>
         </div>
       )}
-
-      {/* 5-Card Operational Queue State KPI Strip */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-        {/* Total In Queue / System */}
         <Card
           onClick={() => selectTab('all')}
           className={cn(
@@ -414,8 +408,6 @@ export function JobsPage() {
             </div>
           </CardContent>
         </Card>
-
-        {/* Active Workload (Queued + Running + Scheduled) */}
         <Card
           onClick={() => selectTab('active')}
           className={cn(
@@ -438,8 +430,6 @@ export function JobsPage() {
             </div>
           </CardContent>
         </Card>
-
-        {/* In-Flight Leased Executions */}
         <Card
           onClick={() => selectTab('running')}
           className={cn(
@@ -464,8 +454,6 @@ export function JobsPage() {
             </div>
           </CardContent>
         </Card>
-
-        {/* Attention Required (Failed + Dead-lettered) */}
         <Card
           onClick={() => selectTab('failed')}
           className={cn(
@@ -495,8 +483,6 @@ export function JobsPage() {
             </div>
           </CardContent>
         </Card>
-
-        {/* Completed / Succeeded */}
         <Card
           onClick={() => selectTab('succeeded')}
           className={cn(
@@ -520,10 +506,7 @@ export function JobsPage() {
           </CardContent>
         </Card>
       </div>
-
-      {/* Multi-Dimensional Filter Toolbar */}
       <div className="border-border-subtle bg-surface-base space-y-3 rounded-md border p-3.5">
-        {/* Status Filter Tabs Strip */}
         <div className="space-y-1.5">
           <div className="flex items-center justify-between">
             <span className="text-text-muted text-[0.6875rem] font-medium tracking-wider uppercase">
@@ -598,8 +581,6 @@ export function JobsPage() {
             })}
           </div>
         </div>
-
-        {/* Active Worker Filter Pill */}
         {workerId && (
           <div className="border-border-subtle bg-surface-canvas flex items-center justify-between gap-2 rounded-md border px-3 py-1.5 text-xs">
             <div className="flex items-center gap-1.5 overflow-hidden">
@@ -626,8 +607,6 @@ export function JobsPage() {
             </button>
           </div>
         )}
-
-        {/* Active Queue Status & Control Banner */}
         {queues[0] && (
           <div
             className={cn(
@@ -685,10 +664,7 @@ export function JobsPage() {
             </div>
           </div>
         )}
-
-        {/* Queue, Handler & Search Filters */}
         <div className="grid gap-3 pt-1 sm:grid-cols-3">
-          {/* Queue Filter */}
           <div className="space-y-1">
             <label
               htmlFor="filter-queue-select"
@@ -720,8 +696,6 @@ export function JobsPage() {
               })}
             </select>
           </div>
-
-          {/* Handler Filter */}
           <div className="space-y-1">
             <label
               htmlFor="filter-handler-select"
@@ -749,8 +723,6 @@ export function JobsPage() {
               ))}
             </select>
           </div>
-
-          {/* Search Input */}
           <div className="space-y-1">
             <label
               htmlFor="filter-search-input"
@@ -795,8 +767,6 @@ export function JobsPage() {
           </div>
         </div>
       </div>
-
-      {/* Main Jobs Table */}
       <div className="border-border-subtle bg-surface-base overflow-hidden rounded-md border">
         <Table>
           <TableHeader>
@@ -918,7 +888,6 @@ export function JobsPage() {
                     }}
                     className="border-border-subtle hover:bg-surface-canvas/60 focus-visible:ring-focus-ring cursor-pointer transition-colors focus-visible:ring-1 focus-visible:outline-hidden"
                   >
-                    {/* Job ID & Queue */}
                     <TableCell>
                       <div className="flex items-center gap-1.5 font-mono">
                         <span className="text-text-primary text-[0.6875rem] font-medium">
@@ -962,8 +931,6 @@ export function JobsPage() {
                         </span>
                       </div>
                     </TableCell>
-
-                    {/* Handler */}
                     <TableCell>
                       <span
                         className="text-text-primary font-mono text-[0.6875rem] hover:underline"
@@ -978,13 +945,9 @@ export function JobsPage() {
                         {j.handler}
                       </span>
                     </TableCell>
-
-                    {/* Status */}
                     <TableCell>
                       <StatusBadge status={j.status} />
                     </TableCell>
-
-                    {/* Priority */}
                     <TableCell>
                       <Badge
                         tone={
@@ -998,8 +961,6 @@ export function JobsPage() {
                         {priorityMeta.label}
                       </Badge>
                     </TableCell>
-
-                    {/* Attempts */}
                     <TableCell className="text-right tabular-nums">
                       <span
                         className={cn(
@@ -1012,27 +973,20 @@ export function JobsPage() {
                         {formatAttemptRatio(j.attempt, j.maxAttempts)}
                       </span>
                     </TableCell>
-
-                    {/* Enqueued Timestamp */}
                     <TableCell
                       className="text-text-muted font-mono text-xs tabular-nums"
                       title={formatDateTimeUTC(j.enqueuedAt)}
                     >
                       {formatClockUTC(j.enqueuedAt)}
                     </TableCell>
-
-                    {/* Relative Age */}
                     <TableCell className="text-text-muted text-right font-mono text-xs tabular-nums">
                       {formatRelative(j.enqueuedAt)}
                     </TableCell>
-
-                    {/* In-row Actions */}
                     <TableCell className="text-right">
                       <div
                         className="flex items-center justify-end gap-1"
                         onClick={(e) => e.stopPropagation()}
                       >
-                        {/* Quick Drawer Inspector */}
                         <Button
                           variant="ghost"
                           size="sm"
@@ -1049,8 +1003,6 @@ export function JobsPage() {
                           />
                           <span className="hidden sm:inline">Inspect</span>
                         </Button>
-
-                        {/* Guarded Cancel Button */}
                         {cancellable && (
                           <Button
                             variant="ghost"
@@ -1069,8 +1021,6 @@ export function JobsPage() {
                             <span className="hidden sm:inline">Cancel</span>
                           </Button>
                         )}
-
-                        {/* More Actions Dropdown */}
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
                             <Button
@@ -1151,8 +1101,6 @@ export function JobsPage() {
                                 <span>Cancel Job</span>
                               </DropdownMenuItem>
                             )}
-
-                            {/* Retry Job Action */}
                             <DropdownMenuItem
                               disabled={
                                 !isJobRetryable(j.status) ||
@@ -1228,8 +1176,6 @@ export function JobsPage() {
           </TableBody>
         </Table>
       </div>
-
-      {/* Pagination Footer */}
       <div className="flex flex-col gap-2 text-xs sm:flex-row sm:items-center sm:justify-between">
         <p className="text-text-muted">
           Page{' '}
@@ -1264,8 +1210,6 @@ export function JobsPage() {
           </Button>
         </div>
       </div>
-
-      {/* Live-Synced Quick Inspector Drawer */}
       <JobInspectorDrawer
         jobId={selectedJobId}
         open={Boolean(selectedJobId)}
@@ -1276,8 +1220,6 @@ export function JobsPage() {
           setCancellingJob(job);
         }}
       />
-
-      {/* Guarded Cancel Job Confirmation Dialog */}
       <JobCancelDialog
         job={cancellingJob}
         open={Boolean(cancellingJob)}
@@ -1288,8 +1230,6 @@ export function JobsPage() {
           refetch();
         }}
       />
-
-      {/* Quick Enqueue Dialog */}
       <QuickEnqueueDialog
         open={isEnqueueOpen}
         onOpenChange={setIsEnqueueOpen}
@@ -1298,8 +1238,6 @@ export function JobsPage() {
           refetch();
         }}
       />
-
-      {/* Bulk DLQ Replay Confirmation Dialog */}
       <DlqReplayDialog
         open={isDlqReplayOpen}
         onOpenChange={setIsDlqReplayOpen}
@@ -1311,8 +1249,6 @@ export function JobsPage() {
           stats.refetch();
         }}
       />
-
-      {/* Queue Pause Dialog */}
       <QueuePauseDialog
         queueName={pausingQueue}
         open={Boolean(pausingQueue)}

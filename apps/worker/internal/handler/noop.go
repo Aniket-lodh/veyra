@@ -10,13 +10,11 @@ import (
 	queuecore "github.com/Aniket-lodh/veyra/queue-core"
 )
 
-// Noop stands in for real handler work: it sleeps for a fixed duration, then either succeeds or returns a SimulatedFailure at a configured rate.
 type Noop struct {
 	dur            time.Duration
-	failurePercent int // rand.IntN(100) < n → SimulatedFailure; clamped to [0,100]
+	failurePercent int
 }
 
-// NewNoop builds a Noop with the given simulated work duration and failure rate.
 func NewNoop(dur time.Duration, failurePercent int) *Noop {
 	switch {
 	case failurePercent < 0:
@@ -27,7 +25,6 @@ func NewNoop(dur time.Duration, failurePercent int) *Noop {
 	return &Noop{dur: dur, failurePercent: failurePercent}
 }
 
-// Handle sleeps, then succeeds or injects a failure.
 func (n *Noop) Handle(ctx context.Context, job *queuecore.Job) (json.RawMessage, error) {
 	start := time.Now()
 
@@ -49,7 +46,6 @@ func (n *Noop) Handle(ctx context.Context, job *queuecore.Job) (json.RawMessage,
 	return result, nil
 }
 
-// sleepCtx returns true if d elapsed, false if ctx was cancelled first.
 func sleepCtx(ctx context.Context, d time.Duration) bool {
 	if d <= 0 {
 		return ctx.Err() == nil

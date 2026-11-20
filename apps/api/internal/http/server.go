@@ -1,4 +1,3 @@
-// Package http builds the fiber app and middleware chain.
 package http
 
 import (
@@ -10,7 +9,6 @@ import (
 	"github.com/Aniket-lodh/veyra/api/internal/middleware"
 )
 
-// NewApp builds the fiber.App with the standard middleware chain mounted but no domain routes registered.
 func NewApp(appName string) *fiber.App {
 	app := fiber.New(fiber.Config{
 		AppName:       appName,
@@ -25,7 +23,6 @@ func NewApp(appName string) *fiber.App {
 	return app
 }
 
-// errorHandler is fiber's default error sink.
 func errorHandler(c fiber.Ctx, err error) error {
 	code := fiber.StatusInternalServerError
 	var fe *fiber.Error

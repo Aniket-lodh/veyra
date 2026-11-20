@@ -116,7 +116,6 @@ export function JobInspectorDrawer({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="border-border-strong bg-surface-base max-h-[88vh] gap-0 overflow-hidden p-0 sm:max-w-3xl">
-        {/* Drawer Header */}
         <div className="border-border-subtle bg-surface-canvas/60 flex items-center justify-between border-b px-6 py-4">
           <div className="space-y-1">
             <div className="flex items-center gap-2">
@@ -202,8 +201,6 @@ export function JobInspectorDrawer({
             </DialogClose>
           </div>
         </div>
-
-        {/* Drawer Body - Scrollable */}
         <div className="flex-1 space-y-5 overflow-y-auto p-6 text-xs">
           {isLoading ? (
             <div className="space-y-4">
@@ -224,9 +221,7 @@ export function JobInspectorDrawer({
             </div>
           ) : (
             <>
-              {/* 2-Column Overview Diagnostic Grid */}
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                {/* Identity & Queue Configuration */}
                 <div className="border-border-subtle bg-surface-canvas/40 space-y-2 rounded-md border p-3.5">
                   <div className="text-text-muted flex items-center gap-1.5 text-[0.6875rem] font-medium tracking-wider uppercase">
                     <HugeiconsIcon
@@ -274,8 +269,6 @@ export function JobInspectorDrawer({
                     </div>
                   </div>
                 </div>
-
-                {/* Lifecycle & Worker Diagnostics */}
                 <div className="border-border-subtle bg-surface-canvas/40 space-y-2 rounded-md border p-3.5">
                   <div className="text-text-muted flex items-center gap-1.5 text-[0.6875rem] font-medium tracking-wider uppercase">
                     <HugeiconsIcon icon={Clock01Icon} className="h-3.5 w-3.5" />
@@ -337,14 +330,10 @@ export function JobInspectorDrawer({
                   </div>
                 </div>
               </div>
-
-              {/* Handler-Specific Delivery Card */}
               {job.handler === 'http_request' && (
                 <HttpRequestDrawerCard job={job} />
               )}
               {job.handler === 'send_email' && <EmailDrawerCard job={job} />}
-
-              {/* Error Summary */}
               {job.error && (
                 <div className="border-status-danger-border bg-status-danger-bg text-status-danger-text space-y-2 rounded-md border p-3.5">
                   <div className="flex items-center justify-between">
@@ -369,8 +358,6 @@ export function JobInspectorDrawer({
                   )}
                 </div>
               )}
-
-              {/* Payload Viewer */}
               <div className="border-border-subtle bg-surface-canvas/30 space-y-2 rounded-md border p-3.5">
                 <div className="flex items-center justify-between">
                   <span className="text-text-muted text-[0.6875rem] font-medium tracking-wider uppercase">
@@ -405,8 +392,6 @@ export function JobInspectorDrawer({
                   {JSON.stringify(job.payload, null, 2)}
                 </CodeBlock>
               </div>
-
-              {/* Attempt History Table */}
               <div className="space-y-2">
                 <div className="text-text-muted flex items-center gap-1.5 text-[0.6875rem] font-medium tracking-wider uppercase">
                   <HugeiconsIcon
@@ -490,8 +475,6 @@ export function JobInspectorDrawer({
             </>
           )}
         </div>
-
-        {/* Drawer Footer Actions */}
         {job && (
           <div className="border-border-subtle bg-surface-canvas/60 flex flex-wrap items-center justify-between border-t px-6 py-3">
             <div className="flex items-center gap-2">

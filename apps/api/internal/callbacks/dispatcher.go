@@ -1,4 +1,3 @@
-// Package callbacks runs the background completion webhook dispatcher.
 package callbacks
 
 import (
@@ -27,7 +26,6 @@ const (
 	maxErrorSnippetBytes = 256
 )
 
-// Config contains dispatcher tuning parameters.
 type Config struct {
 	Interval    time.Duration
 	BatchLimit  int
@@ -36,7 +34,6 @@ type Config struct {
 	Secret      string
 }
 
-// Dispatcher coordinates claiming and delivering completion webhooks.
 type Dispatcher struct {
 	pool        *pgxpool.Pool
 	interval    time.Duration
@@ -49,7 +46,6 @@ type Dispatcher struct {
 	wg          sync.WaitGroup
 }
 
-// NewDispatcher constructs the completion webhook dispatcher.
 func NewDispatcher(pool *pgxpool.Pool, cfg Config) *Dispatcher {
 	interval := cfg.Interval
 	if interval <= 0 {
@@ -80,12 +76,10 @@ func NewDispatcher(pool *pgxpool.Pool, cfg Config) *Dispatcher {
 	}
 }
 
-// SetHTTPClient overrides the default HTTP client (primarily for testing).
 func (d *Dispatcher) SetHTTPClient(client *http.Client) {
 	d.client = client
 }
 
-// Run drives one tick per interval until ctx is cancelled.
 func (d *Dispatcher) Run(ctx context.Context) error {
 	slog.InfoContext(ctx, "queue.callback.dispatcher.started",
 		"event", "queue.callback.dispatcher.started",
@@ -99,7 +93,6 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 	t := time.NewTicker(d.interval)
 	defer t.Stop()
 
-	// Immediate tick on boot so accumulated pending callbacks are dispatched immediately.
 	if err := d.tick(ctx); err != nil {
 		slog.ErrorContext(ctx, "queue.callback.dispatcher.tick_failed",
 			"event", "queue.callback.dispatcher.tick_failed",
@@ -149,7 +142,6 @@ type claimedJob struct {
 	DeadLetteredAt   *time.Time
 }
 
-// tick claims due callbacks and launches delivery goroutines bounded by concurrency.
 func (d *Dispatcher) tick(ctx context.Context) error {
 	leaseSeconds := int(d.timeout.Seconds()) + 15
 	if leaseSeconds < 30 {
@@ -229,7 +221,6 @@ func (d *Dispatcher) tick(ctx context.Context) error {
 	)
 
 	for _, job := range jobs {
-		// Acquire concurrency semaphore slot.
 		select {
 		case <-ctx.Done():
 			return nil
@@ -249,7 +240,6 @@ func (d *Dispatcher) tick(ctx context.Context) error {
 	return nil
 }
 
-// WebhookPayload is the JSON document delivered to callback_url.
 type WebhookPayload struct {
 	Event            string              `json:"event"`
 	JobID            string              `json:"jobId"`
@@ -269,7 +259,6 @@ type WebhookPayload struct {
 	CallbackAttempts int                 `json:"callbackAttempts"`
 }
 
-// deliver performs one outbound HTTP delivery attempt and records outcome in PostgreSQL.
 func (d *Dispatcher) deliver(ctx context.Context, j claimedJob) {
 	start := time.Now()
 
@@ -303,7 +292,7 @@ func (d *Dispatcher) deliver(ctx context.Context, j claimedJob) {
 			"jobId", j.ID,
 			"err", err.Error(),
 		)
-		d.recordFailure(ctx, j.ID, j.CallbackAttempts, fmt.Sprintf("marshal payload: %v", err), true)
+		d.recordFailure(ctx, j.ID, fmt.Sprintf("marshal payload: %v", err))
 		return
 	}
 
@@ -312,7 +301,7 @@ func (d *Dispatcher) deliver(ctx context.Context, j claimedJob) {
 
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, j.CallbackURL, bytes.NewReader(bodyBytes))
 	if err != nil {
-		d.recordFailure(ctx, j.ID, j.CallbackAttempts, fmt.Sprintf("build request: %v", err), true)
+		d.recordFailure(ctx, j.ID, fmt.Sprintf("build request: %v", err))
 		return
 	}
 
@@ -348,7 +337,6 @@ func (d *Dispatcher) deliver(ctx context.Context, j claimedJob) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	// 2xx Success.
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		slog.InfoContext(ctx, "queue.callback.delivered",
 			"event", "queue.callback.delivered",
@@ -368,7 +356,6 @@ func (d *Dispatcher) deliver(ctx context.Context, j claimedJob) {
 		errDetail = fmt.Sprintf("HTTP %d: %s", resp.StatusCode, snippet)
 	}
 
-	// 4xx Non-Retryable (excluding 408 & 429).
 	if isNonRetryableStatus(resp.StatusCode) {
 		slog.ErrorContext(ctx, "queue.callback.failed",
 			"event", "queue.callback.failed",
@@ -380,11 +367,10 @@ func (d *Dispatcher) deliver(ctx context.Context, j claimedJob) {
 			"permanent", true,
 			"durationMs", duration.Milliseconds(),
 		)
-		d.recordFailure(ctx, j.ID, j.CallbackAttempts, errDetail, true)
+		d.recordFailure(ctx, j.ID, errDetail)
 		return
 	}
 
-	// Retryable 5xx, 408, 429.
 	slog.WarnContext(ctx, "queue.callback.retryable_error",
 		"event", "queue.callback.retryable_error",
 		"jobId", j.ID,
@@ -418,7 +404,7 @@ func (d *Dispatcher) handleRetryOrFailure(ctx context.Context, j claimedJob, err
 			"err", errDetail,
 			"permanent", true,
 		)
-		d.recordFailure(ctx, j.ID, j.CallbackAttempts, errDetail, false)
+		d.recordFailure(ctx, j.ID, errDetail)
 	}
 }
 
@@ -455,7 +441,7 @@ func (d *Dispatcher) recordRetry(ctx context.Context, jobID string, delaySeconds
 	}
 }
 
-func (d *Dispatcher) recordFailure(ctx context.Context, jobID string, attempts int, errMsg string, permanent bool) {
+func (d *Dispatcher) recordFailure(ctx context.Context, jobID string, errMsg string) {
 	if d.pool == nil {
 		return
 	}

@@ -1,7 +1,3 @@
-// Package live is the operator-UI invalidation bus (ADR-0009).
-//
-// Postgres NOTIFY marks resources dirty; a coalescing hub assigns monotonic
-// revisions; GET /events streams invalidate/resync frames to subscribers.
 package live
 
 import (
@@ -15,14 +11,11 @@ const (
 	ResourceWorkers = "workers"
 	ResourceStats   = "stats"
 
-	// coalesceWindow collapses NOTIFY bursts into one SSE frame.
 	coalesceWindow = 75 * time.Millisecond
 )
 
-// AllResources is the full set used for resync frames.
 var AllResources = []string{ResourceJobs, ResourceWorkers, ResourceStats}
 
-// Event is one coalesced invalidation (or resync) snapshot.
 type Event struct {
 	V         int       `json:"v"`
 	Revision  uint64    `json:"revision"`
@@ -30,16 +23,13 @@ type Event struct {
 	At        time.Time `json:"at"`
 }
 
-// Subscription is one SSE client's view of the bus.
 type Subscription struct {
 	hub *Hub
 	ch  chan Event
 }
 
-// C returns the event channel.
 func (s *Subscription) C() <-chan Event { return s.ch }
 
-// TakePending returns a stashed latest-wins frame, if any.
 func (s *Subscription) TakePending() (Event, bool) {
 	s.hub.mu.Lock()
 	defer s.hub.mu.Unlock()
@@ -52,7 +42,6 @@ func (s *Subscription) TakePending() (Event, bool) {
 	return ev, true
 }
 
-// Unsubscribe removes this subscription. Safe to call once.
 func (s *Subscription) Unsubscribe() {
 	s.hub.unsubscribe(s)
 }
@@ -61,7 +50,6 @@ type subState struct {
 	pending *Event
 }
 
-// Hub is an in-process coalescing revision bus.
 type Hub struct {
 	mu sync.Mutex
 
@@ -79,21 +67,18 @@ func NewHub() *Hub {
 	}
 }
 
-// Revision is the last flushed (or current) monotonic revision.
 func (h *Hub) Revision() uint64 {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.revision
 }
 
-// SubscriberCount is the number of active SSE subscribers.
 func (h *Hub) SubscriberCount() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return len(h.subs)
 }
 
-// MarkDirty records resources that should be invalidated. Coalesces bursts.
 func (h *Hub) MarkDirty(resources ...string) {
 	if len(resources) == 0 {
 		return
@@ -113,7 +98,6 @@ func (h *Hub) MarkDirty(resources ...string) {
 	h.flushDue = time.AfterFunc(coalesceWindow, h.flush)
 }
 
-// PublishNotify maps a Postgres NOTIFY payload onto resources.
 func (h *Hub) PublishNotify(payload string) {
 	switch payload {
 	case ResourceJobs:
@@ -123,7 +107,6 @@ func (h *Hub) PublishNotify(payload string) {
 	}
 }
 
-// Subscribe registers for coalesced events. Caller must Unsubscribe.
 func (h *Hub) Subscribe() *Subscription {
 	s := &Subscription{
 		hub: h,
@@ -144,7 +127,6 @@ func (h *Hub) unsubscribe(s *Subscription) {
 	h.mu.Unlock()
 }
 
-// ResyncEvent builds a full-resource frame at a fresh revision.
 func (h *Hub) ResyncEvent() Event {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -198,7 +180,6 @@ func (h *Hub) deliver(s *Subscription, st *subState, ev Event) {
 		return
 	default:
 	}
-	// Channel full: drain stale frame, then try latest.
 	select {
 	case <-s.ch:
 	default:

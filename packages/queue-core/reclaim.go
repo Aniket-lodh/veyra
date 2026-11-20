@@ -42,7 +42,6 @@ const (
 	ReclaimOutcomeStale ReclaimOutcome = "stale"
 )
 
-// ReclaimParams is the input to Reclaim.
 type ReclaimParams struct {
 	Mode             ReclaimMode
 	JobID            string
@@ -52,13 +51,11 @@ type ReclaimParams struct {
 	ClaimingWorkerID string // required for InlineClaim; unused for TickRequeue
 }
 
-// ReclaimResult is the primitive's per-row output.
 type ReclaimResult struct {
 	Outcome ReclaimOutcome
 	Claimed *Job
 }
 
-// Reclaim is the queue-core reclaim primitive.
 func Reclaim(ctx context.Context, tx pgx.Tx, p ReclaimParams) (*ReclaimResult, error) {
 	if err := validateReclaimParams(p); err != nil {
 		return nil, err
