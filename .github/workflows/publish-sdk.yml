@@ -11,6 +11,7 @@ permissions:
 jobs:
   publish:
     name: Publish to npm
+    if: github.ref == 'refs/heads/main' || (github.event_name == 'release' && (github.event.release.target_commitish == 'main' || github.event.release.target_commitish == ''))
     runs-on: ubuntu-latest
     permissions:
       contents: read
