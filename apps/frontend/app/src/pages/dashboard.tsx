@@ -642,7 +642,7 @@ export function DashboardPage() {
                             size="sm"
                             disabled
                             title="Queue pause control (POST /queues/:name/pause) pending backend implementation"
-                            className="text-text-disabled cursor-not-allowed h-6 px-1.5 text-[0.625rem]"
+                            className="text-text-disabled h-6 cursor-not-allowed px-1.5 text-[0.625rem]"
                             onClick={(e) => {
                               e.stopPropagation();
                               e.preventDefault();
