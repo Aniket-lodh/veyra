@@ -102,10 +102,11 @@ func main() {
 	)
 
 	jobRepo := queuecore.NewRepository(dbPool)
+	liveHub := live.NewHub()
 
 	health.Register(app, health.NewHandler(dbPool))
 	auth.RegisterAuth(app, auth.NewSessionHandler(authStore, authn))
-	jobs.Register(app, jobs.NewHandler(jobRepo), authn)
+	jobs.Register(app, jobs.NewHandler(jobRepo, liveHub), authn)
 	stats.Register(app, stats.NewHandler(jobRepo), authn)
 	workers.Register(app, workers.NewHandler(dbPool, jobRepo), authn)
 	if cfg.EnableDebugEndpoints {
@@ -116,7 +117,6 @@ func main() {
 	}
 	auth.Register(app, auth.NewHandler(authStore, authn))
 
-	liveHub := live.NewHub()
 	live.Register(app, liveHub, authn)
 	liveListener := live.NewListener(cfg.DatabaseURL(), liveHub)
 	go func() {

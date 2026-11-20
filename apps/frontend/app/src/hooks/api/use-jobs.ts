@@ -5,10 +5,14 @@ import {
   enqueueJob,
   getJob,
   listJobs,
+  replayDlq,
+  retryJob,
   type EnqueuedJob,
   type EnqueueJobInput,
   type ListJobsParams,
   type ListJobsResponse,
+  type ReplayDlqParams,
+  type ReplayDlqResponse,
 } from '@/lib/api/jobs';
 import { useLiveRefetchInterval } from '@/lib/live/use-live-refetch-interval';
 import type { Job, JobStatus } from '@/lib/types';
@@ -84,6 +88,47 @@ export function useCancelJob(
       queryClient.invalidateQueries({ queryKey: queryKeys.jobs.all });
       queryClient.invalidateQueries({ queryKey: queryKeys.stats.all });
       return options?.onSuccess?.(job, ...rest);
+    },
+    ...options,
+  });
+}
+
+export const RETRYABLE_STATUSES: ReadonlySet<JobStatus> = new Set<JobStatus>([
+  'failed',
+  'dead-lettered',
+  'cancelled',
+]);
+
+export function useRetryJob(
+  options?: UseMutationOptions<Job, ApiError, string>,
+) {
+  const queryClient = useQueryClient();
+  return useMutation<Job, ApiError, string>({
+    mutationFn: (id) => retryJob(id),
+    onSuccess: (job, ...rest) => {
+      queryClient.setQueryData(queryKeys.jobs.detail(job.id), job);
+      queryClient.invalidateQueries({ queryKey: queryKeys.jobs.all });
+      queryClient.invalidateQueries({ queryKey: queryKeys.stats.all });
+      return options?.onSuccess?.(job, ...rest);
+    },
+    ...options,
+  });
+}
+
+export function useReplayDlq(
+  options?: UseMutationOptions<
+    ReplayDlqResponse,
+    ApiError,
+    ReplayDlqParams | undefined
+  >,
+) {
+  const queryClient = useQueryClient();
+  return useMutation<ReplayDlqResponse, ApiError, ReplayDlqParams | undefined>({
+    mutationFn: (params) => replayDlq(params),
+    onSuccess: (data, ...rest) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.jobs.all });
+      queryClient.invalidateQueries({ queryKey: queryKeys.stats.all });
+      return options?.onSuccess?.(data, ...rest);
     },
     ...options,
   });

@@ -34,6 +34,20 @@ export function isJobCancellable(status: JobStatus): boolean {
   return CANCELLABLE_STATUS_SET.has(status);
 }
 
+export const RETRYABLE_STATUS_SET: ReadonlySet<JobStatus> = new Set<JobStatus>([
+  'failed',
+  'dead-lettered',
+  'cancelled',
+]);
+
+/**
+ * Checks whether a job can be retried according to SPEC §8.1.
+ * Only failed, dead_lettered, or cancelled jobs can be retried.
+ */
+export function isJobRetryable(status: JobStatus): boolean {
+  return RETRYABLE_STATUS_SET.has(status);
+}
+
 /**
  * Derives queue KPI metrics from QueueStatsResponse totals (or fallback).
  */

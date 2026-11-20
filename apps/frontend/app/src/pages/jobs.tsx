@@ -1,3 +1,4 @@
+import { DlqReplayDialog } from '@/components/jobs/dlq-replay-dialog';
 import { JobCancelDialog } from '@/components/jobs/job-cancel-dialog';
 import { JobInspectorDrawer } from '@/components/jobs/job-inspector-drawer';
 import { QuickEnqueueDialog } from '@/components/jobs/quick-enqueue-dialog';
@@ -22,7 +23,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { useJobsList, useQueueStats } from '@/hooks/api';
+import { useJobsList, useQueueStats, useRetryJob } from '@/hooks/api';
 import {
   formatClockUTC,
   formatDateTimeUTC,
@@ -35,6 +36,7 @@ import {
   getPriorityMeta,
   inferTabFromStatuses,
   isJobCancellable,
+  isJobRetryable,
   mapTabToStatuses,
   type JobFilterTab,
 } from '@/lib/jobs-helpers';
@@ -148,6 +150,9 @@ export function JobsPage() {
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [cancellingJob, setCancellingJob] = useState<Job | null>(null);
   const [isEnqueueOpen, setIsEnqueueOpen] = useState(false);
+  const [isDlqReplayOpen, setIsDlqReplayOpen] = useState(false);
+  const [retryingJobId, setRetryingJobId] = useState<string | null>(null);
+  const retryMutation = useRetryJob();
 
   // 1-click copy feedback state
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
@@ -274,6 +279,20 @@ export function JobsPage() {
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-56 text-xs">
               <DropdownMenuLabel>Queue Batch Operations</DropdownMenuLabel>
+              <DropdownMenuItem
+                onClick={() => setIsDlqReplayOpen(true)}
+                className="cursor-pointer justify-between"
+              >
+                <div className="flex items-center gap-2">
+                  <HugeiconsIcon icon={Refresh01Icon} className="h-3.5 w-3.5" />
+                  <span>Replay DLQ</span>
+                </div>
+                {stats.data?.totals.deadLettered ? (
+                  <span className="border-border-subtle bg-surface-elevated text-text-primary rounded px-1 py-0.5 font-mono text-[0.5625rem] tabular-nums">
+                    {stats.data.totals.deadLettered}
+                  </span>
+                ) : null}
+              </DropdownMenuItem>
               <DropdownMenuItem
                 disabled
                 title="Backend capability pending: POST /jobs/bulk-cancel"
@@ -1019,16 +1038,48 @@ export function JobsPage() {
                               </DropdownMenuItem>
                             )}
 
-                            {/* Disabled Future Actions with Explicit Pending Backend Reasons */}
+                            {/* Retry Job Action */}
                             <DropdownMenuItem
-                              disabled
-                              title="Backend capability pending: POST /jobs/:id/retry"
-                              className="text-text-disabled cursor-not-allowed justify-between"
+                              disabled={
+                                !isJobRetryable(j.status) ||
+                                retryingJobId === j.id
+                              }
+                              title={
+                                isJobRetryable(j.status)
+                                  ? 'Retry this job'
+                                  : `Status '${j.status}' is not retryable (failed, dead-lettered, or cancelled required)`
+                              }
+                              onClick={() => {
+                                setRetryingJobId(j.id);
+                                retryMutation.mutate(j.id, {
+                                  onSettled: () => setRetryingJobId(null),
+                                });
+                              }}
+                              className={cn(
+                                !isJobRetryable(j.status) &&
+                                  'text-text-disabled cursor-not-allowed',
+                                'justify-between',
+                              )}
                             >
-                              <span>Retry Job</span>
-                              <span className="border-border-subtle bg-surface-elevated text-text-muted rounded px-1 py-0.5 text-[0.5625rem]">
-                                API Pending
-                              </span>
+                              <div className="flex items-center gap-2">
+                                <HugeiconsIcon
+                                  icon={Refresh01Icon}
+                                  className={cn(
+                                    'h-3.5 w-3.5',
+                                    retryingJobId === j.id && 'animate-spin',
+                                  )}
+                                />
+                                <span>
+                                  {retryingJobId === j.id
+                                    ? 'Retrying…'
+                                    : 'Retry Job'}
+                                </span>
+                              </div>
+                              {!isJobRetryable(j.status) && (
+                                <span className="border-border-subtle bg-surface-elevated text-text-muted rounded px-1 py-0.5 text-[0.5625rem]">
+                                  {j.status}
+                                </span>
+                              )}
                             </DropdownMenuItem>
 
                             <DropdownMenuItem
@@ -1131,6 +1182,19 @@ export function JobsPage() {
         availableQueues={queueOptions}
         onSuccess={() => {
           refetch();
+        }}
+      />
+
+      {/* Bulk DLQ Replay Confirmation Dialog */}
+      <DlqReplayDialog
+        open={isDlqReplayOpen}
+        onOpenChange={setIsDlqReplayOpen}
+        initialQueue={queues[0] || ''}
+        initialHandler={handlers[0] || ''}
+        totalDeadLettered={stats.data?.totals.deadLettered}
+        onSuccess={() => {
+          refetch();
+          stats.refetch();
         }}
       />
     </div>

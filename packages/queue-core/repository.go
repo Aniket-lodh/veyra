@@ -28,6 +28,9 @@ var ErrLeaseExpired = errors.New("lease expired: lease deadline has passed")
 // ErrNotCancellable is returned by Cancel when the job is already in a finished terminal state (succeeded or dead_lettered).
 var ErrNotCancellable = errors.New("job is not cancellable: already succeeded or dead-lettered")
 
+// ErrNotRetryable is returned by Retry when the job is not in a retryable state (failed, dead_lettered, or cancelled).
+var ErrNotRetryable = errors.New("job is not retryable: status must be failed, dead_lettered, or cancelled")
+
 // ErrIdempotencyConflict is returned by Create when an idempotency key matches an existing job with different parameters.
 var ErrIdempotencyConflict = errors.New("idempotency key conflict: parameters do not match existing job")
 

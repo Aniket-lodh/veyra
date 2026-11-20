@@ -79,3 +79,32 @@ export function cancelJob(id: string, signal?: AbortSignal): Promise<Job> {
     signal,
   });
 }
+
+export function retryJob(id: string, signal?: AbortSignal): Promise<Job> {
+  return apiFetch<Job>(`/jobs/${encodeURIComponent(id)}/retry`, {
+    method: 'POST',
+    signal,
+  });
+}
+
+export interface ReplayDlqParams {
+  queue?: string;
+  handler?: string;
+  limit?: number;
+}
+
+export interface ReplayDlqResponse {
+  replayedCount: number;
+  jobIds: string[];
+}
+
+export function replayDlq(
+  params?: ReplayDlqParams,
+  signal?: AbortSignal,
+): Promise<ReplayDlqResponse> {
+  return apiFetch<ReplayDlqResponse>('/jobs/dlq/replay', {
+    method: 'POST',
+    body: params,
+    signal,
+  });
+}
