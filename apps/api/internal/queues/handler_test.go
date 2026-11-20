@@ -124,7 +124,7 @@ func TestQueues_Pause_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("app.Test failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
@@ -181,7 +181,7 @@ func TestQueues_RePause_PreservesReason(t *testing.T) {
 	if err != nil {
 		t.Fatalf("app.Test failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 OK, got %d", resp.StatusCode)
@@ -222,7 +222,7 @@ func TestQueues_Resume_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("app.Test failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
@@ -267,7 +267,7 @@ func TestQueues_URLDecoding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("app.Test failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 OK, got %d", resp.StatusCode)
@@ -330,7 +330,7 @@ func TestQueues_ValidationErrors(t *testing.T) {
 			if err != nil {
 				t.Fatalf("app.Test failed: %v", err)
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 
 			if resp.StatusCode != tc.wantStatus {
 				raw, _ := io.ReadAll(resp.Body)
@@ -430,7 +430,7 @@ func TestQueues_Sanitized500Errors(t *testing.T) {
 		if err != nil {
 			t.Fatalf("app.Test failed: %v", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode != http.StatusInternalServerError {
 			t.Fatalf("expected 500, got %d", resp.StatusCode)
