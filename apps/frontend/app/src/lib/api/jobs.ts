@@ -1,4 +1,4 @@
-import { apiFetch } from './client';
+import { apiFetch, apiFetchWithMeta } from './client';
 import type { BackoffStrategy, Job, JobStatus } from '@/lib/types';
 
 export interface ListJobsParams {
@@ -49,11 +49,28 @@ export interface EnqueueJobInput {
   idempotencyKey?: string;
 }
 
-export function enqueueJob(
+export interface EnqueuedJob extends Job {
+  isReplay?: boolean;
+}
+
+export async function enqueueJob(
   input: EnqueueJobInput,
   signal?: AbortSignal,
-): Promise<Job> {
-  return apiFetch<Job>('/jobs', { method: 'POST', body: input, signal });
+): Promise<EnqueuedJob> {
+  const headers: Record<string, string> = {};
+  if (input.idempotencyKey && input.idempotencyKey.trim() !== '') {
+    headers['Idempotency-Key'] = input.idempotencyKey.trim();
+  }
+
+  const res = await apiFetchWithMeta<Job>('/jobs', {
+    method: 'POST',
+    headers,
+    body: input,
+    signal,
+  });
+
+  const isReplay = res.headers.get('idempotent-replay') === 'true';
+  return Object.assign(res.data, { isReplay });
 }
 
 export function cancelJob(id: string, signal?: AbortSignal): Promise<Job> {

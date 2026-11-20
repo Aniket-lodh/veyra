@@ -132,6 +132,11 @@ describe('jobs-helpers', () => {
       const result = extractQueueOptions([]);
       assert.deepEqual(result, ['default']);
     });
+
+    it('handles undefined queue list safely', () => {
+      const result = extractQueueOptions(undefined);
+      assert.deepEqual(result, ['default']);
+    });
   });
 
   describe('getPriorityMeta', () => {

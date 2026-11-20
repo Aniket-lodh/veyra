@@ -60,7 +60,8 @@ export function CodeBlock({
     return exts;
   }, [language, wrap]);
 
-  const onCopy = async () => {
+  const onCopy = async (e?: React.MouseEvent) => {
+    e?.stopPropagation();
     try {
       await navigator.clipboard.writeText(children);
       setCopied(true);

@@ -149,12 +149,12 @@ export function inferTabFromStatuses(statuses: JobStatus[]): JobFilterTab {
  * Extracts and sorts unique queue names from stats and current selection.
  */
 export function extractQueueOptions(
-  queuesFromStats: Array<{ name: string }>,
+  queuesFromStats?: Array<{ name: string }>,
   selectedQueue?: string,
 ): string[] {
   const set = new Set<string>(['default']);
-  for (const q of queuesFromStats) {
-    if (q.name.trim()) set.add(q.name.trim());
+  for (const q of queuesFromStats ?? []) {
+    if (q.name?.trim()) set.add(q.name.trim());
   }
   if (selectedQueue && selectedQueue.trim()) {
     set.add(selectedQueue.trim());
