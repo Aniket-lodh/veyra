@@ -1,4 +1,5 @@
 import { JobCancelDialog } from '@/components/jobs/job-cancel-dialog';
+import { JobInspectorDrawer } from '@/components/jobs/job-inspector-drawer';
 import { QuickEnqueueDialog } from '@/components/jobs/quick-enqueue-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -30,7 +31,6 @@ import {
 import { useLiveConnection } from '@/lib/live/use-live-connection';
 import {
   ROUTES,
-  jobDetailPath,
   jobsByQueuePath,
   jobsByStatusPath,
   workerDetailPath,
@@ -76,6 +76,7 @@ export function DashboardPage() {
 
   // Local interactive UI state
   const [recentTab, setRecentTab] = useState<RecentJobsTab>('all');
+  const [inspectingJobId, setInspectingJobId] = useState<string | null>(null);
   const [cancellingJob, setCancellingJob] = useState<Job | null>(null);
   const [isQuickEnqueueOpen, setIsQuickEnqueueOpen] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -121,24 +122,6 @@ export function DashboardPage() {
     [workers.data?.workers],
   );
 
-  const systemHealth = useMemo(
-    () =>
-      computeSystemHealth({
-        isApiError: stats.isError || workers.isError,
-        apiErrorMessage: (stats.error ?? workers.error)?.message,
-        totals,
-        fleetMetrics,
-      }),
-    [
-      stats.isError,
-      workers.isError,
-      stats.error,
-      workers.error,
-      totals,
-      fleetMetrics,
-    ],
-  );
-
   const statsData = stats.data;
   const workersData = workers.data;
 
@@ -148,6 +131,26 @@ export function DashboardPage() {
       computeQueueOperationalSummary(q, workersData?.workers ?? []),
     );
   }, [statsData, workersData]);
+
+  const systemHealth = useMemo(
+    () =>
+      computeSystemHealth({
+        isApiError: stats.isError || workers.isError,
+        apiErrorMessage: (stats.error ?? workers.error)?.message,
+        totals,
+        fleetMetrics,
+        queueSummaries,
+      }),
+    [
+      stats.isError,
+      workers.isError,
+      stats.error,
+      workers.error,
+      totals,
+      fleetMetrics,
+      queueSummaries,
+    ],
+  );
 
   const availableQueues = useMemo(
     () => extractQueueOptions(statsData?.queues ?? []),
@@ -288,85 +291,85 @@ export function DashboardPage() {
       </div>
 
       {/* ==================================================================== */}
-      {/* SYSTEM ALERTS & DEGRADATION BANNERS                                  */}
+      {/* CONSOLIDATED OPERATIONAL ATTENTION BANNER                            */}
       {/* ==================================================================== */}
-      {(stats.isError || workers.isError) && (
-        <div
-          role="alert"
-          className="border-status-danger-border bg-status-danger-bg text-status-danger-text flex flex-col gap-2 rounded-md border p-3 text-xs sm:flex-row sm:items-center sm:justify-between"
+      {systemHealth.alerts.length > 0 && (
+        <section
+          aria-label="Operational attention alerts"
+          className="space-y-2.5"
         >
-          <div className="flex items-start gap-2">
-            <HugeiconsIcon
-              icon={AlertCircleIcon}
-              className="mt-0.5 size-4 shrink-0"
-            />
-            <div>
-              <p className="font-semibold">API Connection Error</p>
-              <p className="opacity-90">
-                {stats.error?.message || workers.error?.message} — Ensure the Go
-                API server is active on the configured origin.
-              </p>
-            </div>
-          </div>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleRefresh}
-            className="bg-surface-base text-text-primary self-start sm:self-auto"
-          >
-            Retry Connection
-          </Button>
-        </div>
-      )}
+          {systemHealth.alerts.map((alert) => (
+            <div
+              key={alert.id}
+              role={alert.severity === 'critical' ? 'alert' : 'status'}
+              className={cn(
+                'flex flex-col gap-2.5 rounded-lg border p-3.5 text-xs sm:flex-row sm:items-center sm:justify-between',
+                alert.severity === 'critical'
+                  ? 'border-status-danger-border bg-status-danger-bg text-status-danger-text'
+                  : 'border-status-warning-border bg-status-warning-bg text-status-warning-text',
+              )}
+            >
+              <div className="flex items-start gap-2.5">
+                <HugeiconsIcon
+                  icon={
+                    alert.severity === 'critical'
+                      ? AlertCircleIcon
+                      : Alert02Icon
+                  }
+                  className="mt-0.5 size-4 shrink-0"
+                />
+                <div className="space-y-0.5">
+                  <p className="font-semibold">{alert.title}</p>
+                  <p className="opacity-90">{alert.message}</p>
+                </div>
+              </div>
 
-      {/* Stale Worker Diagnostic Warning */}
-      {!workers.isLoading && fleetMetrics.staleWorkers > 0 && (
-        <div
-          role="status"
-          className="border-status-warning-border bg-status-warning-bg text-status-warning-text flex items-start gap-2.5 rounded-md border p-3 text-xs"
-        >
-          <HugeiconsIcon
-            icon={Alert02Icon}
-            className="mt-0.5 size-4 shrink-0"
-          />
-          <div className="space-y-0.5">
-            <p className="font-semibold">
-              Fleet Degradation Warning: {fleetMetrics.staleWorkers} Worker
-              Heartbeat{fleetMetrics.staleWorkers === 1 ? '' : 's'} Overdue
-            </p>
-            <p className="opacity-90">
-              One or more worker processes have stopped heartbeating past 3×
-              their expected interval. Their held leases will be automatically
-              reclaimed upon expiration (SPEC §5).
-            </p>
-          </div>
-        </div>
-      )}
+              <div className="flex shrink-0 items-center gap-2 self-start sm:self-auto">
+                {alert.id === 'api-error' ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={handleRefresh}
+                    disabled={isManualRefreshing || isAnyFetching}
+                    className="bg-surface-base text-text-primary"
+                  >
+                    Retry Connection
+                  </Button>
+                ) : (
+                  <Button
+                    asChild
+                    variant="outline"
+                    size="sm"
+                    className="bg-surface-base text-text-primary hover:bg-surface-elevated"
+                  >
+                    <Link to={alert.actionHref}>
+                      {alert.actionLabel}
+                      <HugeiconsIcon
+                        icon={ArrowRight01Icon}
+                        data-icon="inline-end"
+                      />
+                    </Link>
+                  </Button>
+                )}
 
-      {/* Fleet Offline Warning */}
-      {!stats.isLoading &&
-        !workers.isLoading &&
-        fleetMetrics.activeFleetWorkers === 0 &&
-        !workers.isError && (
-          <div
-            role="status"
-            className="border-border-subtle bg-surface-elevated/60 text-text-secondary flex items-start gap-2.5 rounded-md border p-3 text-xs"
-          >
-            <HugeiconsIcon
-              icon={ServerStack01Icon}
-              className="mt-0.5 size-4 shrink-0"
-            />
-            <div className="space-y-0.5">
-              <p className="text-text-primary font-medium">
-                Worker Fleet Offline
-              </p>
-              <p className="text-text-muted">
-                No active workers are online. Enqueued jobs will sit waiting in
-                PostgreSQL until a worker process boots and claims work.
-              </p>
+                {alert.disabledSecondaryAction && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled
+                    title={alert.disabledSecondaryAction.pendingReason}
+                    className="text-text-disabled h-7 cursor-not-allowed px-2 text-[0.6875rem]"
+                  >
+                    {alert.disabledSecondaryAction.label}
+                  </Button>
+                )}
+              </div>
             </div>
-          </div>
-        )}
+          ))}
+        </section>
+      )}
 
       {/* ==================================================================== */}
       {/* HIGH-SIGNAL SYSTEM & QUEUE HEALTH KPI CARDS                          */}
@@ -421,6 +424,12 @@ export function DashboardPage() {
           icon={Cancel01Icon}
           loading={initialLoading}
           tone={totals && totals.deadLettered > 0 ? 'danger' : 'default'}
+          secondaryAction={{
+            label: 'Replay DLQ',
+            disabled: true,
+            title:
+              'Bulk DLQ replay (POST /jobs/dlq/replay) pending backend implementation',
+          }}
         />
 
         <MetricCard
@@ -678,11 +687,22 @@ export function DashboardPage() {
               <CardTitle className="text-text-primary text-xs font-semibold">
                 Fleet Roster & Utilization
               </CardTitle>
-              <p className="text-text-muted text-[0.6875rem]">
-                {fleetMetrics.activeFleetWorkers} active ·{' '}
-                {fleetMetrics.totalInFlight}/{fleetMetrics.totalCapacity} leased
-                ({fleetMetrics.utilizationPct}% utilization)
-              </p>
+              <div className="text-text-muted flex flex-wrap items-center gap-x-2 text-[0.6875rem]">
+                <span>
+                  {fleetMetrics.activeFleetWorkers} active ·{' '}
+                  {fleetMetrics.totalInFlight}/{fleetMetrics.totalCapacity}{' '}
+                  leased ({fleetMetrics.utilizationPct}%)
+                </span>
+                <span className="text-text-muted/40">·</span>
+                <span className="tabular-nums">
+                  {fleetMetrics.busyWorkers} busy · {fleetMetrics.idleWorkers}{' '}
+                  idle
+                  {fleetMetrics.staleWorkers > 0 &&
+                    ` · ${fleetMetrics.staleWorkers} stale`}
+                  {fleetMetrics.disconnectedWorkers > 0 &&
+                    ` · ${fleetMetrics.disconnectedWorkers} offline`}
+                </span>
+              </div>
             </div>
             <Link
               to={ROUTES.workers}
@@ -879,7 +899,7 @@ export function DashboardPage() {
                     <TableRow
                       key={j.id}
                       className="hover:bg-surface-elevated/40 border-border-subtle cursor-pointer transition-colors"
-                      onClick={() => navigate(jobDetailPath(j.id))}
+                      onClick={() => setInspectingJobId(j.id)}
                     >
                       {/* Job ID + Copy */}
                       <TableCell className="py-2.5">
@@ -952,7 +972,7 @@ export function DashboardPage() {
                           className="flex items-center justify-end gap-1.5"
                           onClick={(e) => e.stopPropagation()}
                         >
-                          {cancellable ? (
+                          {cancellable && (
                             <Button
                               type="button"
                               variant="ghost"
@@ -967,19 +987,20 @@ export function DashboardPage() {
                             >
                               Cancel
                             </Button>
-                          ) : (
-                            <Button
-                              asChild
-                              variant="ghost"
-                              size="sm"
-                              className="text-text-muted hover:text-text-primary h-6 px-2 text-[0.6875rem]"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                              }}
-                            >
-                              <Link to={jobDetailPath(j.id)}>View</Link>
-                            </Button>
                           )}
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="text-text-muted hover:text-text-primary h-6 px-2 text-[0.6875rem]"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setInspectingJobId(j.id);
+                            }}
+                            title="Inspect job in drawer"
+                          >
+                            Inspect
+                          </Button>
                         </div>
                       </TableCell>
                     </TableRow>
@@ -992,7 +1013,7 @@ export function DashboardPage() {
       </section>
 
       {/* ==================================================================== */}
-      {/* MODALS & DRAWERS: Quick Enqueue & Cancellation                       */}
+      {/* MODALS & DRAWERS: Quick Enqueue, Job Inspector & Cancellation       */}
       {/* ==================================================================== */}
       <QuickEnqueueDialog
         open={isQuickEnqueueOpen}
@@ -1000,6 +1021,17 @@ export function DashboardPage() {
         availableQueues={availableQueues}
         onSuccess={() => {
           handleRefresh();
+        }}
+      />
+
+      <JobInspectorDrawer
+        jobId={inspectingJobId}
+        open={Boolean(inspectingJobId)}
+        onOpenChange={(open) => {
+          if (!open) setInspectingJobId(null);
+        }}
+        onCancelRequest={(job) => {
+          setCancellingJob(job);
         }}
       />
 
@@ -1029,6 +1061,7 @@ function MetricCard({
   icon,
   loading,
   tone = 'default',
+  secondaryAction,
 }: {
   to: string;
   label: string;
@@ -1037,6 +1070,11 @@ function MetricCard({
   icon: IconRef;
   loading: boolean;
   tone?: 'default' | 'warn' | 'danger';
+  secondaryAction?: {
+    label: string;
+    disabled?: boolean;
+    title?: string;
+  };
 }) {
   const isHot =
     (tone === 'danger' || tone === 'warn') && value != null && value > 0;
@@ -1087,6 +1125,36 @@ function MetricCard({
       <div className="text-text-muted mt-1 truncate font-mono text-[0.625rem]">
         {hint}
       </div>
+
+      {secondaryAction && (
+        <div
+          className="border-border-subtle/60 mt-2.5 flex items-center justify-between border-t pt-2"
+          onClick={(e) => {
+            e.stopPropagation();
+            e.preventDefault();
+          }}
+        >
+          <span
+            className={cn(
+              'text-[0.625rem] font-medium transition-colors',
+              secondaryAction.disabled
+                ? 'text-text-disabled cursor-not-allowed'
+                : 'text-text-muted hover:text-text-primary',
+            )}
+            title={secondaryAction.title}
+          >
+            {secondaryAction.label}
+          </span>
+          {secondaryAction.disabled && (
+            <span
+              className="border-border-subtle text-text-muted/60 rounded border px-1 py-0.5 text-[0.5625rem] font-medium"
+              title={secondaryAction.title}
+            >
+              pending API
+            </span>
+          )}
+        </div>
+      )}
     </Link>
   );
 }

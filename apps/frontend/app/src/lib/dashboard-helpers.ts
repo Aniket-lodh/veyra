@@ -1,9 +1,22 @@
 import type { QueueAggregate, StatusTotals } from './api/stats.ts';
-import { jobsByStatusPath } from './routes.ts';
+import { jobsByQueuePath, jobsByStatusPath, ROUTES } from './routes.ts';
 import type { Job, Worker } from './types.ts';
 import type { FleetMetrics } from './workers-helpers.ts';
 
 export type SystemHealthLevel = 'healthy' | 'degraded' | 'at_risk' | 'error';
+
+export interface OperationalAlertItem {
+  id: string;
+  severity: 'critical' | 'warning';
+  title: string;
+  message: string;
+  actionLabel: string;
+  actionHref: string;
+  disabledSecondaryAction?: {
+    label: string;
+    pendingReason: string;
+  };
+}
 
 export interface SystemHealthInfo {
   level: SystemHealthLevel;
@@ -13,21 +26,35 @@ export interface SystemHealthInfo {
   summary: string;
   criticalIssues: string[];
   warnings: string[];
+  alerts: OperationalAlertItem[];
 }
 
 /**
  * Computes high-signal system operational health status from API errors,
- * queue totals, and fleet capacity/stale worker metrics.
+ * queue totals, fleet capacity/stale metrics, and per-queue worker coverage.
  */
 export function computeSystemHealth(params: {
   isApiError: boolean;
   apiErrorMessage?: string;
   totals?: StatusTotals;
   fleetMetrics?: FleetMetrics;
+  queueSummaries?: QueueOperationalSummary[];
 }): SystemHealthInfo {
-  const { isApiError, apiErrorMessage, totals, fleetMetrics } = params;
+  const { isApiError, apiErrorMessage, totals, fleetMetrics, queueSummaries } =
+    params;
 
   if (isApiError) {
+    const errorAlert: OperationalAlertItem = {
+      id: 'api-error',
+      severity: 'critical',
+      title: 'API Server Unreachable',
+      message: apiErrorMessage
+        ? `API error: ${apiErrorMessage}`
+        : 'Cannot communicate with the Veyra API server. Verify the service is online.',
+      actionLabel: 'Retry Connection',
+      actionHref: ROUTES.dashboard,
+    };
+
     return {
       level: 'error',
       label: 'API Unreachable',
@@ -38,11 +65,13 @@ export function computeSystemHealth(params: {
         : 'Cannot communicate with the Veyra API server. Verify the service is online.',
       criticalIssues: ['API server connection failed'],
       warnings: [],
+      alerts: [errorAlert],
     };
   }
 
   const criticalIssues: string[] = [];
   const warnings: string[] = [];
+  const alerts: OperationalAlertItem[] = [];
 
   const waiting = (totals?.queued ?? 0) + (totals?.scheduled ?? 0);
   const deadLettered = totals?.deadLettered ?? 0;
@@ -53,33 +82,109 @@ export function computeSystemHealth(params: {
   // Evaluation 1: No workers online while jobs are waiting
   if (activeWorkers === 0) {
     if (waiting > 0) {
-      criticalIssues.push(
-        `Fleet offline: ${waiting.toLocaleString()} waiting job(s) cannot be claimed.`,
-      );
+      const msg = `Fleet offline: ${waiting.toLocaleString()} waiting job(s) cannot be claimed.`;
+      criticalIssues.push(msg);
+      alerts.push({
+        id: 'fleet-offline-waiting',
+        severity: 'critical',
+        title: 'Worker Fleet Offline',
+        message: `${waiting.toLocaleString()} waiting job(s) cannot be claimed because 0 active workers are online.`,
+        actionLabel: 'Inspect Workers',
+        actionHref: ROUTES.workers,
+      });
     } else {
       warnings.push('No active workers registered in the fleet.');
+      alerts.push({
+        id: 'fleet-empty',
+        severity: 'warning',
+        title: 'No Active Workers Registered',
+        message:
+          '0 workers are currently registered. Enqueued jobs will wait in PostgreSQL until a worker process boots.',
+        actionLabel: 'Fleet Roster',
+        actionHref: ROUTES.workers,
+      });
     }
   }
 
   // Evaluation 2: Dead-lettered jobs needing manual intervention
   if (deadLettered > 0) {
-    criticalIssues.push(
-      `${deadLettered.toLocaleString()} dead-lettered job(s) reached max attempt budget.`,
-    );
+    const msg = `${deadLettered.toLocaleString()} dead-lettered job(s) reached max attempt budget.`;
+    criticalIssues.push(msg);
+    alerts.push({
+      id: 'dead-lettered',
+      severity: 'critical',
+      title: 'Dead-Lettered Jobs Require Attention',
+      message: `${deadLettered.toLocaleString()} job(s) exhausted their retry budget and were moved to DLQ (SPEC §7).`,
+      actionLabel: 'Review DLQ Jobs',
+      actionHref: jobsByStatusPath('dead-lettered'),
+      disabledSecondaryAction: {
+        label: 'Replay DLQ',
+        pendingReason:
+          'POST /jobs/dlq/replay endpoint pending backend implementation',
+      },
+    });
   }
 
-  // Evaluation 3: Stale worker heartbeats
+  // Evaluation 3: Unserviced queues with pending backlog and zero active workers
+  if (queueSummaries) {
+    for (const q of queueSummaries) {
+      if (q.assignedWorkerCount === 0 && q.depth > 0) {
+        const msg = `Queue '${q.name}' has ${q.depth.toLocaleString()} waiting job(s) with 0 active workers.`;
+        criticalIssues.push(msg);
+        alerts.push({
+          id: `unserviced-queue-${q.name}`,
+          severity: 'critical',
+          title: `Queue '${q.name}' Has No Active Workers`,
+          message: `${q.depth.toLocaleString()} job(s) waiting in queue '${q.name}', but no online workers are subscribed to process it.`,
+          actionLabel: `View '${q.name}' Jobs`,
+          actionHref: jobsByQueuePath(q.name),
+        });
+      }
+    }
+  }
+
+  // Evaluation 4: Stale worker heartbeats past 3× interval
   if (staleWorkers > 0) {
-    warnings.push(
-      `${staleWorkers.toLocaleString()} worker(s) have overdue heartbeats (>3× interval).`,
-    );
+    const msg = `${staleWorkers.toLocaleString()} worker(s) have overdue heartbeats (>3× interval).`;
+    warnings.push(msg);
+    alerts.push({
+      id: 'stale-workers',
+      severity: 'warning',
+      title: 'Fleet Degradation: Worker Heartbeat Overdue',
+      message: `${staleWorkers.toLocaleString()} worker(s) stopped heartbeating past 3× interval. Held leases will be reclaimed upon expiration (SPEC §5).`,
+      actionLabel: 'Inspect Fleet',
+      actionHref: ROUTES.workers,
+    });
   }
 
-  // Evaluation 4: Failing jobs undergoing retry
+  // Evaluation 5: Failing jobs undergoing retry backoff
   if (failed > 0) {
-    warnings.push(
-      `${failed.toLocaleString()} job(s) currently failing and awaiting scheduled retry.`,
-    );
+    const msg = `${failed.toLocaleString()} job(s) currently failing and awaiting scheduled retry.`;
+    warnings.push(msg);
+    alerts.push({
+      id: 'failing-jobs',
+      severity: 'warning',
+      title: 'Transient Failures In Backoff',
+      message: `${failed.toLocaleString()} job(s) recently failed and are awaiting scheduled retry.`,
+      actionLabel: 'View Failing Jobs',
+      actionHref: jobsByStatusPath('failed'),
+    });
+  }
+
+  // Evaluation 6: High queue failure rates (>= 20% over 24h with at least 5 jobs)
+  if (queueSummaries) {
+    for (const q of queueSummaries) {
+      if (q.failureRatePct24h >= 20 && q.total24h >= 5) {
+        alerts.push({
+          id: `high-fail-rate-${q.name}`,
+          severity: 'warning',
+          title: `Elevated Failure Rate on '${q.name}' (${q.failureRatePct24h}%)`,
+          message: `${(q.failed24h + q.deadLettered24h).toLocaleString()} of ${q.total24h.toLocaleString()} jobs failed in the last 24h.`,
+          actionLabel: `Filter '${q.name}'`,
+          actionHref: jobsByQueuePath(q.name),
+        });
+      }
+    }
   }
 
   // Determine aggregate operational health level
@@ -92,6 +197,7 @@ export function computeSystemHealth(params: {
       summary: criticalIssues[0],
       criticalIssues,
       warnings,
+      alerts,
     };
   }
 
@@ -104,6 +210,7 @@ export function computeSystemHealth(params: {
       summary: warnings[0],
       criticalIssues,
       warnings,
+      alerts,
     };
   }
 
@@ -116,6 +223,7 @@ export function computeSystemHealth(params: {
       'All operational systems healthy. Worker fleet active and queue depth nominal.',
     criticalIssues: [],
     warnings: [],
+    alerts: [],
   };
 }
 
