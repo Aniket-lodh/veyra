@@ -4,6 +4,7 @@ import {
   computeQueueOperationalSummary,
   filterRecentJobs,
   computePipelineSegments,
+  type QueueOperationalSummary,
 } from './dashboard-helpers.ts';
 import type { Job, Worker } from './types';
 import type { FleetMetrics } from './workers-helpers';
@@ -21,6 +22,9 @@ describe('dashboard-helpers', () => {
       assert.equal(res.label, 'API Unreachable');
       assert.equal(res.badgeTone, 'danger');
       assert.match(res.summary, /Connection refused/);
+      assert.equal(res.alerts.length, 1);
+      assert.equal(res.alerts[0].id, 'api-error');
+      assert.equal(res.alerts[0].severity, 'critical');
     });
 
     it('returns healthy when all metrics are nominal', () => {
@@ -57,9 +61,10 @@ describe('dashboard-helpers', () => {
       assert.equal(res.badgeTone, 'success');
       assert.equal(res.criticalIssues.length, 0);
       assert.equal(res.warnings.length, 0);
+      assert.equal(res.alerts.length, 0);
     });
 
-    it('returns at_risk when dead-lettered jobs exist', () => {
+    it('returns at_risk when dead-lettered jobs exist and exposes actionable alert', () => {
       const totals: StatusTotals = {
         queued: 2,
         scheduled: 0,
@@ -93,6 +98,12 @@ describe('dashboard-helpers', () => {
       assert.equal(res.badgeTone, 'danger');
       assert.match(res.summary, /3 dead-lettered/);
       assert.equal(res.criticalIssues.length, 1);
+      assert.equal(res.alerts.length, 1);
+      assert.equal(res.alerts[0].id, 'dead-lettered');
+      assert.equal(res.alerts[0].severity, 'critical');
+      assert.equal(res.alerts[0].actionLabel, 'Review DLQ Jobs');
+      assert.match(res.alerts[0].actionHref, /dead-lettered/);
+      assert.equal(res.alerts[0].disabledSecondaryAction?.label, 'Replay DLQ');
     });
 
     it('returns at_risk when active workers are 0 and jobs are waiting', () => {
@@ -126,6 +137,10 @@ describe('dashboard-helpers', () => {
 
       assert.equal(res.level, 'at_risk');
       assert.match(res.summary, /Fleet offline/);
+      assert.equal(
+        res.alerts.some((a) => a.id === 'fleet-offline-waiting'),
+        true,
+      );
     });
 
     it('returns degraded when stale workers or retrying jobs exist without DLQ', () => {
@@ -161,6 +176,65 @@ describe('dashboard-helpers', () => {
       assert.equal(res.label, 'Degraded');
       assert.equal(res.badgeTone, 'warning');
       assert.equal(res.warnings.length, 2);
+      assert.equal(res.alerts.length, 2); // stale-workers, failing-jobs
+      assert.equal(res.alerts[0].id, 'stale-workers');
+      assert.equal(res.alerts[1].id, 'failing-jobs');
+    });
+
+    it('surfaces critical alert for unserviced queues with pending backlog', () => {
+      const totals: StatusTotals = {
+        queued: 5,
+        scheduled: 0,
+        running: 0,
+        succeeded: 20,
+        failed: 0,
+        deadLettered: 0,
+        cancelled: 0,
+      };
+      const fleetMetrics: FleetMetrics = {
+        totalWorkers: 1,
+        busyWorkers: 0,
+        idleWorkers: 1,
+        drainingWorkers: 0,
+        staleWorkers: 0,
+        disconnectedWorkers: 0,
+        activeFleetWorkers: 1,
+        totalInFlight: 0,
+        totalCapacity: 5,
+        utilizationPct: 0,
+      };
+      const queueSummaries: QueueOperationalSummary[] = [
+        {
+          name: 'reports',
+          depth: 5,
+          inFlight: 0,
+          succeeded24h: 10,
+          failed24h: 0,
+          deadLettered24h: 0,
+          total24h: 10,
+          failureRatePct24h: 0,
+          assignedWorkerCount: 0, // unserviced!
+          health: 'critical',
+          statusLabel: 'Unserviced Backlog',
+          statusTone: 'danger',
+        },
+      ];
+
+      const res = computeSystemHealth({
+        isApiError: false,
+        totals,
+        fleetMetrics,
+        queueSummaries,
+      });
+
+      assert.equal(res.level, 'at_risk');
+      const unservicedAlert = res.alerts.find(
+        (a) => a.id === 'unserviced-queue-reports',
+      );
+      assert.ok(unservicedAlert);
+      assert.equal(unservicedAlert.severity, 'critical');
+      assert.equal(unservicedAlert.actionLabel, "View 'reports' Jobs");
+      assert.match(unservicedAlert.actionHref, /reports/);
     });
   });
 
