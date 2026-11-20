@@ -11,8 +11,6 @@ import (
 
 	queuecore "github.com/Aniket-lodh/veyra/queue-core"
 	"github.com/Aniket-lodh/veyra/queue-core/testsupport"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const (
@@ -20,6 +18,10 @@ const (
 	retryTestQueue   = "retry-test"
 	retryTestHandler = "test.retry.handler"
 )
+
+func ptrInt(v int) *int {
+	return &v
+}
 
 func mustCreateRetryJob(t *testing.T, ctx context.Context, repo *queuecore.Repository, id string, maxAttempts int) *queuecore.Job {
 	t.Helper()
@@ -44,11 +46,7 @@ func mustCreateRetryJob(t *testing.T, ctx context.Context, repo *queuecore.Repos
 
 func mustClaimRetry(t *testing.T, ctx context.Context, repo *queuecore.Repository, id string) *queuecore.Job {
 	t.Helper()
-	claimed, err := repo.ClaimNextJob(ctx, queuecore.ClaimParams{
-		WorkerID: retryTestWorker,
-		Queues:   []string{retryTestQueue},
-		Handlers: []string{retryTestHandler},
-	})
+	claimed, err := repo.ClaimNextJob(ctx, retryTestWorker, []string{retryTestQueue}, []string{retryTestHandler})
 	if err != nil {
 		t.Fatalf("ClaimNextJob for %s: %v", id, err)
 	}
@@ -210,7 +208,7 @@ func TestRetry_RejectsQueuedRunningSucceeded(t *testing.T) {
 	}
 
 	// 3. Succeeded
-	_, err := repo.MarkJobSucceeded(ctx, queuecore.SuccessParams{
+	_, err := repo.MarkJobSucceeded(ctx, queuecore.SucceedParams{
 		WorkerID: retryTestWorker,
 		JobID:    jobID2,
 		Result:   json.RawMessage(`{}`),
