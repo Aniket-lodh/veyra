@@ -1,814 +1,1627 @@
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { CodeBlock } from '@/components/ui/code-block';
 import { Input } from '@/components/ui/input';
 import { JsonEditor } from '@/components/ui/json-editor';
 import { Label } from '@/components/ui/label';
+import { StatusBadge } from '@/components/ui/status-badge';
 import { Textarea } from '@/components/ui/textarea';
-import { useEnqueueJob } from '@/hooks/api';
+import { useEnqueueJob, useQueueStats, useWorkers } from '@/hooks/api';
 import { ApiError } from '@/lib/api/client';
-import type { EnqueueJobInput } from '@/lib/api/jobs';
+import type { EnqueuedJob } from '@/lib/api/jobs';
+import {
+  BACKOFF_PRESETS,
+  BODYLESS_METHODS,
+  HTTP_METHODS,
+  INITIAL_ENQUEUE_FORM,
+  STARTER_PRESETS,
+  buildEffectivePayload,
+  computeQueueReadiness,
+  computeScheduledTime,
+  ensureContentType,
+  generateCurlSnippet,
+  generateIdempotencyKey,
+  hasContentType,
+  resolveEffectiveHandlerName,
+  validateAndParseEnqueueForm,
+  type BackoffPresetId,
+  type EnqueueFormState,
+  type HeaderRow,
+  type HttpMethod,
+} from '@/lib/enqueue-helpers';
+import { extractQueueOptions } from '@/lib/jobs-helpers';
 import { jobDetailPath } from '@/lib/routes';
 import { cn } from '@/lib/utils';
-import { useState } from 'react';
+import {
+  Add01Icon,
+  Alert02Icon,
+  ArrowRight01Icon,
+  Clock01Icon,
+  Copy01Icon,
+  Key01Icon,
+  Refresh01Icon,
+  ServerStack01Icon,
+  Task01Icon,
+  Tick01Icon,
+  ViewIcon,
+} from '@hugeicons/core-free-icons';
+import { HugeiconsIcon } from '@hugeicons/react';
+import { useCallback, useMemo, useState, type KeyboardEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-const HTTP_METHODS = [
-  'GET',
-  'POST',
-  'PUT',
-  'PATCH',
-  'DELETE',
-  'HEAD',
-  'OPTIONS',
-] as const;
-type HttpMethod = (typeof HTTP_METHODS)[number];
-type JobKind = 'http' | 'email';
-
 const selectClass =
-  'border-border h-9 w-full rounded-md border bg-transparent px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30';
-
-const BODYLESS_METHODS = new Set<HttpMethod>(['GET', 'HEAD']);
-
-interface HeaderRow {
-  key: string;
-  value: string;
-}
-
-interface FormState {
-  jobKind: JobKind;
-  // http_request
-  url: string;
-  method: HttpMethod;
-  headers: HeaderRow[];
-  body: string;
-  timeoutSeconds: string;
-  // send_email
-  emailTo: string;
-  emailFrom: string;
-  emailSubject: string;
-  emailText: string;
-  emailHtml: string;
-  emailReplyTo: string;
-  // shared job knobs
-  maxAttempts: string;
-  queue: string;
-  priority: string;
-  scheduledFor: string;
-  idempotencyKey: string;
-  rawMode: boolean;
-  rawPayload: string;
-}
-
-const INITIAL_FORM: FormState = {
-  jobKind: 'http',
-  url: '',
-  method: 'POST',
-  headers: [{ key: '', value: '' }],
-  body: '',
-  timeoutSeconds: '30',
-  emailTo: '',
-  emailFrom: '',
-  emailSubject: '',
-  emailText: '',
-  emailHtml: '',
-  emailReplyTo: '',
-  maxAttempts: '3',
-  queue: 'default',
-  priority: '5',
-  scheduledFor: '',
-  idempotencyKey: '',
-  rawMode: false,
-  rawPayload: '',
-};
-
-const HTTP_EXAMPLES: { label: string; patch: Partial<FormState> }[] = [
-  {
-    label: 'GET httpbin.org/get',
-    patch: {
-      method: 'GET',
-      url: 'https://httpbin.org/get',
-      headers: [{ key: '', value: '' }],
-      body: '',
-    },
-  },
-  {
-    label: 'POST httpbin.org/post',
-    patch: {
-      method: 'POST',
-      url: 'https://httpbin.org/post',
-      headers: [{ key: 'Content-Type', value: 'application/json' }],
-      body: '{\n  "hello": "veyra"\n}',
-    },
-  },
-];
-
-const EMAIL_EXAMPLES: { label: string; patch: Partial<FormState> }[] = [
-  {
-    label: 'Sample email',
-    patch: {
-      emailTo: 'you@example.com',
-      emailFrom: '',
-      emailSubject: 'Hello from Veyra',
-      emailText: 'This email was sent by a Veyra send_email job.',
-      emailHtml: '',
-      emailReplyTo: '',
-    },
-  },
-];
+  'border-border-subtle bg-surface-base text-text-primary h-8 w-full rounded-md border px-2 text-xs transition-colors outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30';
 
 export function EnqueuePage() {
   const navigate = useNavigate();
-  const [form, setForm] = useState<FormState>(INITIAL_FORM);
-  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [form, setForm] = useState<EnqueueFormState>(INITIAL_ENQUEUE_FORM);
   const [validationError, setValidationError] = useState<string | null>(null);
+  const [validationField, setValidationField] = useState<string | null>(null);
+  const [previewTab, setPreviewTab] = useState<'payload' | 'curl'>('payload');
+  const [submissionSuccess, setSubmissionSuccess] =
+    useState<EnqueuedJob | null>(null);
+  const [idempotencyConflict, setIdempotencyConflict] = useState<{
+    key: string;
+    message: string;
+  } | null>(null);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+
+  // Queries for live queue and worker readiness
+  const statsQuery = useQueueStats();
+  const workersQuery = useWorkers();
+
+  const availableQueues = useMemo(() => {
+    return extractQueueOptions(statsQuery.data?.queues, form.queue);
+  }, [statsQuery.data?.queues, form.queue]);
+
+  const effectiveHandler = useMemo(
+    () => resolveEffectiveHandlerName(form),
+    [form],
+  );
+
+  const readiness = useMemo(() => {
+    return computeQueueReadiness(
+      form.queue,
+      effectiveHandler,
+      statsQuery.data,
+      workersQuery.data?.workers,
+      statsQuery.isLoading || workersQuery.isLoading,
+    );
+  }, [
+    form.queue,
+    effectiveHandler,
+    statsQuery.data,
+    workersQuery.data?.workers,
+    statsQuery.isLoading,
+    workersQuery.isLoading,
+  ]);
+
+  const effectivePayloadRes = useMemo(() => {
+    return buildEffectivePayload(form);
+  }, [form]);
 
   const mutation = useEnqueueJob({
-    onSuccess: (job) => navigate(jobDetailPath(job.id)),
+    onSuccess: (job) => {
+      setSubmissionSuccess(job);
+      setIdempotencyConflict(null);
+      setValidationError(null);
+      setValidationField(null);
+    },
+    onError: (err) => {
+      if (err instanceof ApiError && err.status === 409) {
+        setIdempotencyConflict({
+          key: form.idempotencyKey.trim(),
+          message: err.message,
+        });
+      } else {
+        setValidationError(err instanceof ApiError ? err.message : String(err));
+      }
+    },
   });
 
-  const update = <K extends keyof FormState>(key: K, value: FormState[K]) =>
+  const update = <K extends keyof EnqueueFormState>(
+    key: K,
+    value: EnqueueFormState[K],
+  ) => {
     setForm((prev) => ({ ...prev, [key]: value }));
-
-  const setJobKind = (jobKind: JobKind) => {
     setValidationError(null);
-    setForm((prev) => ({ ...prev, jobKind, rawMode: false, rawPayload: '' }));
+    setValidationField(null);
+    if (key === 'idempotencyKey') {
+      setIdempotencyConflict(null);
+    }
   };
 
-  const applyExample = (patch: Partial<FormState>) => {
-    setValidationError(null);
-    setForm((prev) => ({ ...prev, ...patch }));
-  };
+  const handleCopy = useCallback(
+    (text: string, id: string, e?: React.MouseEvent) => {
+      e?.stopPropagation();
+      navigator.clipboard.writeText(text).then(() => {
+        setCopiedKey(id);
+        window.setTimeout(() => setCopiedKey(null), 1600);
+      });
+    },
+    [],
+  );
 
-  const setHeader = (i: number, field: keyof HeaderRow, value: string) =>
+  const setHeader = (i: number, field: keyof HeaderRow, value: string) => {
     setForm((prev) => {
-      const headers = prev.headers.map((h, idx) =>
+      const headers = prev.httpHeaders.map((h, idx) =>
         idx === i ? { ...h, [field]: value } : h,
       );
-      return { ...prev, headers };
+      return { ...prev, httpHeaders: headers };
     });
+  };
 
-  const addHeader = () =>
+  const addHeader = () => {
     setForm((prev) => ({
       ...prev,
-      headers: [...prev.headers, { key: '', value: '' }],
+      httpHeaders: [...prev.httpHeaders, { key: '', value: '' }],
     }));
+  };
 
-  const removeHeader = (i: number) =>
+  const removeHeader = (i: number) => {
     setForm((prev) => {
-      const headers = prev.headers.filter((_, idx) => idx !== i);
+      const filtered = prev.httpHeaders.filter((_, idx) => idx !== i);
       return {
         ...prev,
-        headers: headers.length ? headers : [{ key: '', value: '' }],
+        httpHeaders: filtered.length ? filtered : [{ key: '', value: '' }],
       };
     });
+  };
 
-  const setBody = (body: string) => {
+  const handleHttpBodyChange = (body: string) => {
     setForm((prev) => {
-      let headers = prev.headers;
+      let headers = prev.httpHeaders;
       if (body.trim() !== '' && !hasContentType(headers)) {
         headers = ensureContentType(headers, 'application/json');
       }
-      return { ...prev, body, headers };
+      return { ...prev, httpBody: body, httpHeaders: headers };
     });
   };
 
-  const toggleRawMode = () =>
-    setForm((prev) => {
-      const rawMode = !prev.rawMode;
-      const rawPayload =
-        rawMode && prev.rawPayload.trim() === ''
-          ? JSON.stringify(
-              prev.jobKind === 'email'
-                ? buildEmailPayload(prev)
-                : buildHttpPayload(prev),
-              null,
-              2,
-            )
-          : prev.rawPayload;
-      return { ...prev, rawMode, rawPayload };
-    });
-
-  const handleSubmit = (e: { preventDefault: () => void }) => {
-    e.preventDefault();
-    setValidationError(null);
-
-    const result = parseForm(form);
-    if ('error' in result) {
-      setValidationError(result.error);
-      if (result.advanced) setAdvancedOpen(true);
+  const handleBackoffPresetSelect = (presetId: BackoffPresetId) => {
+    if (presetId === 'custom') {
+      setForm((prev) => ({ ...prev, backoffPreset: 'custom' }));
       return;
     }
+    const preset = BACKOFF_PRESETS.find((p) => p.id === presetId);
+    if (!preset) return;
+
+    const strategy = preset.strategy;
+    if (strategy.kind === 'exponential') {
+      const { baseSeconds, capSeconds } = strategy;
+      setForm((prev) => ({
+        ...prev,
+        backoffPreset: presetId,
+        backoffKind: 'exponential',
+        backoffBaseSeconds: baseSeconds,
+        backoffCapSeconds: capSeconds,
+      }));
+    } else {
+      const { seconds } = strategy;
+      setForm((prev) => ({
+        ...prev,
+        backoffPreset: presetId,
+        backoffKind: 'fixed',
+        backoffFixedSeconds: seconds,
+      }));
+    }
+  };
+
+  const handleScheduleOffset = (minutes: number) => {
+    const val = computeScheduledTime(minutes);
+    update('scheduledFor', val);
+  };
+
+  const handleGenerateKey = (type: 'uuid' | 'ulid') => {
+    const key = generateIdempotencyKey(type);
+    update('idempotencyKey', key);
+  };
+
+  const handleToggleRawMode = () => {
+    setForm((prev) => {
+      const nextRawMode = !prev.rawMode;
+      let nextRawPayload = prev.rawPayload;
+      if (nextRawMode && nextRawPayload.trim() === '') {
+        const payloadRes = buildEffectivePayload({ ...prev, rawMode: false });
+        nextRawPayload = JSON.stringify(payloadRes.payload ?? {}, null, 2);
+      }
+      return {
+        ...prev,
+        rawMode: nextRawMode,
+        rawPayload: nextRawPayload,
+      };
+    });
+  };
+
+  const handleSubmit = (e?: { preventDefault: () => void }) => {
+    e?.preventDefault();
+    if (mutation.isPending) return;
+    setValidationError(null);
+    setValidationField(null);
+    setIdempotencyConflict(null);
+
+    const result = validateAndParseEnqueueForm(form);
+    if (!result.ok) {
+      if ('error' in result) {
+        setValidationError(result.error);
+        if (result.field) setValidationField(result.field);
+      }
+      return;
+    }
+
     mutation.mutate(result.value);
   };
 
-  const serverError =
-    mutation.error instanceof ApiError
-      ? mutation.error.message
-      : mutation.error
-        ? String(mutation.error)
-        : null;
+  const handleRetryWithNewKey = () => {
+    if (mutation.isPending) return;
+    const newKey = generateIdempotencyKey('ulid');
+    setForm((prev) => ({ ...prev, idempotencyKey: newKey }));
+    setIdempotencyConflict(null);
+    setValidationError(null);
 
-  const showBodyNote =
-    form.jobKind === 'http' &&
-    BODYLESS_METHODS.has(form.method) &&
-    form.body.trim() !== '';
-  const generatedPayload = JSON.stringify(
-    form.jobKind === 'email' ? buildEmailPayload(form) : buildHttpPayload(form),
-    null,
-    2,
+    const result = validateAndParseEnqueueForm({
+      ...form,
+      idempotencyKey: newKey,
+    });
+    if (result.ok) {
+      mutation.mutate(result.value);
+    }
+  };
+
+  const handleFormKeyDown = (e: KeyboardEvent<HTMLFormElement>) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+      e.preventDefault();
+      if (!mutation.isPending) {
+        handleSubmit();
+      }
+    }
+  };
+
+  // Generated cURL representation for right-hand column
+  const parsedForCurl = useMemo(() => {
+    const parsed = validateAndParseEnqueueForm(form);
+    if (parsed.ok) return parsed.value;
+    return {
+      handler: effectiveHandler || 'http_request',
+      queue: form.queue.trim() || 'default',
+      priority: form.priority,
+      maxAttempts: form.maxAttempts,
+      payload: effectivePayloadRes.payload ?? {},
+      idempotencyKey: form.idempotencyKey.trim() || undefined,
+      scheduledFor: form.scheduledFor.trim() || undefined,
+    };
+  }, [form, effectiveHandler, effectivePayloadRes]);
+
+  const curlSnippet = useMemo(
+    () => generateCurlSnippet(parsedForCurl),
+    [parsedForCurl],
   );
-  const examples = form.jobKind === 'email' ? EMAIL_EXAMPLES : HTTP_EXAMPLES;
+
+  const isBodylessHttp =
+    form.handlerType === 'http_request' &&
+    BODYLESS_METHODS.has(form.httpMethod) &&
+    form.httpBody.trim() !== '';
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-end justify-between gap-3">
+    <div className="mx-auto max-w-7xl space-y-5 pb-12">
+      {/* Page Header & Starter Presets Bar */}
+      <div className="border-border-subtle bg-surface-base flex flex-col justify-between gap-4 rounded-lg border p-4 sm:flex-row sm:items-center">
         <div>
-          <h2 className="text-base font-semibold">Create job</h2>
-          <p className="text-muted-foreground text-xs">
-            {form.jobKind === 'email'
-              ? 'Enqueue an email. The worker sends it over SMTP.'
-              : 'Build a request. Veyra runs it and keeps the result.'}
-          </p>
+          <div className="flex items-center gap-2">
+            <div className="bg-surface-elevated text-text-primary border-border-subtle flex h-8 w-8 items-center justify-center rounded-md border">
+              <HugeiconsIcon icon={Add01Icon} className="h-4 w-4" />
+            </div>
+            <div>
+              <h1 className="text-text-primary text-sm font-semibold tracking-tight sm:text-base">
+                Enqueue Job
+              </h1>
+              <p className="text-text-muted text-xs">
+                Dispatch an execution payload into PostgreSQL queue with retry
+                policy and routing.
+              </p>
+            </div>
+          </div>
         </div>
+
+        {/* Starter Presets */}
         <div className="flex flex-wrap items-center gap-1.5">
-          {examples.map((ex) => (
+          <span className="text-text-muted mr-1 text-[0.6875rem] font-medium tracking-wide uppercase">
+            Starter Presets:
+          </span>
+          {STARTER_PRESETS.map((preset) => (
             <Button
-              key={ex.label}
+              key={preset.label}
               type="button"
               variant="outline"
-              size="sm"
-              onClick={() => applyExample(ex.patch)}
+              size="xs"
+              onClick={() => {
+                setForm((prev) => ({
+                  ...prev,
+                  handlerType: preset.handlerType,
+                  rawMode: false,
+                  ...preset.patch,
+                }));
+                setValidationError(null);
+                setValidationField(null);
+                setIdempotencyConflict(null);
+              }}
+              className="text-[0.6875rem]"
+              title={preset.description}
             >
-              {ex.label}
+              {preset.label}
             </Button>
           ))}
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            onClick={() => {
+              setForm(INITIAL_ENQUEUE_FORM);
+              setValidationError(null);
+              setValidationField(null);
+              setIdempotencyConflict(null);
+              setSubmissionSuccess(null);
+              mutation.reset();
+            }}
+            className="text-text-muted hover:text-text-primary text-[0.6875rem]"
+          >
+            Reset
+          </Button>
         </div>
       </div>
 
-      <Card>
-        <form onSubmit={handleSubmit}>
-          <CardContent className="space-y-4 pt-4">
-            <div className="space-y-1.5">
-              <Label>Job type</Label>
-              <div
-                className="flex flex-wrap gap-1.5"
-                role="group"
-                aria-label="Job type"
-              >
-                {(
-                  [
-                    { id: 'http', label: 'HTTP request' },
-                    { id: 'email', label: 'Email' },
-                  ] as const
-                ).map((opt) => {
-                  const on = form.jobKind === opt.id;
-                  return (
-                    <button
-                      key={opt.id}
-                      type="button"
-                      aria-pressed={on}
-                      onClick={() => setJobKind(opt.id)}
-                      className={cn(
-                        'rounded-md border px-2.5 py-1 text-[0.6875rem] font-medium transition-colors',
-                        on
-                          ? 'border-foreground/20 bg-foreground text-background'
-                          : 'border-border text-muted-foreground hover:bg-muted/60 hover:text-foreground',
-                      )}
-                    >
-                      {opt.label}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {form.jobKind === 'http' ? (
-              <>
-                <Row>
-                  <div className="sm:max-w-[8.5rem]">
-                    <Field label="Method" htmlFor="method">
-                      <select
-                        id="method"
-                        value={form.method}
-                        onChange={(e) =>
-                          update('method', e.target.value as HttpMethod)
-                        }
-                        className={selectClass}
-                      >
-                        {HTTP_METHODS.map((m) => (
-                          <option key={m} value={m}>
-                            {m}
-                          </option>
-                        ))}
-                      </select>
-                    </Field>
+      {/* Main 2-Column Operational Workbench */}
+      <form onSubmit={handleSubmit} onKeyDown={handleFormKeyDown}>
+        <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-12">
+          {/* ========================================================= */}
+          {/* LEFT COLUMN: Structured Configuration & Payload Authoring */}
+          {/* ========================================================= */}
+          <div className="space-y-5 lg:col-span-7">
+            {/* Section 1: Handler Type & Mode Selection */}
+            <Card className="border-border-subtle bg-surface-base">
+              <CardHeader className="border-border-subtle flex flex-row items-center justify-between border-b pb-2.5">
+                <CardTitle className="text-text-primary flex items-center gap-1.5 font-medium">
+                  <HugeiconsIcon icon={Task01Icon} className="h-3.5 w-3.5" />
+                  <span>Handler & Execution Mode</span>
+                </CardTitle>
+                <label className="text-text-secondary hover:text-text-primary flex cursor-pointer items-center gap-1.5 text-xs select-none">
+                  <input
+                    type="checkbox"
+                    checked={form.rawMode}
+                    onChange={handleToggleRawMode}
+                    className="border-border-strong text-primary accent-primary h-3.5 w-3.5 rounded-sm"
+                  />
+                  <span>Edit raw JSON payload</span>
+                </label>
+              </CardHeader>
+              <CardContent className="space-y-4 pt-3.5">
+                <div className="space-y-1.5">
+                  <Label htmlFor="handler-type-select">Worker Handler</Label>
+                  <div
+                    className="grid grid-cols-2 gap-1.5 sm:grid-cols-4"
+                    role="group"
+                    aria-label="Worker Handler"
+                  >
+                    {(
+                      [
+                        { id: 'http_request', label: 'HTTP Request' },
+                        { id: 'send_email', label: 'Send Email' },
+                        { id: 'noop', label: 'No-op Health' },
+                        { id: 'custom', label: 'Custom' },
+                      ] as const
+                    ).map((h) => {
+                      const isActive = form.handlerType === h.id;
+                      return (
+                        <button
+                          key={h.id}
+                          type="button"
+                          aria-pressed={isActive}
+                          onClick={() => {
+                            setForm((prev) => ({
+                              ...prev,
+                              handlerType: h.id,
+                              rawMode: h.id === 'custom' ? true : prev.rawMode,
+                            }));
+                            setValidationError(null);
+                            setValidationField(null);
+                          }}
+                          className={cn(
+                            'flex items-center justify-center rounded-md border py-1.5 text-xs font-medium transition-colors',
+                            isActive
+                              ? 'border-border-strong bg-surface-elevated text-text-primary font-semibold shadow-xs'
+                              : 'border-border-subtle bg-surface-base text-text-muted hover:bg-surface-elevated/60 hover:text-text-primary',
+                          )}
+                        >
+                          {h.label}
+                        </button>
+                      );
+                    })}
                   </div>
-                  <Field label="URL" htmlFor="url">
+                </div>
+
+                {form.handlerType === 'custom' && (
+                  <div className="space-y-1">
+                    <Label htmlFor="custom-handler-name">
+                      Custom Handler Name
+                    </Label>
                     <Input
-                      id="url"
-                      value={form.url}
-                      onChange={(e) => update('url', e.target.value)}
-                      placeholder="https://api.example.com/webhook"
-                      required={form.jobKind === 'http'}
+                      id="custom-handler-name"
+                      value={form.customHandler}
+                      onChange={(e) => update('customHandler', e.target.value)}
+                      placeholder="e.g. sync_inventory, generate_report, stripe_webhook"
+                      className="bg-surface-base font-mono text-xs"
+                      aria-invalid={validationField === 'customHandler'}
                       autoFocus
                     />
-                  </Field>
-                </Row>
+                    <p className="text-text-muted text-[0.6875rem]">
+                      Must match a handler registered by a running worker in
+                      your fleet.
+                    </p>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
 
-                <div className="space-y-2">
-                  <Label>Headers</Label>
-                  <div className="space-y-2">
-                    {form.headers.map((h, i) => (
-                      <div key={i} className="flex items-center gap-2">
-                        <Input
-                          aria-label={`Header ${i + 1} name`}
-                          value={h.key}
-                          onChange={(e) => setHeader(i, 'key', e.target.value)}
-                          placeholder="Header"
-                          className="flex-1"
-                        />
-                        <Input
-                          aria-label={`Header ${i + 1} value`}
-                          value={h.value}
+            {/* Section 2: Guided Payload Authoring / Raw Mode */}
+            <Card className="border-border-subtle bg-surface-base">
+              <CardHeader className="border-border-subtle flex flex-row items-center justify-between border-b pb-2.5">
+                <CardTitle className="text-text-primary flex items-center gap-1.5 font-medium">
+                  <span>Job Payload</span>
+                  <Badge tone="neutral" className="font-mono text-[0.625rem]">
+                    {form.rawMode
+                      ? 'JSON (Raw)'
+                      : form.handlerType === 'http_request'
+                        ? 'HTTP Builder'
+                        : form.handlerType === 'send_email'
+                          ? 'Email Builder'
+                          : form.handlerType === 'noop'
+                            ? 'No-op Builder'
+                            : 'Custom JSON'}
+                  </Badge>
+                </CardTitle>
+                {form.rawMode && (
+                  <span className="text-text-muted text-[0.6875rem]">
+                    Valid JSON required
+                  </span>
+                )}
+              </CardHeader>
+              <CardContent className="space-y-4 pt-3.5">
+                {form.rawMode ? (
+                  <div className="space-y-1.5">
+                    <JsonEditor
+                      value={form.rawPayload}
+                      onChange={(v) => update('rawPayload', v)}
+                      minHeight="240px"
+                      aria-label="Raw JSON payload"
+                      placeholder={'{\n  "key": "value"\n}'}
+                    />
+                    {effectivePayloadRes.error && (
+                      <p
+                        className="text-status-danger-text text-xs"
+                        role="alert"
+                      >
+                        {effectivePayloadRes.error}
+                      </p>
+                    )}
+                  </div>
+                ) : form.handlerType === 'http_request' ? (
+                  /* HTTP Request guided fields */
+                  <div className="space-y-4">
+                    <div className="grid gap-3 sm:grid-cols-4">
+                      <div className="sm:col-span-1">
+                        <Label htmlFor="http-method">Method</Label>
+                        <select
+                          id="http-method"
+                          value={form.httpMethod}
                           onChange={(e) =>
-                            setHeader(i, 'value', e.target.value)
+                            update('httpMethod', e.target.value as HttpMethod)
                           }
-                          placeholder="Value"
-                          className="flex-1"
+                          className={selectClass}
+                        >
+                          {HTTP_METHODS.map((m) => (
+                            <option key={m} value={m}>
+                              {m}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="sm:col-span-3">
+                        <Label htmlFor="http-url">Target URL</Label>
+                        <Input
+                          id="http-url"
+                          type="url"
+                          value={form.httpUrl}
+                          onChange={(e) => update('httpUrl', e.target.value)}
+                          placeholder="https://api.example.com/webhook"
+                          className="font-mono text-xs"
+                          aria-invalid={validationField === 'httpUrl'}
+                          required
+                          autoFocus
                         />
+                      </div>
+                    </div>
+
+                    {/* Headers Builder */}
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <Label>HTTP Headers</Label>
                         <Button
                           type="button"
                           variant="ghost"
-                          size="sm"
-                          onClick={() => removeHeader(i)}
-                          aria-label={`Remove header ${i + 1}`}
+                          size="xs"
+                          onClick={addHeader}
+                          className="text-text-secondary text-[0.6875rem]"
                         >
-                          ✕
+                          + Add Header
                         </Button>
                       </div>
-                    ))}
+                      <div className="space-y-1.5">
+                        {form.httpHeaders.map((header, idx) => (
+                          <div key={idx} className="flex items-center gap-1.5">
+                            <Input
+                              aria-label={`Header ${idx + 1} Name`}
+                              placeholder="Header Name"
+                              value={header.key}
+                              onChange={(e) =>
+                                setHeader(idx, 'key', e.target.value)
+                              }
+                              className="font-mono text-xs"
+                            />
+                            <Input
+                              aria-label={`Header ${idx + 1} Value`}
+                              placeholder="Header Value"
+                              value={header.value}
+                              onChange={(e) =>
+                                setHeader(idx, 'value', e.target.value)
+                              }
+                              className="font-mono text-xs"
+                            />
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="xs"
+                              onClick={() => removeHeader(idx)}
+                              aria-label={`Remove header ${idx + 1}`}
+                              className="text-text-muted hover:text-status-danger-text px-1.5"
+                            >
+                              ✕
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* HTTP Body Editor */}
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <Label htmlFor="http-body-editor">
+                          JSON Body (Optional)
+                        </Label>
+                        {isBodylessHttp && (
+                          <span className="text-status-warning-text text-[0.6875rem]">
+                            Note: {form.httpMethod} usually has no body, but
+                            Veyra will transmit it.
+                          </span>
+                        )}
+                      </div>
+                      <JsonEditor
+                        value={form.httpBody}
+                        onChange={handleHttpBodyChange}
+                        placeholder={'{\n  "event": "ping"\n}'}
+                        minHeight="140px"
+                        aria-label="HTTP Body JSON"
+                      />
+                    </div>
+
+                    {/* Timeout */}
+                    <div className="space-y-1">
+                      <Label htmlFor="http-timeout">
+                        Request Timeout (seconds)
+                      </Label>
+                      <select
+                        id="http-timeout"
+                        value={String(form.httpTimeoutSeconds)}
+                        onChange={(e) =>
+                          update('httpTimeoutSeconds', Number(e.target.value))
+                        }
+                        className={selectClass}
+                      >
+                        {[5, 10, 15, 30, 45, 60, 120, 300].map((s) => (
+                          <option key={s} value={s}>
+                            {s} seconds
+                          </option>
+                        ))}
+                      </select>
+                    </div>
                   </div>
+                ) : form.handlerType === 'send_email' ? (
+                  /* Send Email guided fields */
+                  <div className="space-y-3.5">
+                    <div className="space-y-1">
+                      <Label htmlFor="email-to">To (Recipients)</Label>
+                      <Input
+                        id="email-to"
+                        value={form.emailTo}
+                        onChange={(e) => update('emailTo', e.target.value)}
+                        placeholder="operator@example.com (comma-separated for multiple)"
+                        aria-invalid={validationField === 'emailTo'}
+                        required
+                        autoFocus
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <Label htmlFor="email-from">
+                          From Address (Optional)
+                        </Label>
+                        <Input
+                          id="email-from"
+                          value={form.emailFrom}
+                          onChange={(e) => update('emailFrom', e.target.value)}
+                          placeholder="Default worker VEYRA_SMTP_FROM"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label htmlFor="email-reply-to">
+                          Reply-To (Optional)
+                        </Label>
+                        <Input
+                          id="email-reply-to"
+                          value={form.emailReplyTo}
+                          onChange={(e) =>
+                            update('emailReplyTo', e.target.value)
+                          }
+                          placeholder="support@example.com"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="space-y-1">
+                      <Label htmlFor="email-subject">Subject</Label>
+                      <Input
+                        id="email-subject"
+                        value={form.emailSubject}
+                        onChange={(e) => update('emailSubject', e.target.value)}
+                        placeholder="Operational Alert Subject"
+                        aria-invalid={validationField === 'emailSubject'}
+                        required
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <Label htmlFor="email-text">Plain-Text Body</Label>
+                      <Textarea
+                        id="email-text"
+                        rows={3}
+                        value={form.emailText}
+                        onChange={(e) => update('emailText', e.target.value)}
+                        placeholder="Notification text..."
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <Label htmlFor="email-html">HTML Body (Optional)</Label>
+                      <Textarea
+                        id="email-html"
+                        rows={3}
+                        value={form.emailHtml}
+                        onChange={(e) => update('emailHtml', e.target.value)}
+                        placeholder="<p>Formatted HTML content...</p>"
+                        className="font-mono text-xs"
+                      />
+                    </div>
+                  </div>
+                ) : (
+                  /* No-op Health Check guided fields */
+                  <div className="space-y-3.5">
+                    <div className="space-y-1">
+                      <Label htmlFor="noop-message">Diagnostic Message</Label>
+                      <Input
+                        id="noop-message"
+                        value={form.noopMessage}
+                        onChange={(e) => update('noopMessage', e.target.value)}
+                        placeholder="Queue verification check"
+                        autoFocus
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <Label htmlFor="noop-delay">
+                        Simulated Worker Delay (ms)
+                      </Label>
+                      <Input
+                        id="noop-delay"
+                        type="number"
+                        min={0}
+                        max={10000}
+                        step={50}
+                        value={form.noopSimulatedDelayMs}
+                        onChange={(e) =>
+                          update(
+                            'noopSimulatedDelayMs',
+                            Math.max(0, Number(e.target.value)),
+                          )
+                        }
+                        className="font-mono text-xs tabular-nums"
+                      />
+                      <p className="text-text-muted text-[0.6875rem]">
+                        Worker sleeps for this duration before succeeding.
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Section 3: Queue & Worker Routing */}
+            <Card className="border-border-subtle bg-surface-base">
+              <CardHeader className="border-border-subtle flex flex-row items-center justify-between border-b pb-2.5">
+                <CardTitle className="text-text-primary flex items-center gap-1.5 font-medium">
+                  <HugeiconsIcon
+                    icon={ServerStack01Icon}
+                    className="h-3.5 w-3.5"
+                  />
+                  <span>Queue & Worker Routing</span>
+                </CardTitle>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-text-muted text-[0.6875rem]">
+                    Active Queues ({availableQueues.length}):
+                  </span>
+                  {availableQueues.slice(0, 3).map((q) => (
+                    <button
+                      key={q}
+                      type="button"
+                      onClick={() => update('queue', q)}
+                      className={cn(
+                        'rounded-xs border px-1.5 py-0.5 font-mono text-[0.625rem] transition-colors',
+                        form.queue === q
+                          ? 'border-border-strong bg-surface-elevated text-text-primary font-medium'
+                          : 'border-border-subtle bg-surface-base text-text-muted hover:text-text-primary',
+                      )}
+                    >
+                      {q}
+                    </button>
+                  ))}
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-3 pt-3.5">
+                <div className="space-y-1">
+                  <Label htmlFor="queue-name-input">Target Queue Name</Label>
+                  <Input
+                    id="queue-name-input"
+                    list="available-queues-list"
+                    value={form.queue}
+                    onChange={(e) => update('queue', e.target.value)}
+                    placeholder="default"
+                    className="font-mono text-xs"
+                    aria-invalid={validationField === 'queue'}
+                    required
+                  />
+                  <datalist id="available-queues-list">
+                    {availableQueues.map((q) => (
+                      <option key={q} value={q} />
+                    ))}
+                  </datalist>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Section 4: Execution Policy, Retry & Backoff */}
+            <Card className="border-border-subtle bg-surface-base">
+              <CardHeader className="border-border-subtle flex flex-row items-center justify-between border-b pb-2.5">
+                <CardTitle className="text-text-primary flex items-center gap-1.5 font-medium">
+                  <HugeiconsIcon icon={Refresh01Icon} className="h-3.5 w-3.5" />
+                  <span>Execution Policy & Retry Backoff</span>
+                </CardTitle>
+                <Badge tone="neutral" className="text-[0.625rem] tabular-nums">
+                  P{form.priority} • {form.maxAttempts}{' '}
+                  {form.maxAttempts === 1 ? 'Attempt' : 'Attempts'}
+                </Badge>
+              </CardHeader>
+              <CardContent className="space-y-4 pt-3.5">
+                {/* Priority Selector (0-9) */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="job-priority">
+                      Job Priority (0 = lowest, 9 = highest)
+                    </Label>
+                    <span className="font-mono text-xs font-semibold tabular-nums">
+                      {form.priority}{' '}
+                      <span className="text-text-muted font-normal">
+                        {form.priority >= 8
+                          ? '(High / Critical)'
+                          : form.priority <= 3
+                            ? '(Low)'
+                            : '(Normal)'}
+                      </span>
+                    </span>
+                  </div>
+                  <div
+                    className="grid grid-cols-10 gap-1"
+                    role="radiogroup"
+                    aria-label="Job Priority"
+                  >
+                    {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((p) => {
+                      const selected = form.priority === p;
+                      return (
+                        <button
+                          key={p}
+                          type="button"
+                          role="radio"
+                          aria-checked={selected}
+                          onClick={() => update('priority', p)}
+                          className={cn(
+                            'flex h-7 items-center justify-center rounded-sm border font-mono text-xs tabular-nums transition-colors',
+                            selected
+                              ? p >= 8
+                                ? 'border-status-danger-border bg-status-danger-bg text-status-danger-text font-bold'
+                                : p <= 3
+                                  ? 'border-status-neutral-border bg-surface-elevated text-text-primary font-bold'
+                                  : 'border-border-strong bg-surface-elevated text-text-primary font-bold'
+                              : 'border-border-subtle bg-surface-base text-text-muted hover:bg-surface-elevated hover:text-text-primary',
+                          )}
+                        >
+                          {p}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Retry Attempts and Backoff Mode */}
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <div className="space-y-1">
+                    <Label htmlFor="max-attempts">Max Retry Attempts</Label>
+                    <Input
+                      id="max-attempts"
+                      type="number"
+                      min={1}
+                      max={20}
+                      value={form.maxAttempts}
+                      onChange={(e) =>
+                        update(
+                          'maxAttempts',
+                          Math.max(1, Number(e.target.value)),
+                        )
+                      }
+                      className="font-mono text-xs tabular-nums"
+                      aria-invalid={validationField === 'maxAttempts'}
+                      required
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <Label htmlFor="backoff-preset">
+                      Backoff Strategy Preset
+                    </Label>
+                    <select
+                      id="backoff-preset"
+                      value={form.backoffPreset}
+                      onChange={(e) =>
+                        handleBackoffPresetSelect(
+                          e.target.value as BackoffPresetId,
+                        )
+                      }
+                      className={selectClass}
+                    >
+                      {BACKOFF_PRESETS.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.label}
+                        </option>
+                      ))}
+                      <option value="custom">Custom Configuration...</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Backoff Strategy Detailed Controls */}
+                <div className="border-border-subtle bg-surface-elevated/40 space-y-3 rounded-md border p-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-text-primary text-xs font-medium">
+                      Backoff Parameters
+                    </span>
+                    <span className="text-text-muted font-mono text-[0.625rem]">
+                      SPEC §3.5.2 (Uniform Jitter [0.5, 1.5))
+                    </span>
+                  </div>
+
+                  <div className="flex gap-4 text-xs">
+                    <label className="text-text-secondary flex cursor-pointer items-center gap-1.5 select-none">
+                      <input
+                        type="radio"
+                        name="backoffKind"
+                        checked={form.backoffKind === 'exponential'}
+                        onChange={() => {
+                          update('backoffKind', 'exponential');
+                          update('backoffPreset', 'custom');
+                        }}
+                        className="text-primary accent-primary"
+                      />
+                      <span>Exponential (base × 2^(attempt-1))</span>
+                    </label>
+                    <label className="text-text-secondary flex cursor-pointer items-center gap-1.5 select-none">
+                      <input
+                        type="radio"
+                        name="backoffKind"
+                        checked={form.backoffKind === 'fixed'}
+                        onChange={() => {
+                          update('backoffKind', 'fixed');
+                          update('backoffPreset', 'custom');
+                        }}
+                        className="text-primary accent-primary"
+                      />
+                      <span>Fixed Delay</span>
+                    </label>
+                  </div>
+
+                  {form.backoffKind === 'exponential' ? (
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <Label
+                          htmlFor="backoff-base-seconds"
+                          className="text-[0.6875rem]"
+                        >
+                          Base Seconds
+                        </Label>
+                        <Input
+                          id="backoff-base-seconds"
+                          type="number"
+                          min={1}
+                          max={86400}
+                          value={form.backoffBaseSeconds}
+                          onChange={(e) => {
+                            update(
+                              'backoffBaseSeconds',
+                              Math.max(1, Number(e.target.value)),
+                            );
+                            update('backoffPreset', 'custom');
+                          }}
+                          className="bg-surface-base font-mono text-xs tabular-nums"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label
+                          htmlFor="backoff-cap-seconds"
+                          className="text-[0.6875rem]"
+                        >
+                          Cap Ceiling (Seconds)
+                        </Label>
+                        <Input
+                          id="backoff-cap-seconds"
+                          type="number"
+                          min={1}
+                          max={604800}
+                          value={form.backoffCapSeconds}
+                          onChange={(e) => {
+                            update(
+                              'backoffCapSeconds',
+                              Math.max(1, Number(e.target.value)),
+                            );
+                            update('backoffPreset', 'custom');
+                          }}
+                          className="bg-surface-base font-mono text-xs tabular-nums"
+                        />
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-1">
+                      <Label
+                        htmlFor="backoff-fixed-seconds"
+                        className="text-[0.6875rem]"
+                      >
+                        Fixed Delay (Seconds)
+                      </Label>
+                      <Input
+                        id="backoff-fixed-seconds"
+                        type="number"
+                        min={1}
+                        max={86400}
+                        value={form.backoffFixedSeconds}
+                        onChange={(e) => {
+                          update(
+                            'backoffFixedSeconds',
+                            Math.max(1, Number(e.target.value)),
+                          );
+                          update('backoffPreset', 'custom');
+                        }}
+                        className="bg-surface-base font-mono text-xs tabular-nums"
+                      />
+                    </div>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Section 5: Scheduling & Delayed Execution */}
+            <Card className="border-border-subtle bg-surface-base">
+              <CardHeader className="border-border-subtle flex flex-row items-center justify-between border-b pb-2.5">
+                <CardTitle className="text-text-primary flex items-center gap-1.5 font-medium">
+                  <HugeiconsIcon icon={Clock01Icon} className="h-3.5 w-3.5" />
+                  <span>Execution Schedule</span>
+                </CardTitle>
+                <div className="flex items-center gap-1">
+                  {[
+                    { label: 'Now', mins: 0 },
+                    { label: '+1m', mins: 1 },
+                    { label: '+5m', mins: 5 },
+                    { label: '+15m', mins: 15 },
+                    { label: '+1h', mins: 60 },
+                    { label: '+24h', mins: 1440 },
+                  ].map((chip) => (
+                    <button
+                      key={chip.label}
+                      type="button"
+                      onClick={() => handleScheduleOffset(chip.mins)}
+                      className="border-border-subtle bg-surface-base text-text-muted hover:bg-surface-elevated hover:text-text-primary rounded-xs border px-1.5 py-0.5 font-mono text-[0.625rem] transition-colors"
+                    >
+                      {chip.label}
+                    </button>
+                  ))}
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-2 pt-3.5">
+                <div className="space-y-1">
+                  <Label htmlFor="scheduled-for-input">
+                    Run At / Scheduled Time (Optional)
+                  </Label>
+                  <Input
+                    id="scheduled-for-input"
+                    type="datetime-local"
+                    value={form.scheduledFor}
+                    onChange={(e) => update('scheduledFor', e.target.value)}
+                    className="font-mono text-xs"
+                    aria-invalid={validationField === 'scheduledFor'}
+                  />
+                </div>
+                <p className="text-text-muted text-[0.6875rem]">
+                  Jobs scheduled in the future are placed in the{' '}
+                  <span className="font-mono">scheduled</span> state until the
+                  background retry/reclaim scheduler promotes them to{' '}
+                  <span className="font-mono">queued</span>.
+                </p>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* ======================================================== */}
+          {/* RIGHT COLUMN: Operational Context, Preview, & Dispatch */}
+          {/* ======================================================== */}
+          <div className="space-y-5 lg:col-span-5">
+            {/* Card 1: Target Queue & Worker Fleet Readiness Signal */}
+            <Card
+              className={cn(
+                'border',
+                readiness.status === 'healthy' || readiness.status === 'loading'
+                  ? 'border-border-subtle bg-surface-base'
+                  : 'border-status-warning-border bg-status-warning-bg/15',
+              )}
+            >
+              <CardHeader className="border-border-subtle flex flex-row items-center justify-between border-b pb-2.5">
+                <CardTitle className="text-text-primary flex items-center gap-1.5 font-medium">
+                  <HugeiconsIcon
+                    icon={ServerStack01Icon}
+                    className="h-3.5 w-3.5"
+                  />
+                  <span>Worker Fleet Readiness</span>
+                </CardTitle>
+                <Badge
+                  tone={
+                    readiness.status === 'healthy'
+                      ? 'success'
+                      : readiness.status === 'unserviced'
+                        ? 'warning'
+                        : readiness.status === 'loading'
+                          ? 'neutral'
+                          : 'danger'
+                  }
+                >
+                  {readiness.status === 'healthy'
+                    ? 'Active Workers Ready'
+                    : readiness.status === 'unserviced'
+                      ? 'No Workers on Queue'
+                      : readiness.status === 'loading'
+                        ? 'Checking Fleet...'
+                        : '0 Fleet Workers'}
+                </Badge>
+              </CardHeader>
+              <CardContent className="space-y-3 pt-3.5 text-xs">
+                <div className="grid grid-cols-3 gap-2 text-center">
+                  <div className="border-border-subtle bg-surface-elevated/40 rounded-md border p-2">
+                    <span className="text-text-muted block text-[0.625rem]">
+                      Queue Depth
+                    </span>
+                    <span className="text-text-primary font-mono text-sm font-semibold tabular-nums">
+                      {readiness.queueDepth}
+                    </span>
+                  </div>
+                  <div className="border-border-subtle bg-surface-elevated/40 rounded-md border p-2">
+                    <span className="text-text-muted block text-[0.625rem]">
+                      Queue Workers
+                    </span>
+                    <span className="text-text-primary font-mono text-sm font-semibold tabular-nums">
+                      {readiness.queueWorkers}
+                    </span>
+                  </div>
+                  <div className="border-border-subtle bg-surface-elevated/40 rounded-md border p-2">
+                    <span className="text-text-muted block text-[0.625rem]">
+                      Matching Handler
+                    </span>
+                    <span
+                      className={cn(
+                        'font-mono text-sm font-semibold tabular-nums',
+                        readiness.handlerWorkers > 0
+                          ? 'text-status-success-text'
+                          : 'text-status-danger-text',
+                      )}
+                    >
+                      {readiness.handlerWorkers}
+                    </span>
+                  </div>
+                </div>
+
+                {readiness.warning && (
+                  <div
+                    role="alert"
+                    className="border-status-warning-border bg-status-warning-bg/40 text-status-warning-text flex items-start gap-2 rounded-md border p-2.5 text-xs"
+                  >
+                    <HugeiconsIcon
+                      icon={Alert02Icon}
+                      className="mt-0.5 h-4 w-4 shrink-0"
+                    />
+                    <div className="space-y-1">
+                      <span className="block font-medium">
+                        Dispatch Readiness Warning
+                      </span>
+                      <p className="text-[0.6875rem] leading-snug">
+                        {readiness.warning}
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Card 2: Idempotency & Delivery Guarantees */}
+            <Card className="border-border-subtle bg-surface-base">
+              <CardHeader className="border-border-subtle flex flex-row items-center justify-between border-b pb-2.5">
+                <CardTitle className="text-text-primary flex items-center gap-1.5 font-medium">
+                  <HugeiconsIcon icon={Key01Icon} className="h-3.5 w-3.5" />
+                  <span>Idempotency & Delivery Guarantees</span>
+                </CardTitle>
+                <div className="flex items-center gap-1">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="xs"
+                    onClick={() => handleGenerateKey('ulid')}
+                    className="font-mono text-[0.625rem]"
+                  >
+                    + ULID
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="xs"
+                    onClick={() => handleGenerateKey('uuid')}
+                    className="font-mono text-[0.625rem]"
+                  >
+                    + UUID
+                  </Button>
+                  {form.idempotencyKey && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="xs"
+                      onClick={() => update('idempotencyKey', '')}
+                      className="text-text-muted hover:text-text-primary px-1.5 text-[0.625rem]"
+                    >
+                      Clear
+                    </Button>
+                  )}
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-2.5 pt-3.5">
+                <div className="space-y-1">
+                  <Label htmlFor="idempotency-key-input">
+                    Idempotency Key (Optional)
+                  </Label>
+                  <Input
+                    id="idempotency-key-input"
+                    value={form.idempotencyKey}
+                    onChange={(e) => update('idempotencyKey', e.target.value)}
+                    placeholder="e.g. ord_checkout_99182 or ulid"
+                    className="font-mono text-xs"
+                  />
+                </div>
+                <div className="border-border-subtle bg-surface-elevated/40 space-y-1 rounded-md border p-2 text-[0.6875rem]">
+                  <p className="text-text-secondary">
+                    Transmitted via both{' '}
+                    <code className="font-mono">Idempotency-Key</code> header
+                    and payload body.
+                  </p>
+                  <p className="text-text-muted leading-tight">
+                    • Identical key + params ={' '}
+                    <span className="text-text-primary font-semibold">
+                      201 Replay
+                    </span>{' '}
+                    (returns existing job).
+                    <br />• Identical key + changed params ={' '}
+                    <span className="text-status-danger-text font-semibold">
+                      409 Conflict
+                    </span>
+                    .
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Card 3: Live Request & cURL Preview */}
+            <Card className="border-border-subtle bg-surface-base">
+              <CardHeader className="border-border-subtle flex flex-row items-center justify-between border-b pb-2.5">
+                <CardTitle className="text-text-primary flex items-center gap-1.5 font-medium">
+                  <HugeiconsIcon icon={ViewIcon} className="h-3.5 w-3.5" />
+                  <span>Live Dispatch Preview</span>
+                </CardTitle>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setPreviewTab('payload')}
+                    className={cn(
+                      'rounded-xs border px-2 py-0.5 text-xs font-medium transition-colors',
+                      previewTab === 'payload'
+                        ? 'border-border-strong bg-surface-elevated text-text-primary font-semibold'
+                        : 'border-border-subtle bg-surface-base text-text-muted hover:text-text-primary',
+                    )}
+                  >
+                    JSON
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPreviewTab('curl')}
+                    className={cn(
+                      'rounded-xs border px-2 py-0.5 text-xs font-medium transition-colors',
+                      previewTab === 'curl'
+                        ? 'border-border-strong bg-surface-elevated text-text-primary font-semibold'
+                        : 'border-border-subtle bg-surface-base text-text-muted hover:text-text-primary',
+                    )}
+                  >
+                    cURL
+                  </button>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-2 pt-3.5">
+                {previewTab === 'payload' ? (
+                  <CodeBlock language="json" defaultWrap>
+                    {JSON.stringify(parsedForCurl.payload ?? {}, null, 2)}
+                  </CodeBlock>
+                ) : (
+                  <CodeBlock language="text" defaultWrap>
+                    {curlSnippet}
+                  </CodeBlock>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Card 4: Dispatch Summary & Operational Actions */}
+            <Card className="border-border-strong bg-surface-base">
+              <CardHeader className="border-border-subtle flex flex-row items-center justify-between border-b pb-2.5">
+                <CardTitle className="text-text-primary font-medium">
+                  Dispatch Confirmation
+                </CardTitle>
+                <Badge tone="info" className="font-mono text-[0.625rem]">
+                  POST /jobs
+                </Badge>
+              </CardHeader>
+              <CardContent className="space-y-4 pt-3.5">
+                {/* Summary Badges */}
+                <div className="flex flex-wrap gap-1.5 text-xs">
+                  <Badge tone="neutral">
+                    handler:{' '}
+                    <span className="font-mono font-bold">
+                      {effectiveHandler || '—'}
+                    </span>
+                  </Badge>
+                  <Badge tone="neutral">
+                    queue:{' '}
+                    <span className="font-mono font-bold">{form.queue}</span>
+                  </Badge>
+                  <Badge tone="neutral">
+                    prio:{' '}
+                    <span className="font-mono font-bold tabular-nums">
+                      {form.priority}
+                    </span>
+                  </Badge>
+                  <Badge tone="neutral">
+                    attempts:{' '}
+                    <span className="font-mono font-bold tabular-nums">
+                      {form.maxAttempts}
+                    </span>
+                  </Badge>
+                  <Badge tone="neutral">
+                    run:{' '}
+                    <span className="font-mono font-bold">
+                      {form.scheduledFor ? 'scheduled' : 'immediate'}
+                    </span>
+                  </Badge>
+                </div>
+
+                {/* Validation and Error Alerts */}
+                {validationError && (
+                  <div
+                    role="alert"
+                    className="border-status-danger-border bg-status-danger-bg/40 text-status-danger-text flex items-start gap-2 rounded-md border p-2.5 text-xs"
+                  >
+                    <HugeiconsIcon
+                      icon={Alert02Icon}
+                      className="mt-0.5 h-4 w-4 shrink-0"
+                    />
+                    <div className="space-y-1">
+                      <span className="block font-medium">
+                        Validation Error
+                      </span>
+                      <p className="text-[0.6875rem] leading-snug">
+                        {validationError}
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Idempotency Conflict Alert with 1-Click Fix */}
+                {idempotencyConflict && (
+                  <div
+                    role="alert"
+                    className="border-status-danger-border bg-status-danger-bg/60 text-status-danger-text space-y-2 rounded-md border p-3 text-xs"
+                  >
+                    <div className="flex items-start gap-2">
+                      <HugeiconsIcon
+                        icon={Alert02Icon}
+                        className="text-status-danger-solid mt-0.5 h-4 w-4 shrink-0"
+                      />
+                      <div>
+                        <span className="block font-semibold">
+                          409 Conflict: Idempotency Key Mismatch
+                        </span>
+                        <p className="mt-0.5 text-[0.6875rem] leading-snug">
+                          A job already exists with key{' '}
+                          <code className="font-mono font-bold">
+                            {idempotencyConflict.key}
+                          </code>{' '}
+                          but with different parameters or payload. Veyra
+                          strictly forbids mutating existing idempotency keys.
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 pt-1">
+                      <Button
+                        type="button"
+                        size="xs"
+                        variant="destructive"
+                        onClick={handleRetryWithNewKey}
+                        className="text-[0.6875rem]"
+                      >
+                        Generate New Key & Dispatch
+                      </Button>
+                      <Button
+                        type="button"
+                        size="xs"
+                        variant="ghost"
+                        onClick={() => setIdempotencyConflict(null)}
+                        className="text-[0.6875rem]"
+                      >
+                        Dismiss
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Future Backend Capabilities (Explicitly Disabled with Tooltip Badges) */}
+                <div className="border-border-subtle bg-surface-elevated/20 flex flex-col gap-2 rounded-md border p-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-text-muted text-[0.625rem] font-medium tracking-wide uppercase">
+                      Advanced Dispatch Features
+                    </span>
+                    <Badge tone="muted" className="text-[0.5625rem]">
+                      Pending Backend Support
+                    </Badge>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="xs"
+                      disabled
+                      className="cursor-not-allowed opacity-50"
+                      title="Requires backend dry-run endpoint POST /jobs/validate"
+                    >
+                      Dry-run Validate
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="xs"
+                      disabled
+                      className="cursor-not-allowed opacity-50"
+                      title="Requires backend dispatch template registry"
+                    >
+                      Save as Template
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="xs"
+                      disabled
+                      className="cursor-not-allowed opacity-50"
+                      title="Requires backend batch enqueue endpoint POST /jobs/batch"
+                    >
+                      Bulk Batch Enqueue
+                    </Button>
+                  </div>
+                </div>
+
+                {/* Primary Dispatch Action */}
+                <div className="space-y-2 pt-1">
+                  <Button
+                    type="submit"
+                    className="h-9 w-full font-medium"
+                    disabled={mutation.isPending}
+                  >
+                    {mutation.isPending ? (
+                      <span className="flex items-center gap-2">
+                        <HugeiconsIcon
+                          icon={Refresh01Icon}
+                          className="h-4 w-4 animate-spin"
+                        />
+                        <span>Dispatching to PostgreSQL...</span>
+                      </span>
+                    ) : (
+                      <span className="flex items-center justify-center gap-1.5">
+                        <span>Dispatch Job</span>
+                        <HugeiconsIcon
+                          icon={ArrowRight01Icon}
+                          className="h-3.5 w-3.5"
+                        />
+                      </span>
+                    )}
+                  </Button>
+                  <p className="text-text-muted text-center text-[0.6875rem]">
+                    Press{' '}
+                    <kbd className="border-border-strong bg-surface-elevated rounded-xs border px-1 py-0.5 font-mono text-[0.625rem]">
+                      ⌘ + Enter
+                    </kbd>{' '}
+                    or{' '}
+                    <kbd className="border-border-strong bg-surface-elevated rounded-xs border px-1 py-0.5 font-mono text-[0.625rem]">
+                      Ctrl + Enter
+                    </kbd>{' '}
+                    to dispatch immediately.
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Card 5: Post-Submission Outcome Banner */}
+            {submissionSuccess && (
+              <div
+                role="region"
+                aria-label="Job Dispatch Confirmation"
+                className={cn(
+                  'space-y-3 rounded-lg border p-4 shadow-sm transition-all',
+                  submissionSuccess.isReplay
+                    ? 'border-status-info-border bg-status-info-bg/30 text-text-primary'
+                    : 'border-status-success-border bg-status-success-bg/30 text-text-primary',
+                )}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <div
+                      className={cn(
+                        'flex h-7 w-7 items-center justify-center rounded-full',
+                        submissionSuccess.isReplay
+                          ? 'bg-status-info-solid text-white'
+                          : 'bg-status-success-solid text-white',
+                      )}
+                    >
+                      <HugeiconsIcon icon={Tick01Icon} className="h-4 w-4" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-xs font-semibold">
+                          {submissionSuccess.isReplay
+                            ? 'Idempotent Replay Verified'
+                            : 'Job Successfully Dispatched'}
+                        </span>
+                        <Badge
+                          tone={submissionSuccess.isReplay ? 'info' : 'success'}
+                          className="font-mono text-[0.625rem]"
+                        >
+                          {submissionSuccess.isReplay
+                            ? '201 Replay'
+                            : '201 Created'}
+                        </Badge>
+                      </div>
+                      <p className="text-text-muted text-[0.6875rem]">
+                        {submissionSuccess.isReplay
+                          ? 'Existing job retrieved matching idempotency fingerprint.'
+                          : 'Job persisted to queue and ready for worker claim.'}
+                      </p>
+                    </div>
+                  </div>
+                  <StatusBadge status={submissionSuccess.status} />
+                </div>
+
+                <div className="border-border-subtle bg-surface-base/90 flex items-center justify-between rounded-md border px-3 py-2 text-xs">
+                  <div className="flex items-center gap-2">
+                    <span className="text-text-muted text-[0.6875rem]">
+                      Job ID:
+                    </span>
+                    <span className="font-mono font-semibold tabular-nums">
+                      {submissionSuccess.id}
+                    </span>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="xs"
+                    onClick={(e) =>
+                      handleCopy(submissionSuccess.id, 'job-id-copy', e)
+                    }
+                    className="h-6 gap-1 px-2 text-[0.6875rem]"
+                  >
+                    <HugeiconsIcon
+                      icon={
+                        copiedKey === 'job-id-copy' ? Tick01Icon : Copy01Icon
+                      }
+                      className="h-3 w-3"
+                    />
+                    <span>
+                      {copiedKey === 'job-id-copy' ? 'Copied' : 'Copy ID'}
+                    </span>
+                  </Button>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2 pt-1">
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() =>
+                      navigate(jobDetailPath(submissionSuccess.id))
+                    }
+                    className="gap-1.5 text-xs"
+                  >
+                    <span>Inspect Job</span>
+                    <HugeiconsIcon
+                      icon={ArrowRight01Icon}
+                      className="h-3.5 w-3.5"
+                    />
+                  </Button>
                   <Button
                     type="button"
                     variant="outline"
                     size="sm"
-                    onClick={addHeader}
+                    onClick={() => {
+                      setSubmissionSuccess(null);
+                      handleGenerateKey('ulid');
+                    }}
+                    className="text-xs"
                   >
-                    + Add header
+                    Dispatch Another
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setSubmissionSuccess(null)}
+                    className="text-text-muted text-xs"
+                  >
+                    Dismiss
                   </Button>
                 </div>
-
-                <div className="space-y-2">
-                  <Label>Body</Label>
-                  <JsonEditor
-                    value={form.body}
-                    onChange={setBody}
-                    placeholder={'{\n  "event": "ping"\n}'}
-                    minHeight="180px"
-                    aria-label="Request body"
-                  />
-                  {showBodyNote && (
-                    <p className="text-muted-foreground text-[0.625rem]">
-                      {form.method} requests usually have no body — it will
-                      still be sent.
-                    </p>
-                  )}
-                </div>
-
-                <Field label="Timeout" htmlFor="timeoutSeconds">
-                  <select
-                    id="timeoutSeconds"
-                    value={form.timeoutSeconds}
-                    onChange={(e) => update('timeoutSeconds', e.target.value)}
-                    className={selectClass}
-                  >
-                    {[5, 10, 15, 30, 60, 120, 300].map((s) => (
-                      <option key={s} value={String(s)}>
-                        {s} seconds
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-              </>
-            ) : (
-              <>
-                <Field label="To" htmlFor="emailTo">
-                  <Input
-                    id="emailTo"
-                    value={form.emailTo}
-                    onChange={(e) => update('emailTo', e.target.value)}
-                    placeholder="recipient@example.com (comma-separated for many)"
-                    required
-                    autoFocus
-                  />
-                </Field>
-                <Row>
-                  <Field label="From" htmlFor="emailFrom">
-                    <Input
-                      id="emailFrom"
-                      value={form.emailFrom}
-                      onChange={(e) => update('emailFrom', e.target.value)}
-                      placeholder="Optional — worker VEYRA_SMTP_FROM"
-                    />
-                  </Field>
-                  <Field label="Reply-To" htmlFor="emailReplyTo">
-                    <Input
-                      id="emailReplyTo"
-                      value={form.emailReplyTo}
-                      onChange={(e) => update('emailReplyTo', e.target.value)}
-                      placeholder="Optional"
-                    />
-                  </Field>
-                </Row>
-                <Field label="Subject" htmlFor="emailSubject">
-                  <Input
-                    id="emailSubject"
-                    value={form.emailSubject}
-                    onChange={(e) => update('emailSubject', e.target.value)}
-                    placeholder="Subject"
-                    required
-                  />
-                </Field>
-                <Field label="Text body" htmlFor="emailText">
-                  <Textarea
-                    id="emailText"
-                    value={form.emailText}
-                    onChange={(e) => update('emailText', e.target.value)}
-                    rows={5}
-                    placeholder="Plain-text body"
-                  />
-                </Field>
-                <Field label="HTML body" htmlFor="emailHtml">
-                  <Textarea
-                    id="emailHtml"
-                    value={form.emailHtml}
-                    onChange={(e) => update('emailHtml', e.target.value)}
-                    rows={5}
-                    placeholder="Optional HTML — provide text and/or HTML"
-                    className="font-mono text-xs"
-                  />
-                </Field>
-              </>
-            )}
-
-            <Field label="Retry attempts" htmlFor="maxAttempts">
-              <select
-                id="maxAttempts"
-                value={form.maxAttempts}
-                onChange={(e) => update('maxAttempts', e.target.value)}
-                className={selectClass}
-              >
-                {[1, 2, 3, 5, 10].map((n) => (
-                  <option key={n} value={String(n)}>
-                    {n} {n === 1 ? 'attempt' : 'attempts'}
-                  </option>
-                ))}
-              </select>
-            </Field>
-
-            <div className="border-border border-t pt-2">
-              <button
-                type="button"
-                onClick={() => setAdvancedOpen((v) => !v)}
-                className="text-muted-foreground hover:text-foreground flex items-center gap-1 text-xs"
-                aria-expanded={advancedOpen}
-              >
-                <span>{advancedOpen ? '▾' : '▸'}</span> Advanced options
-              </button>
-
-              {advancedOpen && (
-                <div className="mt-3 space-y-3">
-                  <Row>
-                    <Field label="Queue" htmlFor="queue">
-                      <select
-                        id="queue"
-                        value={form.queue}
-                        onChange={(e) => update('queue', e.target.value)}
-                        className={selectClass}
-                      >
-                        <option value="default">default</option>
-                      </select>
-                    </Field>
-                    <Field label="Priority" htmlFor="priority">
-                      <select
-                        id="priority"
-                        value={form.priority}
-                        onChange={(e) => update('priority', e.target.value)}
-                        className={selectClass}
-                      >
-                        {[9, 8, 7, 6, 5, 4, 3, 2, 1, 0].map((p) => (
-                          <option key={p} value={String(p)}>
-                            {p}
-                            {p === 5
-                              ? ' (default)'
-                              : p === 9
-                                ? ' (highest)'
-                                : p === 0
-                                  ? ' (lowest)'
-                                  : ''}
-                          </option>
-                        ))}
-                      </select>
-                    </Field>
-                  </Row>
-
-                  <Row>
-                    <Field label="Schedule" htmlFor="scheduledFor">
-                      <Input
-                        id="scheduledFor"
-                        type="datetime-local"
-                        value={form.scheduledFor}
-                        onChange={(e) => update('scheduledFor', e.target.value)}
-                      />
-                    </Field>
-                    <Field label="Idempotency key" htmlFor="idempotencyKey">
-                      <Input
-                        id="idempotencyKey"
-                        value={form.idempotencyKey}
-                        onChange={(e) =>
-                          update('idempotencyKey', e.target.value)
-                        }
-                        placeholder="Optional"
-                      />
-                    </Field>
-                  </Row>
-
-                  <div className="space-y-2">
-                    <label className="border-border hover:bg-muted/40 flex cursor-pointer items-start gap-2.5 rounded-md border px-3 py-2 text-xs">
-                      <input
-                        type="checkbox"
-                        checked={form.rawMode}
-                        onChange={toggleRawMode}
-                        className="border-border text-foreground accent-foreground mt-0.5 size-3.5 shrink-0 rounded-sm border"
-                      />
-                      <span className="min-w-0">
-                        <span className="text-foreground block font-medium">
-                          Edit raw job payload
-                        </span>
-                        <span className="text-muted-foreground text-[0.625rem] leading-snug">
-                          Overrides the fields above with a full JSON object.
-                        </span>
-                      </span>
-                    </label>
-                    {form.rawMode ? (
-                      <JsonEditor
-                        value={form.rawPayload}
-                        onChange={(v) => update('rawPayload', v)}
-                        minHeight="220px"
-                        aria-label="Raw job payload"
-                        placeholder={
-                          form.jobKind === 'email'
-                            ? '{\n  "to": "you@example.com",\n  "subject": "Hi",\n  "text": "…"\n}'
-                            : '{\n  "url": "https://…",\n  "method": "POST"\n}'
-                        }
-                      />
-                    ) : (
-                      <div className="space-y-1">
-                        <span className="text-muted-foreground text-[0.625rem]">
-                          Payload preview
-                        </span>
-                        <CodeBlock language="json">
-                          {generatedPayload}
-                        </CodeBlock>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {(validationError ?? serverError) && (
-              <div
-                role="alert"
-                className="border-destructive/40 bg-destructive/10 text-destructive rounded-md border px-3 py-2 text-xs"
-              >
-                {validationError ?? serverError}
               </div>
             )}
-          </CardContent>
-
-          <div className="border-border flex items-center justify-end gap-2 border-t px-3 py-2">
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => {
-                setForm(INITIAL_FORM);
-                setValidationError(null);
-                mutation.reset();
-              }}
-              disabled={mutation.isPending}
-            >
-              Reset
-            </Button>
-            <Button type="submit" size="sm" disabled={mutation.isPending}>
-              {mutation.isPending ? 'Creating…' : 'Create & run'}
-            </Button>
           </div>
-        </form>
-      </Card>
+        </div>
+      </form>
     </div>
   );
-}
-
-function Row({ children }: { children: React.ReactNode }) {
-  return <div className="grid gap-3 sm:grid-cols-2">{children}</div>;
-}
-
-function Field({
-  label,
-  htmlFor,
-  children,
-}: {
-  label: string;
-  htmlFor?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="space-y-1">
-      <Label htmlFor={htmlFor}>{label}</Label>
-      {children}
-    </div>
-  );
-}
-
-function hasContentType(rows: HeaderRow[]): boolean {
-  return rows.some((h) => h.key.trim().toLowerCase() === 'content-type');
-}
-
-function ensureContentType(rows: HeaderRow[], value: string): HeaderRow[] {
-  const empty = rows.findIndex(
-    (h) => h.key.trim() === '' && h.value.trim() === '',
-  );
-  if (empty >= 0) {
-    return rows.map((h, i) =>
-      i === empty ? { key: 'Content-Type', value } : h,
-    );
-  }
-  return [...rows, { key: 'Content-Type', value }];
-}
-
-function headersToObject(rows: HeaderRow[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const { key, value } of rows) {
-    const k = key.trim();
-    if (k === '') continue;
-    out[k] = value;
-  }
-  return out;
-}
-
-function buildHttpPayload(form: FormState): Record<string, unknown> {
-  const payload: Record<string, unknown> = {
-    url: form.url.trim(),
-    method: form.method,
-  };
-  const headers = headersToObject(form.headers);
-  if (Object.keys(headers).length > 0) payload.headers = headers;
-  if (form.body !== '') payload.body = form.body;
-  if (form.timeoutSeconds.trim() !== '') {
-    const t = Number(form.timeoutSeconds);
-    if (Number.isFinite(t)) payload.timeoutSeconds = t;
-  }
-  return payload;
-}
-
-function splitAddresses(raw: string): string[] {
-  return raw
-    .split(/[,;]+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
-
-function buildEmailPayload(form: FormState): Record<string, unknown> {
-  const to = splitAddresses(form.emailTo);
-  const payload: Record<string, unknown> = {
-    to: to.length <= 1 ? (to[0] ?? '') : to,
-    subject: form.emailSubject.trim(),
-  };
-  const from = form.emailFrom.trim();
-  if (from) payload.from = from;
-  const replyTo = form.emailReplyTo.trim();
-  if (replyTo) payload.replyTo = replyTo;
-  if (form.emailText !== '') payload.text = form.emailText;
-  if (form.emailHtml !== '') payload.html = form.emailHtml;
-  return payload;
-}
-
-function isValidHttpUrl(s: string): boolean {
-  try {
-    const u = new URL(s);
-    return u.protocol === 'http:' || u.protocol === 'https:';
-  } catch {
-    return false;
-  }
-}
-
-type ParseResult =
-  | { value: EnqueueJobInput }
-  | { error: string; advanced?: boolean };
-
-function parseForm(form: FormState): ParseResult {
-  const handler = form.jobKind === 'email' ? 'send_email' : 'http_request';
-  let payload: unknown;
-
-  if (form.rawMode) {
-    try {
-      payload = JSON.parse(form.rawPayload);
-    } catch (e) {
-      return {
-        error: `Payload must be valid JSON: ${(e as Error).message}`,
-        advanced: true,
-      };
-    }
-    if (
-      typeof payload !== 'object' ||
-      payload === null ||
-      Array.isArray(payload)
-    ) {
-      return { error: 'Payload must be a JSON object.', advanced: true };
-    }
-    const rec = payload as Record<string, unknown>;
-    if (handler === 'http_request') {
-      if (typeof rec.url !== 'string' || rec.url.trim() === '') {
-        return { error: 'Payload is missing a "url" string.', advanced: true };
-      }
-    } else if (rec.to === undefined || rec.to === null || rec.to === '') {
-      return { error: 'Payload is missing "to".', advanced: true };
-    }
-  } else if (form.jobKind === 'email') {
-    const to = splitAddresses(form.emailTo);
-    if (to.length === 0) return { error: 'To is required.' };
-    if (form.emailSubject.trim() === '')
-      return { error: 'Subject is required.' };
-    if (form.emailText.trim() === '' && form.emailHtml.trim() === '') {
-      return { error: 'Provide a text and/or HTML body.' };
-    }
-    payload = buildEmailPayload(form);
-  } else {
-    const url = form.url.trim();
-    if (url === '') return { error: 'URL is required.' };
-    if (!isValidHttpUrl(url)) {
-      return {
-        error: 'URL must be a valid http(s) URL (e.g. https://example.com).',
-      };
-    }
-    if (form.body.trim() !== '') {
-      try {
-        JSON.parse(form.body);
-      } catch (e) {
-        return {
-          error: `Body is not valid JSON: ${(e as Error).message}`,
-        };
-      }
-    }
-    if (form.timeoutSeconds.trim() !== '') {
-      const t = Number(form.timeoutSeconds);
-      if (!Number.isInteger(t) || t < 1 || t > 300) {
-        return {
-          error: 'Timeout must be an integer between 1 and 300 seconds.',
-        };
-      }
-    }
-    payload = buildHttpPayload(form);
-  }
-
-  const queue = form.queue.trim();
-  if (queue === '') return { error: 'Queue is required.', advanced: true };
-
-  const input: EnqueueJobInput = { handler, queue, payload };
-
-  const m = Number(form.maxAttempts);
-  if (!Number.isInteger(m) || m < 1) {
-    return { error: 'Retry attempts must be an integer ≥ 1.' };
-  }
-  input.maxAttempts = m;
-
-  if (form.priority.trim() !== '') {
-    const p = Number(form.priority);
-    if (!Number.isInteger(p) || p < 0 || p > 9) {
-      return {
-        error: 'Priority must be an integer between 0 and 9.',
-        advanced: true,
-      };
-    }
-    input.priority = p;
-  }
-
-  if (form.scheduledFor.trim() !== '') {
-    const d = new Date(form.scheduledFor);
-    if (Number.isNaN(d.getTime())) {
-      return {
-        error: 'Schedule time must be a valid date/time.',
-        advanced: true,
-      };
-    }
-    input.scheduledFor = d.toISOString();
-  }
-
-  const key = form.idempotencyKey.trim();
-  if (key) input.idempotencyKey = key;
-
-  return { value: input };
 }

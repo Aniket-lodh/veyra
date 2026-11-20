@@ -5,6 +5,7 @@ import {
   enqueueJob,
   getJob,
   listJobs,
+  type EnqueuedJob,
   type EnqueueJobInput,
   type ListJobsParams,
   type ListJobsResponse,
@@ -51,10 +52,10 @@ export function useJob(
 }
 
 export function useEnqueueJob(
-  options?: UseMutationOptions<Job, ApiError, EnqueueJobInput>,
+  options?: UseMutationOptions<EnqueuedJob, ApiError, EnqueueJobInput>,
 ) {
   const queryClient = useQueryClient();
-  return useMutation<Job, ApiError, EnqueueJobInput>({
+  return useMutation<EnqueuedJob, ApiError, EnqueueJobInput>({
     mutationFn: (input) => enqueueJob(input),
     onSuccess: (...args) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.jobs.all });

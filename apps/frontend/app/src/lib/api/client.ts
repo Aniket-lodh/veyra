@@ -12,19 +12,26 @@ export class ApiError extends Error {
   }
 }
 
-interface RequestOptions {
+export interface RequestOptions {
   method?: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
   query?: Record<string, string | number | boolean | string[] | undefined>;
+  headers?: Record<string, string>;
   body?: unknown;
   signal?: AbortSignal;
   /** Skip the global 401 → sign-in redirect (login/status calls). */
   skipAuthRedirect?: boolean;
 }
 
-export async function apiFetch<T>(
+export interface ApiResponse<T> {
+  data: T;
+  headers: Headers;
+  status: number;
+}
+
+export async function apiFetchWithMeta<T>(
   path: string,
   options: RequestOptions = {},
-): Promise<T> {
+): Promise<ApiResponse<T>> {
   const url = path + buildQueryString(options.query);
 
   const init: RequestInit = {
@@ -35,6 +42,7 @@ export async function apiFetch<T>(
       ...(options.body !== undefined
         ? { 'Content-Type': 'application/json' }
         : {}),
+      ...(options.headers ?? {}),
     },
     signal: options.signal,
   };
@@ -49,7 +57,11 @@ export async function apiFetch<T>(
   }
 
   if (response.status === 204) {
-    return undefined as T;
+    return {
+      data: undefined as T,
+      headers: response.headers,
+      status: response.status,
+    };
   }
 
   const raw = await response.text();
@@ -69,7 +81,19 @@ export async function apiFetch<T>(
     throw new ApiError(response.status, message, parsed);
   }
 
-  return parsed as T;
+  return {
+    data: parsed as T,
+    headers: response.headers,
+    status: response.status,
+  };
+}
+
+export async function apiFetch<T>(
+  path: string,
+  options: RequestOptions = {},
+): Promise<T> {
+  const res = await apiFetchWithMeta<T>(path, options);
+  return res.data;
 }
 
 function buildQueryString(query: RequestOptions['query']): string {
