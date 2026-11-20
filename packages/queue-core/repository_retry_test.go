@@ -23,12 +23,12 @@ func ptrInt(v int) *int {
 	return &v
 }
 
-func mustCreateRetryJob(t *testing.T, ctx context.Context, repo *queuecore.Repository, id string, maxAttempts int) *queuecore.Job {
+func mustCreateRetryJobInQueue(t *testing.T, ctx context.Context, repo *queuecore.Repository, id string, queue string, maxAttempts int) *queuecore.Job {
 	t.Helper()
 	job, err := repo.Create(ctx, queuecore.CreateParams{
 		ID:          id,
 		Handler:     retryTestHandler,
-		Queue:       retryTestQueue,
+		Queue:       queue,
 		Priority:    5,
 		MaxAttempts: maxAttempts,
 		Backoff: queuecore.BackoffStrategy{
@@ -44,9 +44,13 @@ func mustCreateRetryJob(t *testing.T, ctx context.Context, repo *queuecore.Repos
 	return job
 }
 
-func mustClaimRetry(t *testing.T, ctx context.Context, repo *queuecore.Repository, id string) *queuecore.Job {
+func mustCreateRetryJob(t *testing.T, ctx context.Context, repo *queuecore.Repository, id string, maxAttempts int) *queuecore.Job {
+	return mustCreateRetryJobInQueue(t, ctx, repo, id, retryTestQueue, maxAttempts)
+}
+
+func mustClaimRetryInQueue(t *testing.T, ctx context.Context, repo *queuecore.Repository, id string, queue string) *queuecore.Job {
 	t.Helper()
-	claimed, err := repo.ClaimNextJob(ctx, retryTestWorker, []string{retryTestQueue}, []string{retryTestHandler})
+	claimed, err := repo.ClaimNextJob(ctx, retryTestWorker, []string{queue}, []string{retryTestHandler})
 	if err != nil {
 		t.Fatalf("ClaimNextJob for %s: %v", id, err)
 	}
@@ -57,6 +61,10 @@ func mustClaimRetry(t *testing.T, ctx context.Context, repo *queuecore.Repositor
 		t.Fatalf("ClaimNextJob: got %s, want %s", claimed.ID, id)
 	}
 	return claimed
+}
+
+func mustClaimRetry(t *testing.T, ctx context.Context, repo *queuecore.Repository, id string) *queuecore.Job {
+	return mustClaimRetryInQueue(t, ctx, repo, id, retryTestQueue)
 }
 
 // TestRetry_Failed covers SPEC §8.1: failed -> queued.
@@ -194,15 +202,15 @@ func TestRetry_RejectsQueuedRunningSucceeded(t *testing.T) {
 
 	// 1. Queued
 	jobID1 := "01TESTRETRYREJQUEUED000000001"
-	mustCreateRetryJob(t, ctx, repo, jobID1, 3)
+	mustCreateRetryJobInQueue(t, ctx, repo, jobID1, "retry-test-rej-queued", 3)
 	if _, err := repo.Retry(ctx, queuecore.RetryParams{JobID: jobID1}); !errors.Is(err, queuecore.ErrNotRetryable) {
 		t.Fatalf("Retry(queued): got err %v; want ErrNotRetryable", err)
 	}
 
 	// 2. Running
 	jobID2 := "01TESTRETRYREJRUNNING00000001"
-	mustCreateRetryJob(t, ctx, repo, jobID2, 3)
-	mustClaimRetry(t, ctx, repo, jobID2)
+	mustCreateRetryJobInQueue(t, ctx, repo, jobID2, "retry-test-rej-running", 3)
+	mustClaimRetryInQueue(t, ctx, repo, jobID2, "retry-test-rej-running")
 	if _, err := repo.Retry(ctx, queuecore.RetryParams{JobID: jobID2}); !errors.Is(err, queuecore.ErrNotRetryable) {
 		t.Fatalf("Retry(running): got err %v; want ErrNotRetryable", err)
 	}
