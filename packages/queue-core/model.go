@@ -8,7 +8,6 @@ import (
 	"time"
 )
 
-// JobStatus is the storage-level enum.
 type JobStatus string
 
 const (
@@ -20,7 +19,6 @@ const (
 	StatusCancelled    JobStatus = "cancelled"
 )
 
-// BackoffStrategy is the retry policy.
 type BackoffStrategy struct {
 	Kind        string `json:"kind"`
 	BaseSeconds *int   `json:"baseSeconds,omitempty"`
@@ -67,7 +65,6 @@ func DefaultBackoff() BackoffStrategy {
 	}
 }
 
-// JobError is the structured error stored on a job after a failed attempt.
 type JobError struct {
 	Class      string    `json:"class"`
 	Message    string    `json:"message"`
@@ -75,7 +72,6 @@ type JobError struct {
 	OccurredAt time.Time `json:"occurredAt"`
 }
 
-// Job is the in-memory representation of one row in the `jobs` table.
 type Job struct {
 	ID             string
 	Handler        string
@@ -115,7 +111,6 @@ type Job struct {
 	IsReplay bool `json:"-"`
 }
 
-// CallbackStatus is the state of completion webhook delivery.
 type CallbackStatus string
 
 const (
@@ -125,7 +120,6 @@ const (
 	CallbackStatusFailed    CallbackStatus = "failed"
 )
 
-// Attempt is one row of the `job_attempts` table — a single execution of a job, in-flight or terminal.
 type Attempt struct {
 	JobID         string
 	AttemptNumber int
@@ -137,7 +131,6 @@ type Attempt struct {
 	ErrorMessage  *string
 }
 
-// AttemptOutcome is the storage-level enum from `attempt_outcome`.
 type AttemptOutcome string
 
 const (
@@ -148,7 +141,6 @@ const (
 	OutcomeLeaseLost AttemptOutcome = "lease_lost"
 )
 
-// QueueStats is the aggregated counts surface that powers the operator dashboard.
 type QueueStats struct {
 	Totals   StatusCounts
 	PerQueue []QueueAggregate
@@ -165,7 +157,6 @@ type StatusCounts struct {
 	Cancelled    int
 }
 
-// QueueAggregate is one queue's view.
 type QueueAggregate struct {
 	Name            string     `json:"name"`
 	Depth           int        `json:"depth"`
@@ -178,7 +169,6 @@ type QueueAggregate struct {
 	PausedReason    *string    `json:"pausedReason,omitempty"`
 }
 
-// QueueState represents the stored operational pause state of a queue.
 type QueueState struct {
 	QueueName    string     `json:"queueName"`
 	Paused       bool       `json:"paused"`
@@ -187,18 +177,16 @@ type QueueState struct {
 	UpdatedAt    time.Time  `json:"updatedAt"`
 }
 
-// PauseQueueParams is the input to PauseQueue.
 type PauseQueueParams struct {
 	QueueName string
 	Reason    string
 }
 
-// ResumeQueueParams is the input to ResumeQueue.
 type ResumeQueueParams struct {
 	QueueName string
 }
 
-// RunningLease is a thin row used by the workers handler to materialize `worker.leases[]` for the operator UI.
+// RunningLease materializes worker.leases[] for the operator UI.
 type RunningLease struct {
 	JobID          string
 	Handler        string

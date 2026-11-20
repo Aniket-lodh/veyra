@@ -273,7 +273,6 @@ export function filterAndSortWorkers(
   const normalizedQuery = query.trim().toLowerCase();
 
   const filtered = workers.filter((w) => {
-    // 1. Tab filter
     if (tab !== 'all') {
       const lifecycle = getWorkerLifecycle(w, now);
       if (tab === 'busy' && lifecycle !== 'busy') return false;
@@ -282,12 +281,10 @@ export function filterAndSortWorkers(
       if (tab === 'disconnected' && lifecycle !== 'disconnected') return false;
     }
 
-    // 2. Queue filter
     if (queue !== 'all') {
       if (!w.queues.includes(queue)) return false;
     }
 
-    // 3. Search query
     if (normalizedQuery) {
       const matchHostname = w.hostname.toLowerCase().includes(normalizedQuery);
       const matchId = w.id.toLowerCase().includes(normalizedQuery);

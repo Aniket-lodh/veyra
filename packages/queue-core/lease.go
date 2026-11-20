@@ -11,7 +11,6 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// ForceReleaseLeaseParams is the input to ForceReleaseLease.
 type ForceReleaseLeaseParams struct {
 	WorkerID string
 	JobID    string

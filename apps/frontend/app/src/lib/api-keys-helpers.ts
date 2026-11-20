@@ -147,7 +147,6 @@ export function filterApiKeys(
   const normalizedQuery = query.trim().toLowerCase();
 
   return keys.filter((key) => {
-    // 1. Status Filter
     const lifecycle = getApiKeyLifecycle(key, now);
     if (statusFilter !== 'all') {
       if (statusFilter !== lifecycle) {
@@ -155,7 +154,6 @@ export function filterApiKeys(
       }
     }
 
-    // 2. Query Filter
     if (!normalizedQuery) return true;
 
     const nameMatch = key.name.toLowerCase().includes(normalizedQuery);
@@ -205,7 +203,6 @@ export function validateCreateKeyInput(input: {
     return { valid: false, error: 'Key name is required' };
   }
 
-  // Calculate expiresAt
   let expiresAt: string | null = null;
   if (input.expiryPreset === 'never') {
     expiresAt = null;
@@ -226,7 +223,6 @@ export function validateCreateKeyInput(input: {
     }
   }
 
-  // Validate scopes
   let scopes: string[] = ['*'];
   if (input.scopeMode === 'custom') {
     const validScopes = input.selectedScopes.filter(Boolean);

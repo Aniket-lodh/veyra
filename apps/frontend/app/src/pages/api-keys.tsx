@@ -212,7 +212,6 @@ export function ApiKeysPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header & Primary Action Rhythm */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <div className="flex items-center gap-2.5">
@@ -259,8 +258,6 @@ export function ApiKeysPage() {
           </Button>
         </div>
       </div>
-
-      {/* Summary KPI Strip: 5 Mutually Exclusive Operational Categories */}
       <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-5">
         <div
           role="button"
@@ -410,8 +407,6 @@ export function ApiKeysPage() {
           </div>
         </div>
       </div>
-
-      {/* Fortified One-Time Secret Reveal Banner */}
       {created && (
         <div
           role="region"
@@ -446,8 +441,6 @@ export function ApiKeysPage() {
               <span>Dismiss</span>
             </Button>
           </div>
-
-          {/* Secret Display Box */}
           <div className="border-border-strong bg-surface-base flex flex-col gap-2 rounded-md border p-2.5 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex min-w-0 flex-1 items-center gap-2">
               <code className="text-text-primary font-mono text-xs font-medium tracking-tight break-all select-all">
@@ -491,8 +484,6 @@ export function ApiKeysPage() {
               </Button>
             </div>
           </div>
-
-          {/* Quick-Test cURL Snippet */}
           <div className="border-border-subtle bg-surface-elevated/70 rounded border p-2.5 text-xs">
             <div className="flex items-center justify-between pb-1.5">
               <span className="text-text-secondary text-[0.6875rem] font-medium">
@@ -525,12 +516,8 @@ export function ApiKeysPage() {
           </div>
         </div>
       )}
-
-      {/* Main Keys Inventory Section */}
       <div className="space-y-3">
-        {/* Search & Segmented Filter Tabs: Explicit 'Expired' Tab included */}
         <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center sm:justify-between">
-          {/* Status Tabs */}
           <div className="flex flex-wrap items-center gap-1">
             {(
               [
@@ -570,8 +557,6 @@ export function ApiKeysPage() {
               </button>
             ))}
           </div>
-
-          {/* Search Input */}
           <div className="relative w-full sm:w-64">
             <HugeiconsIcon
               icon={Search01Icon}
@@ -596,8 +581,6 @@ export function ApiKeysPage() {
             )}
           </div>
         </div>
-
-        {/* Global Error Banner */}
         {keysQuery.isError && (
           <div
             role="alert"
@@ -621,8 +604,6 @@ export function ApiKeysPage() {
             </Button>
           </div>
         )}
-
-        {/* Table Container */}
         <div className="border-border-subtle bg-surface-base overflow-hidden rounded-lg border">
           <Table>
             <TableHeader>
@@ -638,7 +619,6 @@ export function ApiKeysPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {/* Loading Skeleton */}
               {keysQuery.isLoading && (
                 <>
                   {[1, 2, 3].map((idx) => (
@@ -672,8 +652,6 @@ export function ApiKeysPage() {
                   ))}
                 </>
               )}
-
-              {/* Empty State: No keys match search/filter */}
               {!keysQuery.isLoading &&
                 filteredKeys.length === 0 &&
                 allKeys.length > 0 && (
@@ -702,8 +680,6 @@ export function ApiKeysPage() {
                     </TableCell>
                   </TableRow>
                 )}
-
-              {/* Empty State: Zero keys configured */}
               {!keysQuery.isLoading && allKeys.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={8} className="py-16 text-center">
@@ -734,8 +710,6 @@ export function ApiKeysPage() {
                   </TableCell>
                 </TableRow>
               )}
-
-              {/* Key Rows */}
               {!keysQuery.isLoading &&
                 filteredKeys.map((k) => {
                   const status = getApiKeyLifecycle(k);
@@ -749,7 +723,6 @@ export function ApiKeysPage() {
                         isRevoked && 'bg-surface-elevated/20 opacity-65',
                       )}
                     >
-                      {/* Name & Identifier */}
                       <TableCell className="align-middle">
                         <div className="flex flex-col">
                           <span className="text-text-primary text-xs font-medium">
@@ -763,8 +736,6 @@ export function ApiKeysPage() {
                           </span>
                         </div>
                       </TableCell>
-
-                      {/* Prefix with micro-copy button */}
                       <TableCell className="align-middle">
                         <div className="bg-surface-elevated border-border-subtle inline-flex items-center gap-1 rounded border px-1.5 py-0.5">
                           <code className="text-text-primary font-mono text-[0.6875rem] select-all">
@@ -794,8 +765,6 @@ export function ApiKeysPage() {
                           </button>
                         </div>
                       </TableCell>
-
-                      {/* Scopes */}
                       <TableCell className="align-middle">
                         <div className="flex flex-wrap items-center gap-1">
                           {k.scopes.includes('*') ? (
@@ -818,15 +787,11 @@ export function ApiKeysPage() {
                           )}
                         </div>
                       </TableCell>
-
-                      {/* Created */}
                       <TableCell className="text-text-secondary align-middle font-mono text-xs tabular-nums">
                         <span title={formatDateTimeUTC(k.createdAt)}>
                           {k.createdAt ? k.createdAt.slice(0, 10) : '—'}
                         </span>
                       </TableCell>
-
-                      {/* Expires */}
                       <TableCell className="align-middle text-xs">
                         {k.expiresAt ? (
                           <div className="flex flex-col">
@@ -852,8 +817,6 @@ export function ApiKeysPage() {
                           </span>
                         )}
                       </TableCell>
-
-                      {/* Last Used */}
                       <TableCell className="align-middle text-xs">
                         {k.lastUsedAt ? (
                           <div className="flex flex-col">
@@ -873,13 +836,9 @@ export function ApiKeysPage() {
                           </span>
                         )}
                       </TableCell>
-
-                      {/* Semantic Status Badge: Explicit 'Expired' support */}
                       <TableCell className="align-middle">
                         <KeyStatusBadge status={status} />
                       </TableCell>
-
-                      {/* Row Action Density: Guarded Revoke + Compact 'More' Menu */}
                       <TableCell className="text-right align-middle">
                         <div className="flex items-center justify-end gap-1">
                           {!isRevoked ? (
@@ -904,8 +863,6 @@ export function ApiKeysPage() {
                               Revoked
                             </span>
                           )}
-
-                          {/* Compact Row 'More' Menu */}
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
                               <Button
@@ -1008,8 +965,6 @@ export function ApiKeysPage() {
           </Table>
         </div>
       </div>
-
-      {/* Two-Step Revocation Safety Dialog */}
       <Dialog
         open={keyToRevoke !== null}
         onOpenChange={(open) => {
@@ -1086,8 +1041,6 @@ export function ApiKeysPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-
-      {/* Create Key High-Density Dialog: Least Privilege Defaults */}
       <Dialog
         open={createDialogOpen}
         onOpenChange={(open) => {
@@ -1109,8 +1062,6 @@ export function ApiKeysPage() {
                 integration.
               </DialogDescription>
             </DialogHeader>
-
-            {/* Field 1: Name */}
             <div className="space-y-1.5">
               <Label htmlFor="key-name" className="text-xs font-medium">
                 Name / Identifier{' '}
@@ -1129,8 +1080,6 @@ export function ApiKeysPage() {
                 this token.
               </p>
             </div>
-
-            {/* Field 2: Expiration Policy */}
             <div className="space-y-2">
               <Label className="text-xs font-medium">Expiration Policy</Label>
               <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-6">
@@ -1166,8 +1115,6 @@ export function ApiKeysPage() {
                 </div>
               )}
             </div>
-
-            {/* Field 3: Least-Privilege Scopes & Permissions */}
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <Label className="text-xs font-medium">
@@ -1204,8 +1151,6 @@ export function ApiKeysPage() {
                   </label>
                 </div>
               </div>
-
-              {/* Deliberate Security Warning when Wildcard * is chosen */}
               {scopeMode === 'all' && (
                 <div className="border-status-warning-border bg-status-warning-bg/60 text-status-warning-text flex items-start gap-2.5 rounded-md border p-2.5 text-xs">
                   <HugeiconsIcon
@@ -1223,8 +1168,6 @@ export function ApiKeysPage() {
                   </div>
                 </div>
               )}
-
-              {/* Granular Scope Selector */}
               {scopeMode === 'custom' && (
                 <div className="border-border-subtle bg-surface-elevated/50 space-y-2 rounded-md border p-2.5">
                   <p className="text-text-muted border-border-subtle border-b pb-1 text-[0.6875rem]">
@@ -1265,8 +1208,6 @@ export function ApiKeysPage() {
                 </div>
               )}
             </div>
-
-            {/* Field 4: Capability Boundaries (Honest disabled controls for upcoming features) */}
             <div className="border-border-subtle bg-surface-elevated/30 space-y-2 rounded-md border p-2.5">
               <div className="text-text-muted flex items-center gap-1.5">
                 <HugeiconsIcon
@@ -1310,8 +1251,6 @@ export function ApiKeysPage() {
                 </div>
               </div>
             </div>
-
-            {/* Form Error Banner */}
             {formError && (
               <p className="text-status-danger-text text-xs" role="alert">
                 {formError}

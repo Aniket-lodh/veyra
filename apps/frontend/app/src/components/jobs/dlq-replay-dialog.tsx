@@ -141,7 +141,6 @@ export function DlqReplayDialog({
           </div>
         ) : (
           <div className="space-y-3 py-1">
-            {/* Operational Impact Notice */}
             <div className="border-border-subtle bg-surface-elevated/60 space-y-2 rounded-md border p-3 text-xs">
               <div className="flex items-center justify-between">
                 <span className="text-text-muted">Target State:</span>
@@ -162,8 +161,6 @@ export function DlqReplayDialog({
                 are made immediately visible to workers.
               </p>
             </div>
-
-            {/* Optional Filters */}
             <div className="space-y-2.5 pt-1">
               <div className="space-y-1">
                 <Label
@@ -218,8 +215,6 @@ export function DlqReplayDialog({
                 />
               </div>
             </div>
-
-            {/* Error Banner */}
             {errorMsg && (
               <div
                 role="alert"

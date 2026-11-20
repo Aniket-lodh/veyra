@@ -110,13 +110,8 @@ export class VeyraWorker {
 
     this._state = 'running';
 
-    // 1. Initial Registration
     const record = await this.register();
-
-    // 2. Start worker heartbeat loop
     this.startWorkerHeartbeatLoop();
-
-    // 3. Kick off claim loop
     this.triggerClaimLoop();
 
     return record;
@@ -133,20 +128,17 @@ export class VeyraWorker {
 
     this._state = 'draining';
 
-    // Stop claiming immediately
     if (this._pollTimeout) {
       clearTimeout(this._pollTimeout);
       this._pollTimeout = undefined;
     }
 
-    // Inform API worker is draining
     try {
       await this.client.drainWorker(this._workerId);
     } catch (err) {
       this.options.onError?.(err);
     }
 
-    // Wait for in-flight jobs to drain
     const timeoutMs = options?.timeoutMs ?? 30_000;
     if (this._inFlight > 0) {
       await Promise.race([
@@ -169,7 +161,6 @@ export class VeyraWorker {
       });
     }
 
-    // Clean up heartbeats and timers
     if (this._heartbeatTimer) {
       clearInterval(this._heartbeatTimer);
       this._heartbeatTimer = undefined;
@@ -181,7 +172,6 @@ export class VeyraWorker {
     this._activeLeaseTimers.clear();
     this._activeAbortControllers.clear();
 
-    // Deregister worker from server
     try {
       await this.client.deregisterWorker(this._workerId);
     } catch (err) {
@@ -191,10 +181,6 @@ export class VeyraWorker {
     this._state = 'stopped';
     this._drainResolver = undefined;
   }
-
-  // ---------------------------------------------------------------------------
-  // Internal Worker Protocol Loops
-  // ---------------------------------------------------------------------------
 
   /**
    * Registers or re-registers the worker with the Veyra API.
@@ -332,13 +318,11 @@ export class VeyraWorker {
       return;
     }
 
-    // 204 No Content: Queue is empty
     if (!claimResult) {
       this.triggerClaimLoop(this.options.pollIntervalMs ?? 1_000);
       return;
     }
 
-    // Claimed a job!
     this._inFlight++;
     this.options.onJobStart?.(claimResult);
 
@@ -367,7 +351,6 @@ export class VeyraWorker {
     const abortController = new AbortController();
     this._activeAbortControllers.set(job.id, abortController);
 
-    // Periodic lease renewal
     this.startJobLeaseRenewal(job.id, abortController);
 
     const ctx: JobContext = {
@@ -392,13 +375,11 @@ export class VeyraWorker {
 
       const result = await handlerFn(job, ctx);
 
-      // Stop renewing lease before reporting completion
       this.stopJobLeaseRenewal(job.id);
 
       await this.client.completeJob(this._workerId, job.id, result);
       this.options.onJobComplete?.(job, result);
     } catch (err) {
-      // Stop renewing lease before reporting failure
       this.stopJobLeaseRenewal(job.id);
 
       const permanent = isNonRetryable(err);

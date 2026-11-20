@@ -195,16 +195,13 @@ export function DashboardPage() {
 
   return (
     <div className="space-y-6">
-      {/* ==================================================================== */}
-      {/* SCREEN HEADER: High-Density Operational Overview & Live Indicators   */}
-      {/* ==================================================================== */}
+      {}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="space-y-1">
           <div className="flex flex-wrap items-center gap-2.5">
             <h2 className="text-text-primary text-base font-semibold tracking-tight">
               Operational Command Center
             </h2>
-            {/* System Health Pill */}
             <span
               className={cn(
                 'inline-flex items-center gap-1.5 rounded-sm border px-2 py-0.5 text-[0.6875rem] font-medium',
@@ -227,7 +224,6 @@ export function DashboardPage() {
           </div>
 
           <div className="text-text-muted flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-            {/* SSE Stream State */}
             <span className="inline-flex items-center gap-1.5">
               <span
                 className={cn(
@@ -258,8 +254,6 @@ export function DashboardPage() {
             )}
           </div>
         </div>
-
-        {/* Operational Actions */}
         <div className="flex items-center gap-2">
           <Button
             type="button"
@@ -300,9 +294,7 @@ export function DashboardPage() {
         </div>
       </div>
 
-      {/* ==================================================================== */}
-      {/* CONSOLIDATED OPERATIONAL ATTENTION BANNER                            */}
-      {/* ==================================================================== */}
+      {}
       {systemHealth.alerts.length > 0 && (
         <section
           aria-label="Operational attention alerts"
@@ -395,9 +387,7 @@ export function DashboardPage() {
         </section>
       )}
 
-      {/* ==================================================================== */}
-      {/* HIGH-SIGNAL SYSTEM & QUEUE HEALTH KPI CARDS                          */}
-      {/* ==================================================================== */}
+      {}
       <section
         aria-label="System KPI metrics"
         className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5"
@@ -482,9 +472,7 @@ export function DashboardPage() {
         />
       </section>
 
-      {/* ==================================================================== */}
-      {/* PIPELINE DISTRIBUTION STRIP                                          */}
-      {/* ==================================================================== */}
+      {}
       {pipeline.totalJobs > 0 && (
         <section
           aria-label="Lifecycle distribution"
@@ -499,8 +487,6 @@ export function DashboardPage() {
               {pipeline.totalJobs.toLocaleString()} jobs tracked
             </span>
           </div>
-
-          {/* Segmented Bar */}
           <div className="bg-surface-elevated flex h-2.5 overflow-hidden rounded-full">
             {pipeline.segments.map((seg) => (
               <Link
@@ -515,8 +501,6 @@ export function DashboardPage() {
               />
             ))}
           </div>
-
-          {/* Legend Items */}
           <div className="flex flex-wrap gap-x-4 gap-y-1.5 pt-0.5">
             {pipeline.segments.map((seg) => (
               <Link
@@ -543,11 +527,8 @@ export function DashboardPage() {
         </section>
       )}
 
-      {/* ==================================================================== */}
-      {/* 2-COLUMN OPERATIONAL SNAPSHOT: Queues & Worker Fleet                 */}
-      {/* ==================================================================== */}
+      {}
       <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        {/* COLUMN A: Queue Depth & Diagnostics */}
         <Card className="border-border-subtle bg-surface-base">
           <CardHeader className="flex-row items-center justify-between pb-2">
             <div className="space-y-0.5">
@@ -741,8 +722,6 @@ export function DashboardPage() {
             )}
           </CardContent>
         </Card>
-
-        {/* COLUMN B: Worker Fleet & Leases */}
         <Card className="border-border-subtle bg-surface-base">
           <CardHeader className="flex-row items-center justify-between pb-2">
             <div className="space-y-0.5">
@@ -845,16 +824,13 @@ export function DashboardPage() {
         </Card>
       </section>
 
-      {/* ==================================================================== */}
-      {/* RECENT JOBS OPERATIONAL STREAM: Fast Triage & Quick Inspection       */}
-      {/* ==================================================================== */}
+      {}
       <section className="space-y-3">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-3">
             <h3 className="text-text-primary text-sm font-semibold tracking-tight">
               Recent Job Activity
             </h3>
-            {/* Triage Filter Tabs */}
             <div className="border-border-subtle bg-surface-elevated/50 flex items-center rounded-md border p-0.5 text-xs">
               <button
                 type="button"
@@ -963,7 +939,6 @@ export function DashboardPage() {
                       className="hover:bg-surface-elevated/40 border-border-subtle cursor-pointer transition-colors"
                       onClick={() => setInspectingJobId(j.id)}
                     >
-                      {/* Job ID + Copy */}
                       <TableCell className="py-2.5">
                         <div className="flex items-center gap-1.5">
                           <span
@@ -992,31 +967,21 @@ export function DashboardPage() {
                           </button>
                         </div>
                       </TableCell>
-
-                      {/* Handler */}
                       <TableCell className="text-text-primary font-mono text-[0.6875rem]">
                         {j.handler}
                       </TableCell>
-
-                      {/* Queue */}
                       <TableCell className="text-text-muted font-mono text-[0.6875rem]">
                         {j.queue}
                       </TableCell>
-
-                      {/* Status Badge */}
                       <TableCell>
                         <StatusBadge status={j.status} />
                       </TableCell>
-
-                      {/* Enqueued Timestamp */}
                       <TableCell className="text-text-muted font-mono text-[0.6875rem] tabular-nums">
                         <span>{formatClockUTC(j.enqueuedAt)}</span>
                         <span className="text-text-muted/60 ml-1 text-[0.625rem]">
                           ({formatRelative(j.enqueuedAt)})
                         </span>
                       </TableCell>
-
-                      {/* Duration / Attempts */}
                       <TableCell className="text-text-secondary text-right font-mono text-[0.6875rem] tabular-nums">
                         {lastAttempt?.durationMs != null ? (
                           formatDurationMs(lastAttempt.durationMs)
@@ -1027,8 +992,6 @@ export function DashboardPage() {
                           (att {formatAttemptRatio(j.attempt, j.maxAttempts)})
                         </span>
                       </TableCell>
-
-                      {/* Actions */}
                       <TableCell className="text-right">
                         <div
                           className="flex items-center justify-end gap-1.5"
@@ -1074,9 +1037,7 @@ export function DashboardPage() {
         </div>
       </section>
 
-      {/* ==================================================================== */}
-      {/* MODALS & DRAWERS: Quick Enqueue, Job Inspector & Cancellation       */}
-      {/* ==================================================================== */}
+      {}
       <QuickEnqueueDialog
         open={isQuickEnqueueOpen}
         onOpenChange={setIsQuickEnqueueOpen}
@@ -1130,10 +1091,6 @@ export function DashboardPage() {
     </div>
   );
 }
-
-/* ========================================================================== */
-/* HELPER COMPONENTS: MetricCard, TableSkeleton, EmptyBlock                   */
-/* ========================================================================== */
 
 function MetricCard({
   to,

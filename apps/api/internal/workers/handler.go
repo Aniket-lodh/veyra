@@ -205,7 +205,6 @@ type failJobRequest struct {
 	} `json:"error"`
 }
 
-// RegisterWorker handles POST /workers/register.
 func (h *Handler) RegisterWorker(c fiber.Ctx) error {
 	var req registerWorkerRequest
 	if err := json.Unmarshal(c.Body(), &req); err != nil {
@@ -259,7 +258,6 @@ func (h *Handler) RegisterWorker(c fiber.Ctx) error {
 	return c.JSON(worker)
 }
 
-// Heartbeat handles POST /workers/:id/heartbeat.
 func (h *Handler) Heartbeat(c fiber.Ctx) error {
 	id, err := parseWorkerID(c)
 	if err != nil {
@@ -278,7 +276,6 @@ func (h *Handler) Heartbeat(c fiber.Ctx) error {
 	return c.JSON(hb)
 }
 
-// Claim handles POST /workers/:id/claim.
 func (h *Handler) Claim(c fiber.Ctx) error {
 	id, err := parseWorkerID(c)
 	if err != nil {
@@ -315,7 +312,6 @@ func (h *Handler) Claim(c fiber.Ctx) error {
 	return c.JSON(toJobClaimResponse(job))
 }
 
-// RenewJobLease handles POST /workers/:id/jobs/:jobId/heartbeat.
 func (h *Handler) RenewJobLease(c fiber.Ctx) error {
 	id, err := parseWorkerID(c)
 	if err != nil {
@@ -351,7 +347,6 @@ func (h *Handler) RenewJobLease(c fiber.Ctx) error {
 	})
 }
 
-// CompleteJob handles POST /workers/:id/jobs/:jobId/complete.
 func (h *Handler) CompleteJob(c fiber.Ctx) error {
 	id, err := parseWorkerID(c)
 	if err != nil {
@@ -401,7 +396,6 @@ func (h *Handler) CompleteJob(c fiber.Ctx) error {
 	})
 }
 
-// FailJob handles POST /workers/:id/jobs/:jobId/fail.
 func (h *Handler) FailJob(c fiber.Ctx) error {
 	id, err := parseWorkerID(c)
 	if err != nil {
@@ -474,7 +468,6 @@ func (h *Handler) FailJob(c fiber.Ctx) error {
 	})
 }
 
-// List handles GET /workers.
 func (h *Handler) List(c fiber.Ctx) error {
 	ctx := c.Context()
 	out, err := h.store.QueryWorkers(ctx)
@@ -484,7 +477,6 @@ func (h *Handler) List(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"workers": out})
 }
 
-// GetByID handles GET /workers/:id.
 func (h *Handler) GetByID(c fiber.Ctx) error {
 	id, err := parseWorkerID(c)
 	if err != nil {
@@ -503,7 +495,6 @@ func (h *Handler) GetByID(c fiber.Ctx) error {
 	return c.JSON(worker)
 }
 
-// ReleaseLease handles POST /workers/:id/leases/:jobId/release.
 func (h *Handler) ReleaseLease(c fiber.Ctx) error {
 	workerID, err := parseWorkerID(c)
 	if err != nil {
@@ -553,7 +544,6 @@ func (h *Handler) ReleaseLease(c fiber.Ctx) error {
 	})
 }
 
-// Drain handles POST /workers/:id/drain.
 func (h *Handler) Drain(c fiber.Ctx) error {
 	id, err := parseWorkerID(c)
 	if err != nil {
@@ -585,7 +575,6 @@ func (h *Handler) Drain(c fiber.Ctx) error {
 	return c.JSON(worker)
 }
 
-// Cordon handles POST & PATCH /workers/:id/cordon.
 func (h *Handler) Cordon(c fiber.Ctx) error {
 	id, err := parseWorkerID(c)
 	if err != nil {
@@ -617,7 +606,6 @@ func (h *Handler) Cordon(c fiber.Ctx) error {
 	return c.JSON(worker)
 }
 
-// Resume handles POST & PATCH /workers/:id/resume.
 func (h *Handler) Resume(c fiber.Ctx) error {
 	id, err := parseWorkerID(c)
 	if err != nil {
@@ -649,7 +637,6 @@ func (h *Handler) Resume(c fiber.Ctx) error {
 	return c.JSON(worker)
 }
 
-// Deregister handles DELETE /workers/:id and POST /workers/:id/deregister.
 func (h *Handler) Deregister(c fiber.Ctx) error {
 	id, err := parseWorkerID(c)
 	if err != nil {

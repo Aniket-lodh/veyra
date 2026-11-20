@@ -222,7 +222,6 @@ func deriveAPIStatus(status queuecore.JobStatus, scheduledFor time.Time, now tim
 	return string(status)
 }
 
-// Create handles POST /jobs.
 func (h *Handler) Create(c fiber.Ctx) error {
 	var req createRequest
 	if err := json.Unmarshal(c.Body(), &req); err != nil {
@@ -307,7 +306,6 @@ func (h *Handler) Validate(c fiber.Ctx) error {
 	})
 }
 
-// Cancel handles POST /jobs/:id/cancel.
 func (h *Handler) Cancel(c fiber.Ctx) error {
 	id := c.Params("id")
 	if id == "" {
@@ -356,7 +354,6 @@ type replayDLQResponse struct {
 	JobIDs        []string `json:"jobIds"`
 }
 
-// Retry handles POST /jobs/:id/retry.
 func (h *Handler) Retry(c fiber.Ctx) error {
 	id := c.Params("id")
 	if id == "" {
@@ -395,7 +392,6 @@ func (h *Handler) Retry(c fiber.Ctx) error {
 	return c.JSON(resp)
 }
 
-// ReplayDLQ handles POST /jobs/dlq/replay.
 func (h *Handler) ReplayDLQ(c fiber.Ctx) error {
 	var req replayDLQRequest
 	if len(c.Body()) > 0 {
@@ -454,7 +450,6 @@ func (h *Handler) ReplayDLQ(c fiber.Ctx) error {
 	})
 }
 
-// GetByID handles GET /jobs/:id.
 func (h *Handler) GetByID(c fiber.Ctx) error {
 	id := c.Params("id")
 	if id == "" {
@@ -480,7 +475,6 @@ func (h *Handler) GetByID(c fiber.Ctx) error {
 	return c.JSON(resp)
 }
 
-// List handles GET /jobs.
 func (h *Handler) List(c fiber.Ctx) error {
 	limit, err := parsePositiveQuery(c, "limit", defaultListLimit)
 	if err != nil {

@@ -348,7 +348,6 @@ func (d *Dispatcher) deliver(ctx context.Context, j claimedJob) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	// 2xx Success.
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		slog.InfoContext(ctx, "queue.callback.delivered",
 			"event", "queue.callback.delivered",
@@ -368,7 +367,6 @@ func (d *Dispatcher) deliver(ctx context.Context, j claimedJob) {
 		errDetail = fmt.Sprintf("HTTP %d: %s", resp.StatusCode, snippet)
 	}
 
-	// 4xx Non-Retryable (excluding 408 & 429).
 	if isNonRetryableStatus(resp.StatusCode) {
 		slog.ErrorContext(ctx, "queue.callback.failed",
 			"event", "queue.callback.failed",
@@ -384,7 +382,6 @@ func (d *Dispatcher) deliver(ctx context.Context, j claimedJob) {
 		return
 	}
 
-	// Retryable 5xx, 408, 429.
 	slog.WarnContext(ctx, "queue.callback.retryable_error",
 		"event", "queue.callback.retryable_error",
 		"jobId", j.ID,

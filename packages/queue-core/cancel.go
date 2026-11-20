@@ -9,7 +9,6 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// CancelParams is the input to Cancel.
 type CancelParams struct {
 	JobID string
 }

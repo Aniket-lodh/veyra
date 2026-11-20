@@ -157,10 +157,6 @@ export class VeyraClient {
     return data;
   }
 
-  // ---------------------------------------------------------------------------
-  // HTTP Worker Protocol Methods
-  // ---------------------------------------------------------------------------
-
   /**
    * Registers a worker in the Veyra cluster.
    */
@@ -295,10 +291,6 @@ export class VeyraClient {
   createWorker(options: VeyraWorkerOptions): VeyraWorker {
     return new VeyraWorker(this, options);
   }
-
-  // ---------------------------------------------------------------------------
-  // Internal HTTP transport
-  // ---------------------------------------------------------------------------
 
   private async request<T>(
     path: string,

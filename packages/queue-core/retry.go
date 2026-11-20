@@ -9,7 +9,6 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// RetryParams is the input to Retry.
 type RetryParams struct {
 	JobID string
 }
@@ -112,7 +111,6 @@ func (r *Repository) Retry(ctx context.Context, p RetryParams) (*Job, error) {
 	return updated, nil
 }
 
-// ReplayDLQParams is the input to ReplayDLQ.
 type ReplayDLQParams struct {
 	Queue   string
 	Handler string

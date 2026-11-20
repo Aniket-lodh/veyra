@@ -367,7 +367,6 @@ export function EnqueuePage() {
 
   return (
     <div className="mx-auto max-w-7xl space-y-5 pb-12">
-      {/* Page Header & Starter Presets Bar */}
       <div className="border-border-subtle bg-surface-base flex flex-col justify-between gap-4 rounded-lg border p-4 sm:flex-row sm:items-center">
         <div>
           <div className="flex items-center gap-2">
@@ -385,8 +384,6 @@ export function EnqueuePage() {
             </div>
           </div>
         </div>
-
-        {/* Starter Presets */}
         <div className="flex flex-wrap items-center gap-1.5">
           <span className="text-text-muted mr-1 text-[0.6875rem] font-medium tracking-wide uppercase">
             Starter Presets:
@@ -434,15 +431,10 @@ export function EnqueuePage() {
           </Button>
         </div>
       </div>
-
-      {/* Main 2-Column Operational Workbench */}
       <form onSubmit={handleSubmit} onKeyDown={handleFormKeyDown}>
         <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-12">
-          {/* ========================================================= */}
-          {/* LEFT COLUMN: Structured Configuration & Payload Authoring */}
-          {/* ========================================================= */}
+          {}
           <div className="space-y-5 lg:col-span-7">
-            {/* Section 1: Handler Type & Mode Selection */}
             <Card className="border-border-subtle bg-surface-base">
               <CardHeader className="border-border-subtle flex flex-row items-center justify-between border-b pb-2.5">
                 <CardTitle className="text-text-primary flex items-center gap-1.5 font-medium">
@@ -544,8 +536,6 @@ export function EnqueuePage() {
                         your fleet.
                       </p>
                     </div>
-
-                    {/* Custom Worker Guidance Card */}
                     <div className="border-border-subtle bg-surface-elevated/40 space-y-2.5 rounded-md border p-3">
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-1.5">
@@ -610,8 +600,6 @@ export function EnqueuePage() {
                 )}
               </CardContent>
             </Card>
-
-            {/* Section 2: Guided Payload Authoring / Raw Mode */}
             <Card className="border-border-subtle bg-surface-base">
               <CardHeader className="border-border-subtle flex flex-row items-center justify-between border-b pb-2.5">
                 <CardTitle className="text-text-primary flex items-center gap-1.5 font-medium">
@@ -689,8 +677,6 @@ export function EnqueuePage() {
                         />
                       </div>
                     </div>
-
-                    {/* Headers Builder */}
                     <div className="space-y-2">
                       <div className="flex items-center justify-between">
                         <Label>HTTP Headers</Label>
@@ -739,8 +725,6 @@ export function EnqueuePage() {
                         ))}
                       </div>
                     </div>
-
-                    {/* HTTP Body Editor */}
                     <div className="space-y-1.5">
                       <div className="flex items-center justify-between">
                         <Label htmlFor="http-body-editor">
@@ -761,8 +745,6 @@ export function EnqueuePage() {
                         aria-label="HTTP Body JSON"
                       />
                     </div>
-
-                    {/* Timeout */}
                     <div className="space-y-1">
                       <Label htmlFor="http-timeout">
                         Request Timeout (seconds)
@@ -902,8 +884,6 @@ export function EnqueuePage() {
                 )}
               </CardContent>
             </Card>
-
-            {/* Section 3: Queue & Worker Routing */}
             <Card className="border-border-subtle bg-surface-base">
               <CardHeader className="border-border-subtle flex flex-row items-center justify-between border-b pb-2.5">
                 <CardTitle className="text-text-primary flex items-center gap-1.5 font-medium">
@@ -955,8 +935,6 @@ export function EnqueuePage() {
                 </div>
               </CardContent>
             </Card>
-
-            {/* Section 4: Execution Policy, Retry & Backoff */}
             <Card className="border-border-subtle bg-surface-base">
               <CardHeader className="border-border-subtle flex flex-row items-center justify-between border-b pb-2.5">
                 <CardTitle className="text-text-primary flex items-center gap-1.5 font-medium">
@@ -969,7 +947,6 @@ export function EnqueuePage() {
                 </Badge>
               </CardHeader>
               <CardContent className="space-y-4 pt-3.5">
-                {/* Priority Selector (0-9) */}
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between">
                     <Label htmlFor="job-priority">
@@ -1017,8 +994,6 @@ export function EnqueuePage() {
                     })}
                   </div>
                 </div>
-
-                {/* Retry Attempts and Backoff Mode */}
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                   <div className="space-y-1">
                     <Label htmlFor="max-attempts">Max Retry Attempts</Label>
@@ -1063,8 +1038,6 @@ export function EnqueuePage() {
                     </select>
                   </div>
                 </div>
-
-                {/* Backoff Strategy Detailed Controls */}
                 <div className="border-border-subtle bg-surface-elevated/40 space-y-3 rounded-md border p-3">
                   <div className="flex items-center justify-between">
                     <span className="text-text-primary text-xs font-medium">
@@ -1181,8 +1154,6 @@ export function EnqueuePage() {
                 </div>
               </CardContent>
             </Card>
-
-            {/* Section 5: Scheduling & Delayed Execution */}
             <Card className="border-border-subtle bg-surface-base">
               <CardHeader className="border-border-subtle flex flex-row items-center justify-between border-b pb-2.5">
                 <CardTitle className="text-text-primary flex items-center gap-1.5 font-medium">
@@ -1233,11 +1204,8 @@ export function EnqueuePage() {
             </Card>
           </div>
 
-          {/* ======================================================== */}
-          {/* RIGHT COLUMN: Operational Context, Preview, & Dispatch */}
-          {/* ======================================================== */}
+          {}
           <div className="space-y-5 lg:col-span-5">
-            {/* Card 1: Target Queue & Worker Fleet Readiness Signal */}
             <Card
               className={cn(
                 'border',
@@ -1330,8 +1298,6 @@ export function EnqueuePage() {
                 )}
               </CardContent>
             </Card>
-
-            {/* Card 2: Idempotency & Delivery Guarantees */}
             <Card className="border-border-subtle bg-surface-base">
               <CardHeader className="border-border-subtle flex flex-row items-center justify-between border-b pb-2.5">
                 <CardTitle className="text-text-primary flex items-center gap-1.5 font-medium">
@@ -1404,8 +1370,6 @@ export function EnqueuePage() {
                 </div>
               </CardContent>
             </Card>
-
-            {/* Completion Webhook (callback_url) */}
             <Card className="border-border-subtle bg-surface-base">
               <CardHeader className="border-border-subtle flex flex-row items-center justify-between border-b pb-2.5">
                 <CardTitle className="text-text-primary flex items-center gap-1.5 font-medium">
@@ -1464,8 +1428,6 @@ export function EnqueuePage() {
                 </div>
               </CardContent>
             </Card>
-
-            {/* Card 3: Live Request & cURL Preview */}
             <Card className="border-border-subtle bg-surface-base">
               <CardHeader className="border-border-subtle flex flex-row items-center justify-between border-b pb-2.5">
                 <CardTitle className="text-text-primary flex items-center gap-1.5 font-medium">
@@ -1527,8 +1489,6 @@ export function EnqueuePage() {
                 )}
               </CardContent>
             </Card>
-
-            {/* Card 4: Dispatch Summary & Operational Actions */}
             <Card className="border-border-strong bg-surface-base">
               <CardHeader className="border-border-subtle flex flex-row items-center justify-between border-b pb-2.5">
                 <CardTitle className="text-text-primary font-medium">
@@ -1539,7 +1499,6 @@ export function EnqueuePage() {
                 </Badge>
               </CardHeader>
               <CardContent className="space-y-4 pt-3.5">
-                {/* Summary Badges */}
                 <div className="flex flex-wrap gap-1.5 text-xs">
                   <Badge tone="neutral">
                     handler:{' '}
@@ -1570,8 +1529,6 @@ export function EnqueuePage() {
                     </span>
                   </Badge>
                 </div>
-
-                {/* Validation and Error Alerts */}
                 {validationError && (
                   <div
                     role="alert"
@@ -1591,8 +1548,6 @@ export function EnqueuePage() {
                     </div>
                   </div>
                 )}
-
-                {/* Idempotency Conflict Alert with 1-Click Fix */}
                 {idempotencyConflict && (
                   <div
                     role="alert"
@@ -1639,8 +1594,6 @@ export function EnqueuePage() {
                     </div>
                   </div>
                 )}
-
-                {/* Advanced Dispatch Features */}
                 <div className="border-border-subtle bg-surface-elevated/20 flex flex-col gap-2 rounded-md border p-2.5">
                   <div className="flex items-center justify-between">
                     <span className="text-text-muted text-[0.625rem] font-medium tracking-wide uppercase">
@@ -1689,8 +1642,6 @@ export function EnqueuePage() {
                     </Button>
                   </div>
                 </div>
-
-                {/* Dry-Run Validation Outcome Banner */}
                 {dryRunResult && (
                   <div
                     role="region"
@@ -1747,8 +1698,6 @@ export function EnqueuePage() {
                     </Button>
                   </div>
                 )}
-
-                {/* Primary Dispatch Action */}
                 <div className="space-y-2 pt-1">
                   <Button
                     type="submit"
@@ -1787,8 +1736,6 @@ export function EnqueuePage() {
                 </div>
               </CardContent>
             </Card>
-
-            {/* Card 5: Post-Submission Outcome Banner */}
             {submissionSuccess && (
               <div
                 role="region"

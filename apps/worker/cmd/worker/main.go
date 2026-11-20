@@ -25,19 +25,17 @@ const (
 	serviceName   = "veyra-worker"
 	workerVersion = "0.1.0"
 
-	heartbeatInterval = 10 * time.Second
-	// leaseRenewalInterval is the per-job RenewLease cadence.
+	heartbeatInterval     = 10 * time.Second
 	leaseRenewalInterval  = 10 * time.Second
 	pollInterval          = 1 * time.Second
 	simulatedExecution    = 5 * time.Second
-	defaultFailurePercent = 20 // rand.IntN(100) < n → simulated nack. Override via VEYRA_WORKER_FAILURE_PERCENT for soak storms.
-	defaultMaxConcurrency = 1  // default max concurrent jobs
+	defaultFailurePercent = 20
+	defaultMaxConcurrency = 1
 
 	dbPingTimeout = 5 * time.Second
 )
 
 func main() {
-	// .env first, then logger — env values configure the logger.
 	envMissing := godotenv.Load() != nil
 
 	appEnv := envOr("APP_ENV", "development")
@@ -54,7 +52,6 @@ func main() {
 	failurePercent := loadFailurePercent()
 	maxConcurrency := loadMaxConcurrency()
 
-	// The handler registry is the worker's static set of executable handlers, built once here before Run.
 	registry := handler.NewRegistry()
 	registry.Register("noop", handler.NewNoop(simulatedExecution, failurePercent))
 	registry.Register("http_request", handler.NewHTTPRequest())

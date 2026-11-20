@@ -18,7 +18,6 @@ import (
 	"github.com/Aniket-lodh/veyra/worker/internal/handler"
 )
 
-// Config is the worker's startup configuration.
 type Config struct {
 	Pool     *pgxpool.Pool
 	Repo     *queuecore.Repository
@@ -26,30 +25,26 @@ type Config struct {
 
 	Hostname string
 	Version  string
-	Queues   []string // dequeue capability filter (passed to ClaimNextJob)
+	Queues   []string
 
-	HeartbeatInterval    time.Duration // workers.last_heartbeat_at update cadence — proves the RUNTIME is alive
-	LeaseRenewalInterval time.Duration // per-job RenewLease cadence — proves THIS JOB EXECUTION is healthy (queuecore SPEC §4)
-	PollInterval         time.Duration // ClaimNextJob cadence when the queue is idle
-	MaxConcurrency       int           // advertised on the workers row and sets the max concurrent job execution pool size
+	HeartbeatInterval    time.Duration
+	LeaseRenewalInterval time.Duration
+	PollInterval         time.Duration
+	MaxConcurrency       int
 }
 
-// Worker is one runtime.
 type Worker struct {
 	cfg Config
 
 	runtimeID string
 }
 
-// New builds a Worker with a fresh runtime ULID.
 func New(cfg Config) *Worker {
 	return &Worker{cfg: cfg, runtimeID: ulid.Make().String()}
 }
 
-// RuntimeID exposes the ULID main.go logs at startup.
 func (w *Worker) RuntimeID() string { return w.runtimeID }
 
-// Run is the entry point.
 func (w *Worker) Run(ctx context.Context) error {
 	if err := w.register(ctx); err != nil {
 		return fmt.Errorf("runtime: register: %w", err)
@@ -81,7 +76,6 @@ func (w *Worker) Run(ctx context.Context) error {
 	var hbWg sync.WaitGroup
 	hbWg.Go(func() { w.heartbeatLoop(heartbeatCtx) })
 
-	// Poll loop blocks until ctx done.
 	w.pollLoop(ctx, sem, &jobsWg, lifetimeCtx)
 
 	slog.Info("worker.shutdown.begin",
@@ -90,7 +84,6 @@ func (w *Worker) Run(ctx context.Context) error {
 		"action", "draining in-flight jobs, then stopping heartbeat and deregistering",
 	)
 
-	// Wait for in-flight jobs to drain cleanly with a timeout.
 	drainDone := make(chan struct{})
 	go func() {
 		jobsWg.Wait()
@@ -109,11 +102,9 @@ func (w *Worker) Run(ctx context.Context) error {
 		<-drainDone
 	}
 
-	// Stop heartbeat loop and wait for it.
 	heartbeatCancel()
 	hbWg.Wait()
 
-	// Best-effort deregister with a fresh short-lived ctx.
 	dctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := w.deregister(dctx); err != nil {
@@ -132,7 +123,6 @@ func (w *Worker) Run(ctx context.Context) error {
 	return nil
 }
 
-// register INSERTs the workers row.
 func (w *Worker) register(ctx context.Context) error {
 	const sql = `
 		INSERT INTO workers (
@@ -159,7 +149,6 @@ func (w *Worker) register(ctx context.Context) error {
 	return nil
 }
 
-// deregister moves the workers row into state='disconnected'.
 func (w *Worker) deregister(ctx context.Context) error {
 	const sql = `UPDATE workers SET state = 'disconnected' WHERE id = $1`
 	if _, err := w.cfg.Pool.Exec(ctx, sql, w.runtimeID); err != nil {
@@ -168,7 +157,6 @@ func (w *Worker) deregister(ctx context.Context) error {
 	return nil
 }
 
-// heartbeatLoop runs until ctx is cancelled.
 func (w *Worker) heartbeatLoop(ctx context.Context) {
 	t := time.NewTicker(w.cfg.HeartbeatInterval)
 	defer t.Stop()
@@ -186,7 +174,6 @@ func (w *Worker) heartbeatLoop(ctx context.Context) {
 				continue
 			}
 			if !ok {
-				// The workers row for this runtime no longer exists, so the runtime's identity is gone and every lease guard we hold is stale.
 				slog.ErrorContext(ctx, "worker.heartbeat.runtime_evicted",
 					"workerId", w.runtimeID,
 					"reason", "0_rows_affected",
@@ -200,7 +187,6 @@ func (w *Worker) heartbeatLoop(ctx context.Context) {
 	}
 }
 
-// heartbeat does one UPDATE.
 func (w *Worker) heartbeat(ctx context.Context) (bool, error) {
 	const sql = `UPDATE workers SET last_heartbeat_at = now() WHERE id = $1`
 	cmd, err := w.cfg.Pool.Exec(ctx, sql, w.runtimeID)
