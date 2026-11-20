@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -76,6 +77,7 @@ type createRequest struct {
 	Backoff        *queuecore.BackoffStrategy `json:"backoff,omitempty"`
 	ScheduledFor   *time.Time                 `json:"scheduledFor,omitempty"`
 	IdempotencyKey *string                    `json:"idempotencyKey,omitempty"`
+	CallbackURL    *string                    `json:"callbackUrl,omitempty"`
 }
 
 // jobResponse is the API view of a Job.
@@ -105,6 +107,12 @@ type jobResponse struct {
 	CurrentWorkerID *string    `json:"currentWorkerId"`
 	LeaseExpiresAt  *time.Time `json:"leaseExpiresAt"`
 	NextRetryAt     *time.Time `json:"nextRetryAt"`
+
+	CallbackURL         *string    `json:"callbackUrl,omitempty"`
+	CallbackStatus      *string    `json:"callbackStatus,omitempty"`
+	CallbackAttempts    int        `json:"callbackAttempts"`
+	CallbackLastError   *string    `json:"callbackLastError,omitempty"`
+	CallbackDeliveredAt *time.Time `json:"callbackDeliveredAt,omitempty"`
 
 	Attempts []attemptResponse `json:"attempts"`
 	IsReplay bool              `json:"isReplay"`
@@ -163,30 +171,41 @@ func toResponse(j *queuecore.Job) jobResponse {
 	}
 	scheduledFor := &j.ScheduledFor
 
+	var callbackStatus *string
+	if j.CallbackStatus != nil {
+		s := string(*j.CallbackStatus)
+		callbackStatus = &s
+	}
+
 	return jobResponse{
-		ID:              j.ID,
-		Handler:         j.Handler,
-		Queue:           j.Queue,
-		Status:          deriveAPIStatus(j.Status, j.ScheduledFor, time.Now()),
-		Priority:        j.Priority,
-		IdempotencyKey:  idempotencyKey,
-		Payload:         j.Payload,
-		Result:          result,
-		Error:           j.Error,
-		Attempt:         j.Attempt,
-		MaxAttempts:     j.MaxAttempts,
-		Backoff:         j.Backoff,
-		EnqueuedAt:      j.EnqueuedAt,
-		ScheduledFor:    scheduledFor,
-		StartedAt:       j.StartedAt,
-		CompletedAt:     j.CompletedAt,
-		CancelledAt:     j.CancelledAt,
-		DeadLetteredAt:  j.DeadLetteredAt,
-		CurrentWorkerID: j.CurrentWorkerID,
-		LeaseExpiresAt:  j.LeaseExpiresAt,
-		NextRetryAt:     j.NextRetryAt,
-		Attempts:        []attemptResponse{},
-		IsReplay:        j.IsReplay,
+		ID:                  j.ID,
+		Handler:             j.Handler,
+		Queue:               j.Queue,
+		Status:              deriveAPIStatus(j.Status, j.ScheduledFor, time.Now()),
+		Priority:            j.Priority,
+		IdempotencyKey:      idempotencyKey,
+		Payload:             j.Payload,
+		Result:              result,
+		Error:               j.Error,
+		Attempt:             j.Attempt,
+		MaxAttempts:         j.MaxAttempts,
+		Backoff:             j.Backoff,
+		EnqueuedAt:          j.EnqueuedAt,
+		ScheduledFor:        scheduledFor,
+		StartedAt:           j.StartedAt,
+		CompletedAt:         j.CompletedAt,
+		CancelledAt:         j.CancelledAt,
+		DeadLetteredAt:      j.DeadLetteredAt,
+		CurrentWorkerID:     j.CurrentWorkerID,
+		LeaseExpiresAt:      j.LeaseExpiresAt,
+		NextRetryAt:         j.NextRetryAt,
+		CallbackURL:         j.CallbackURL,
+		CallbackStatus:      callbackStatus,
+		CallbackAttempts:    j.CallbackAttempts,
+		CallbackLastError:   j.CallbackLastError,
+		CallbackDeliveredAt: j.CallbackDeliveredAt,
+		Attempts:            []attemptResponse{},
+		IsReplay:            j.IsReplay,
 	}
 }
 
@@ -576,6 +595,17 @@ func buildCreateParams(req createRequest) (queuecore.CreateParams, error) {
 		}
 	}
 
+	var callbackURL *string
+	if req.CallbackURL != nil {
+		validated, err := validateCallbackURL(*req.CallbackURL)
+		if err != nil {
+			return queuecore.CreateParams{}, err
+		}
+		if validated != "" {
+			callbackURL = &validated
+		}
+	}
+
 	return queuecore.CreateParams{
 		ID:             ulid.Make().String(),
 		Handler:        handler,
@@ -586,7 +616,31 @@ func buildCreateParams(req createRequest) (queuecore.CreateParams, error) {
 		Payload:        req.Payload,
 		ScheduledFor:   scheduledFor,
 		IdempotencyKey: idempotencyKey,
+		CallbackURL:    callbackURL,
 	}, nil
+}
+
+// validateCallbackURL validates that raw is a non-empty HTTP/HTTPS URL with host, bounded to 2048 chars.
+func validateCallbackURL(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", nil
+	}
+	if len(trimmed) > 2048 {
+		return "", errors.New("callbackUrl must be at most 2048 characters")
+	}
+	u, err := url.Parse(trimmed)
+	if err != nil {
+		return "", fmt.Errorf("invalid callbackUrl: %w", err)
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return "", errors.New("callbackUrl scheme must be http or https")
+	}
+	if u.Host == "" {
+		return "", errors.New("callbackUrl must include a valid host")
+	}
+	return trimmed, nil
 }
 
 func parsePositiveQuery(c fiber.Ctx, key string, def int) (int, error) {

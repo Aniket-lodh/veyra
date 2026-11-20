@@ -346,6 +346,7 @@ export function EnqueuePage() {
       payload: effectivePayloadRes.payload ?? {},
       idempotencyKey: form.idempotencyKey.trim() || undefined,
       scheduledFor: form.scheduledFor.trim() || undefined,
+      callbackUrl: form.callbackUrl.trim() || undefined,
     };
   }, [form, effectiveHandler, effectivePayloadRes]);
 
@@ -1399,6 +1400,66 @@ export function EnqueuePage() {
                       409 Conflict
                     </span>
                     .
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Completion Webhook (callback_url) */}
+            <Card className="border-border-subtle bg-surface-base">
+              <CardHeader className="border-border-subtle flex flex-row items-center justify-between border-b pb-2.5">
+                <CardTitle className="text-text-primary flex items-center gap-1.5 font-medium">
+                  <HugeiconsIcon
+                    icon={ArrowRight01Icon}
+                    className="h-3.5 w-3.5"
+                  />
+                  <span>Completion Webhook</span>
+                </CardTitle>
+                {form.callbackUrl && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="xs"
+                    onClick={() => update('callbackUrl', '')}
+                    className="text-text-muted hover:text-text-primary px-1.5 text-[0.625rem]"
+                  >
+                    Clear
+                  </Button>
+                )}
+              </CardHeader>
+              <CardContent className="space-y-2.5 pt-3.5">
+                <div className="space-y-1">
+                  <Label htmlFor="callback-url-input">
+                    Webhook URL (Optional)
+                  </Label>
+                  <Input
+                    id="callback-url-input"
+                    value={form.callbackUrl}
+                    onChange={(e) => update('callbackUrl', e.target.value)}
+                    placeholder="https://api.my-service.com/webhooks/jobs"
+                    className="font-mono text-xs"
+                  />
+                </div>
+                <div className="border-border-subtle bg-surface-elevated/40 space-y-1 rounded-md border p-2 text-[0.6875rem]">
+                  <p className="text-text-secondary">
+                    Automatic HTTP POST callback delivered when this job reaches
+                    a terminal state (
+                    <span className="text-status-success-text font-mono">
+                      succeeded
+                    </span>
+                    ,{' '}
+                    <span className="text-status-danger-text font-mono">
+                      dead-lettered
+                    </span>
+                    , or{' '}
+                    <span className="text-text-muted font-mono">cancelled</span>
+                    ).
+                  </p>
+                  <p className="text-text-muted leading-tight">
+                    • Includes job metadata, attempt count, and final result or
+                    error.
+                    <br />• Retries automatically up to 5 times with exponential
+                    backoff on 5xx or network errors.
                   </p>
                 </div>
               </CardContent>

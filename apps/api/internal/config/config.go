@@ -36,6 +36,21 @@ type Config struct {
 	// ReclaimBatchLimit caps how many expired-lease rows the reclaim driver processes per tick.
 	ReclaimBatchLimit int
 
+	// CallbackInterval is the cadence of the background completion webhook dispatcher.
+	CallbackInterval time.Duration
+
+	// CallbackBatchLimit caps how many pending callback jobs the dispatcher claims per tick.
+	CallbackBatchLimit int
+
+	// CallbackTimeout caps the per-request HTTP timeout when delivering a webhook.
+	CallbackTimeout time.Duration
+
+	// CallbackConcurrency caps concurrent outbound webhook deliveries.
+	CallbackConcurrency int
+
+	// CallbackSecret is the optional HMAC-SHA256 signing secret for outbound webhooks.
+	CallbackSecret string
+
 	// EnableDebugEndpoints controls whether /internal/debug/* routes are mounted.
 	// In development, defaults to true unless explicitly disabled.
 	// In production, defaults to false unless explicitly enabled.
@@ -59,6 +74,12 @@ func Load() Config {
 		RetryBatchLimit:   getInt("VEYRA_RETRY_BATCH_LIMIT", 256),
 		ReclaimInterval:   getDurationSeconds("VEYRA_RECLAIM_INTERVAL_SECONDS", 10*time.Second),
 		ReclaimBatchLimit: getInt("VEYRA_RECLAIM_BATCH_LIMIT", 100),
+
+		CallbackInterval:    getDurationSeconds("VEYRA_CALLBACK_INTERVAL_SECONDS", 2*time.Second),
+		CallbackBatchLimit:  getInt("VEYRA_CALLBACK_BATCH_LIMIT", 50),
+		CallbackTimeout:     getDurationSeconds("VEYRA_CALLBACK_TIMEOUT_SECONDS", 10*time.Second),
+		CallbackConcurrency: getInt("VEYRA_CALLBACK_CONCURRENCY", 25),
+		CallbackSecret:      getEnv("VEYRA_CALLBACK_SECRET", ""),
 	}
 	enableDebug := c.IsDevelopment()
 	if raw := os.Getenv("ENABLE_DEBUG_ENDPOINTS"); raw != "" {

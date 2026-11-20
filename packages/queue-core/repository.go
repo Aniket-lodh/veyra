@@ -61,6 +61,7 @@ type CreateParams struct {
 	Payload        json.RawMessage
 	ScheduledFor   *time.Time // nil → DB default (now())
 	IdempotencyKey *string
+	CallbackURL    *string
 }
 
 // Create inserts a new job and returns the fully populated row.
@@ -73,10 +74,12 @@ func (r *Repository) Create(ctx context.Context, p CreateParams) (*Job, error) {
 	const insertSQL = `
 		INSERT INTO jobs (
 			id, handler, queue, priority, idempotency_key,
-			payload, max_attempts, backoff, scheduled_for
+			payload, max_attempts, backoff, scheduled_for,
+			callback_url, callback_status
 		) VALUES (
 			$1, $2, $3, $4, $5,
-			$6, $7, $8, COALESCE($9, now())
+			$6, $7, $8, COALESCE($9, now()),
+			$10, CASE WHEN $10 IS NOT NULL THEN 'pending' ELSE NULL END
 		)
 		ON CONFLICT (queue, idempotency_key)
 			WHERE idempotency_key IS NOT NULL
@@ -86,6 +89,7 @@ func (r *Repository) Create(ctx context.Context, p CreateParams) (*Job, error) {
 	row := r.pool.QueryRow(ctx, insertSQL,
 		p.ID, p.Handler, p.Queue, p.Priority, p.IdempotencyKey,
 		[]byte(p.Payload), p.MaxAttempts, backoffJSON, p.ScheduledFor,
+		p.CallbackURL,
 	)
 
 	job, err := scanJob(row)
@@ -122,6 +126,12 @@ func equalFingerprint(p CreateParams, existing *Job) bool {
 		return false
 	}
 	if !equalJSON(p.Payload, existing.Payload) {
+		return false
+	}
+	if (p.CallbackURL == nil) != (existing.CallbackURL == nil) {
+		return false
+	}
+	if p.CallbackURL != nil && *p.CallbackURL != *existing.CallbackURL {
 		return false
 	}
 	return true
@@ -803,16 +813,19 @@ const jobColumns = `
 	enqueued_at, scheduled_for, started_at,
 	completed_at, cancelled_at, dead_lettered_at,
 	current_worker_id, lease_expires_at, next_retry_at,
-	status::text
+	status::text,
+	callback_url, callback_status, callback_attempts,
+	callback_last_error, callback_delivered_at, callback_next_retry_at
 `
 
 // scanJob reads one row of jobColumns into a Job, decoding the JSONB columns (error, backoff) as it goes.
 func scanJob(row pgx.Row) (*Job, error) {
 	var (
-		j           Job
-		errorBytes  []byte
-		backoffJSON []byte
-		statusStr   string
+		j                 Job
+		errorBytes        []byte
+		backoffJSON       []byte
+		statusStr         string
+		callbackStatusStr *string
 	)
 	if err := row.Scan(
 		&j.ID, &j.Handler, &j.Queue, &j.Priority, &j.IdempotencyKey,
@@ -822,10 +835,16 @@ func scanJob(row pgx.Row) (*Job, error) {
 		&j.CompletedAt, &j.CancelledAt, &j.DeadLetteredAt,
 		&j.CurrentWorkerID, &j.LeaseExpiresAt, &j.NextRetryAt,
 		&statusStr,
+		&j.CallbackURL, &callbackStatusStr, &j.CallbackAttempts,
+		&j.CallbackLastError, &j.CallbackDeliveredAt, &j.CallbackNextRetryAt,
 	); err != nil {
 		return nil, err
 	}
 	j.Status = JobStatus(statusStr)
+	if callbackStatusStr != nil {
+		cs := CallbackStatus(*callbackStatusStr)
+		j.CallbackStatus = &cs
+	}
 	if len(errorBytes) > 0 {
 		var jerr JobError
 		if err := json.Unmarshal(errorBytes, &jerr); err != nil {

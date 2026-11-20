@@ -82,7 +82,12 @@ func (r *Repository) Retry(ctx context.Context, p RetryParams) (*Job, error) {
 		    next_retry_at     = NULL,
 		    completed_at      = NULL,
 		    cancelled_at      = NULL,
-		    dead_lettered_at  = NULL
+		    dead_lettered_at  = NULL,
+		    callback_status   = CASE WHEN callback_url IS NOT NULL THEN 'pending' ELSE NULL END,
+		    callback_attempts = 0,
+		    callback_last_error = NULL,
+		    callback_delivered_at = NULL,
+		    callback_next_retry_at = NULL
 		WHERE id = $1
 		  AND status = $2
 		RETURNING ` + jobColumns
@@ -162,7 +167,12 @@ func (r *Repository) ReplayDLQ(ctx context.Context, p ReplayDLQParams) ([]string
 		    next_retry_at     = NULL,
 		    completed_at      = NULL,
 		    cancelled_at      = NULL,
-		    dead_lettered_at  = NULL
+		    dead_lettered_at  = NULL,
+		    callback_status   = CASE WHEN j.callback_url IS NOT NULL THEN 'pending' ELSE NULL END,
+		    callback_attempts = 0,
+		    callback_last_error = NULL,
+		    callback_delivered_at = NULL,
+		    callback_next_retry_at = NULL
 		FROM candidates c
 		WHERE j.id = c.id
 		RETURNING j.id

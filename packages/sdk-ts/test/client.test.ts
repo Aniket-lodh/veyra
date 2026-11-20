@@ -73,6 +73,7 @@ describe('VeyraClient', () => {
       maxAttempts: 5,
       scheduledFor: scheduledDate,
       idempotencyKey: 'idemp_abc',
+      callbackUrl: 'https://webhook.site/abc',
     });
 
     assert.equal(capturedUrl, 'http://localhost:8080/jobs');
@@ -89,6 +90,7 @@ describe('VeyraClient', () => {
     assert.equal(body.maxAttempts, 5);
     assert.equal(body.scheduledFor, scheduledDate.toISOString());
     assert.equal(body.idempotencyKey, 'idemp_abc');
+    assert.equal(body.callbackUrl, 'https://webhook.site/abc');
 
     assert.equal(job.id, 'job_123');
     assert.equal(job.isReplay, true);

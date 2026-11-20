@@ -104,9 +104,26 @@ type Job struct {
 
 	Status JobStatus
 
+	CallbackURL         *string
+	CallbackStatus      *CallbackStatus
+	CallbackAttempts    int
+	CallbackLastError   *string
+	CallbackDeliveredAt *time.Time
+	CallbackNextRetryAt *time.Time
+
 	// IsReplay reports whether the job was returned from an idempotent replay rather than inserted freshly.
 	IsReplay bool `json:"-"`
 }
+
+// CallbackStatus is the state of completion webhook delivery.
+type CallbackStatus string
+
+const (
+	CallbackStatusPending   CallbackStatus = "pending"
+	CallbackStatusRunning   CallbackStatus = "running"
+	CallbackStatusDelivered CallbackStatus = "delivered"
+	CallbackStatusFailed    CallbackStatus = "failed"
+)
 
 // Attempt is one row of the `job_attempts` table — a single execution of a job, in-flight or terminal.
 type Attempt struct {

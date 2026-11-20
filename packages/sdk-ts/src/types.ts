@@ -62,6 +62,11 @@ export interface Job<TPayload = unknown, TResult = unknown> {
   currentWorkerId?: string | null;
   leaseExpiresAt?: string | null;
   nextRetryAt?: string | null;
+  callbackUrl?: string;
+  callbackStatus?: 'pending' | 'running' | 'delivered' | 'failed' | null;
+  callbackAttempts?: number;
+  callbackLastError?: string | null;
+  callbackDeliveredAt?: string | null;
   attempts: JobAttempt[];
   isReplay?: boolean;
 }
@@ -75,6 +80,7 @@ export interface EnqueueJobInput<TPayload = unknown> {
   backoff?: BackoffStrategy;
   scheduledFor?: string | Date;
   idempotencyKey?: string;
+  callbackUrl?: string;
 }
 
 export interface JobClaim<TPayload = unknown> {

@@ -15,6 +15,7 @@ import (
 	"github.com/joho/godotenv"
 
 	"github.com/Aniket-lodh/veyra/api/internal/auth"
+	"github.com/Aniket-lodh/veyra/api/internal/callbacks"
 	"github.com/Aniket-lodh/veyra/api/internal/config"
 	"github.com/Aniket-lodh/veyra/api/internal/database"
 	"github.com/Aniket-lodh/veyra/api/internal/debug"
@@ -148,6 +149,20 @@ func main() {
 	go func() {
 		if err := reclaimDriver.Run(rootCtx); err != nil {
 			slog.Error("service.reclaim_driver.failed", "err", err.Error())
+		}
+	}()
+
+	// Completion webhook dispatcher.
+	callbackDispatcher := callbacks.NewDispatcher(dbPool, callbacks.Config{
+		Interval:    cfg.CallbackInterval,
+		BatchLimit:  cfg.CallbackBatchLimit,
+		Timeout:     cfg.CallbackTimeout,
+		Concurrency: cfg.CallbackConcurrency,
+		Secret:      cfg.CallbackSecret,
+	})
+	go func() {
+		if err := callbackDispatcher.Run(rootCtx); err != nil {
+			slog.Error("service.callback_dispatcher.failed", "err", err.Error())
 		}
 	}()
 

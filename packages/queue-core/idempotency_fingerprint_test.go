@@ -123,4 +123,34 @@ func TestEqualFingerprint_Mismatches(t *testing.T) {
 	if equalFingerprint(p5, baseJob()) {
 		t.Fatal("expected mismatch on different backoff")
 	}
+
+	// 6. Different callback URL (one nil, other set)
+	cbURL := "https://example.com/callback"
+	p6 := CreateParams{
+		Handler:     "send_email",
+		Priority:    5,
+		MaxAttempts: 3,
+		Backoff:     baseJob().Backoff,
+		Payload:     baseJob().Payload,
+		CallbackURL: &cbURL,
+	}
+	if equalFingerprint(p6, baseJob()) {
+		t.Fatal("expected mismatch when p has callback URL but existing does not")
+	}
+
+	// 7. Different callback URL values
+	jobWithCB := baseJob()
+	jobWithCB.CallbackURL = &cbURL
+	otherCBURL := "https://example.com/other"
+	p7 := CreateParams{
+		Handler:     "send_email",
+		Priority:    5,
+		MaxAttempts: 3,
+		Backoff:     baseJob().Backoff,
+		Payload:     baseJob().Payload,
+		CallbackURL: &otherCBURL,
+	}
+	if equalFingerprint(p7, jobWithCB) {
+		t.Fatal("expected mismatch when callback URLs differ")
+	}
 }
