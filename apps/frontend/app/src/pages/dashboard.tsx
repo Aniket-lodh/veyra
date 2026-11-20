@@ -2,6 +2,7 @@ import { DlqReplayDialog } from '@/components/jobs/dlq-replay-dialog';
 import { JobCancelDialog } from '@/components/jobs/job-cancel-dialog';
 import { JobInspectorDrawer } from '@/components/jobs/job-inspector-drawer';
 import { QuickEnqueueDialog } from '@/components/jobs/quick-enqueue-dialog';
+import { QueuePauseDialog } from '@/components/queues/queue-pause-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -14,7 +15,12 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { useJobsList, useQueueStats, useWorkers } from '@/hooks/api';
+import {
+  useJobsList,
+  useQueueStats,
+  useResumeQueue,
+  useWorkers,
+} from '@/hooks/api';
 import {
   computePipelineSegments,
   computeQueueOperationalSummary,
@@ -81,6 +87,8 @@ export function DashboardPage() {
   const [cancellingJob, setCancellingJob] = useState<Job | null>(null);
   const [isQuickEnqueueOpen, setIsQuickEnqueueOpen] = useState(false);
   const [isDlqReplayOpen, setIsDlqReplayOpen] = useState(false);
+  const [pausingQueue, setPausingQueue] = useState<string | null>(null);
+  const resumeQueueMutation = useResumeQueue();
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [isManualRefreshing, setIsManualRefreshing] = useState(false);
   const [lastRefreshedAt, setLastRefreshedAt] = useState<Date>(
@@ -602,10 +610,25 @@ export function DashboardPage() {
                     >
                       <TableCell className="py-2.5">
                         <div className="space-y-0.5">
-                          <span className="text-text-primary font-mono text-[0.6875rem] font-medium">
-                            {q.name}
-                          </span>
-                          {q.health !== 'healthy' && (
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-text-primary font-mono text-[0.6875rem] font-medium">
+                              {q.name}
+                            </span>
+                            {q.paused && (
+                              <Badge
+                                tone="warning"
+                                className="text-[0.625rem]"
+                                title={
+                                  q.pausedReason
+                                    ? `Paused: ${q.pausedReason}`
+                                    : 'Queue paused'
+                                }
+                              >
+                                Paused
+                              </Badge>
+                            )}
+                          </div>
+                          {q.health !== 'healthy' && !q.paused && (
                             <div>
                               <Badge
                                 tone={
@@ -664,20 +687,40 @@ export function DashboardPage() {
                           className="flex items-center justify-end gap-1.5"
                           onClick={(e) => e.stopPropagation()}
                         >
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            disabled
-                            title="Queue pause control (POST /queues/:name/pause) pending backend implementation"
-                            className="text-text-disabled h-6 cursor-not-allowed px-1.5 text-[0.625rem]"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              e.preventDefault();
-                            }}
-                          >
-                            Pause
-                          </Button>
+                          {q.paused ? (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              disabled={resumeQueueMutation.isPending}
+                              title={`Resume queue ${q.name}`}
+                              className="text-status-warning-text hover:bg-status-warning-bg hover:text-status-warning-text h-6 px-1.5 text-[0.625rem] font-medium"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                e.preventDefault();
+                                resumeQueueMutation.mutate(q.name);
+                              }}
+                            >
+                              {resumeQueueMutation.isPending
+                                ? 'Resuming…'
+                                : 'Resume'}
+                            </Button>
+                          ) : (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              title={`Pause queue ${q.name}`}
+                              className="text-text-muted hover:text-text-primary h-6 px-1.5 text-[0.625rem]"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                e.preventDefault();
+                                setPausingQueue(q.name);
+                              }}
+                            >
+                              Pause
+                            </Button>
+                          )}
                           <Button
                             asChild
                             variant="ghost"
@@ -1069,6 +1112,17 @@ export function DashboardPage() {
         open={isDlqReplayOpen}
         onOpenChange={setIsDlqReplayOpen}
         totalDeadLettered={totals?.deadLettered}
+        onSuccess={() => {
+          handleRefresh();
+        }}
+      />
+
+      <QueuePauseDialog
+        queueName={pausingQueue}
+        open={Boolean(pausingQueue)}
+        onOpenChange={(open) => {
+          if (!open) setPausingQueue(null);
+        }}
         onSuccess={() => {
           handleRefresh();
         }}

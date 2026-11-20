@@ -283,6 +283,10 @@ func (r *Repository) ClaimNextJob(ctx context.Context, workerID string, queues, 
 		FROM jobs
 		WHERE queue = ANY($1)
 		  AND handler = ANY($3)
+		  AND NOT EXISTS (
+		      SELECT 1 FROM queue_states qs
+		      WHERE qs.queue_name = jobs.queue AND qs.paused = true
+		  )
 		  AND (
 		      (status = 'queued'  AND scheduled_for                                    <= now())
 		   OR (status = 'running' AND lease_expires_at + make_interval(secs => $2)     <= now())
@@ -878,15 +882,30 @@ func (r *Repository) QueueStats(ctx context.Context) (*QueueStats, error) {
 	}
 
 	const perQueueSQL = `
+		WITH job_counts AS (
+			SELECT
+			  queue,
+			  count(*) FILTER (WHERE status IN ('queued') AND scheduled_for <= now()) AS depth,
+			  count(*) FILTER (WHERE status = 'running')                              AS in_flight,
+			  count(*) FILTER (WHERE status = 'succeeded'    AND completed_at      >= now() - INTERVAL '24 hours') AS succeeded_24h,
+			  count(*) FILTER (WHERE status = 'failed'       AND completed_at      >= now() - INTERVAL '24 hours') AS failed_24h,
+			  count(*) FILTER (WHERE status = 'dead_lettered' AND dead_lettered_at >= now() - INTERVAL '24 hours') AS dead_lettered_24h
+			FROM jobs
+			GROUP BY queue
+		)
 		SELECT
-		  queue,
-		  count(*) FILTER (WHERE status IN ('queued') AND scheduled_for <= now()) AS depth,
-		  count(*) FILTER (WHERE status = 'running')                              AS in_flight,
-		  count(*) FILTER (WHERE status = 'succeeded'    AND completed_at      >= now() - INTERVAL '24 hours') AS succeeded_24h,
-		  count(*) FILTER (WHERE status = 'failed'       AND completed_at      >= now() - INTERVAL '24 hours') AS failed_24h,
-		  count(*) FILTER (WHERE status = 'dead_lettered' AND dead_lettered_at >= now() - INTERVAL '24 hours') AS dead_lettered_24h
-		FROM jobs
-		GROUP BY queue
+		  COALESCE(j.queue, qs.queue_name) AS queue,
+		  COALESCE(j.depth, 0)             AS depth,
+		  COALESCE(j.in_flight, 0)          AS in_flight,
+		  COALESCE(j.succeeded_24h, 0)     AS succeeded_24h,
+		  COALESCE(j.failed_24h, 0)        AS failed_24h,
+		  COALESCE(j.dead_lettered_24h, 0) AS dead_lettered_24h,
+		  COALESCE(qs.paused, false)       AS paused,
+		  qs.paused_at,
+		  qs.paused_reason
+		FROM job_counts j
+		FULL OUTER JOIN queue_states qs ON j.queue = qs.queue_name
+		WHERE j.queue IS NOT NULL OR (qs.queue_name IS NOT NULL AND qs.paused = true)
 		ORDER BY queue ASC
 	`
 	rows, err := r.pool.Query(ctx, perQueueSQL)
@@ -900,6 +919,7 @@ func (r *Repository) QueueStats(ctx context.Context) (*QueueStats, error) {
 		if err := rows.Scan(
 			&q.Name, &q.Depth, &q.InFlight,
 			&q.Succeeded24h, &q.Failed24h, &q.DeadLettered24h,
+			&q.Paused, &q.PausedAt, &q.PausedReason,
 		); err != nil {
 			return nil, fmt.Errorf("queuecore.Repository.QueueStats: scan: %w", err)
 		}
@@ -963,3 +983,106 @@ func (r *Repository) ListRunningLeases(ctx context.Context, workerIDs []string) 
 	}
 	return out, nil
 }
+
+// PauseQueue idempotently marks a queue as paused, recording an optional reason.
+func (r *Repository) PauseQueue(ctx context.Context, p PauseQueueParams) (*QueueState, error) {
+	queueName := strings.TrimSpace(p.QueueName)
+	if queueName == "" {
+		return nil, errors.New("queuecore.Repository.PauseQueue: queueName is required")
+	}
+	var reason *string
+	if trimmed := strings.TrimSpace(p.Reason); trimmed != "" {
+		reason = &trimmed
+	}
+
+	const sql = `
+		INSERT INTO queue_states (queue_name, paused, paused_at, paused_reason, updated_at)
+		VALUES ($1, true, now(), $2, now())
+		ON CONFLICT (queue_name)
+		DO UPDATE SET
+			paused = true,
+			paused_at = CASE
+				WHEN queue_states.paused = true AND queue_states.paused_at IS NOT NULL THEN queue_states.paused_at
+				ELSE now()
+			END,
+			paused_reason = CASE
+				WHEN $2::text IS NOT NULL THEN $2
+				WHEN queue_states.paused = true THEN queue_states.paused_reason
+				ELSE NULL
+			END,
+			updated_at = now()
+		RETURNING queue_name, paused, paused_at, paused_reason, updated_at
+	`
+	var qs QueueState
+	if err := r.pool.QueryRow(ctx, sql, queueName, reason).Scan(
+		&qs.QueueName, &qs.Paused, &qs.PausedAt, &qs.PausedReason, &qs.UpdatedAt,
+	); err != nil {
+		return nil, fmt.Errorf("queuecore.Repository.PauseQueue: %w", err)
+	}
+
+	slog.InfoContext(ctx, "queue.pause",
+		"queue", qs.QueueName,
+		"reason", p.Reason,
+	)
+	return &qs, nil
+}
+
+// ResumeQueue idempotently unpauses a queue, clearing any paused timestamp and reason.
+func (r *Repository) ResumeQueue(ctx context.Context, p ResumeQueueParams) (*QueueState, error) {
+	queueName := strings.TrimSpace(p.QueueName)
+	if queueName == "" {
+		return nil, errors.New("queuecore.Repository.ResumeQueue: queueName is required")
+	}
+
+	const sql = `
+		INSERT INTO queue_states (queue_name, paused, paused_at, paused_reason, updated_at)
+		VALUES ($1, false, NULL, NULL, now())
+		ON CONFLICT (queue_name)
+		DO UPDATE SET
+			paused = false,
+			paused_at = NULL,
+			paused_reason = NULL,
+			updated_at = now()
+		RETURNING queue_name, paused, paused_at, paused_reason, updated_at
+	`
+	var qs QueueState
+	if err := r.pool.QueryRow(ctx, sql, queueName).Scan(
+		&qs.QueueName, &qs.Paused, &qs.PausedAt, &qs.PausedReason, &qs.UpdatedAt,
+	); err != nil {
+		return nil, fmt.Errorf("queuecore.Repository.ResumeQueue: %w", err)
+	}
+
+	slog.InfoContext(ctx, "queue.resume",
+		"queue", qs.QueueName,
+	)
+	return &qs, nil
+}
+
+// GetQueueState returns the current pause state of a queue, returning paused=false if not found.
+func (r *Repository) GetQueueState(ctx context.Context, queueName string) (*QueueState, error) {
+	queueName = strings.TrimSpace(queueName)
+	if queueName == "" {
+		return nil, errors.New("queuecore.Repository.GetQueueState: queueName is required")
+	}
+
+	const sql = `
+		SELECT queue_name, paused, paused_at, paused_reason, updated_at
+		FROM queue_states
+		WHERE queue_name = $1
+	`
+	var qs QueueState
+	err := r.pool.QueryRow(ctx, sql, queueName).Scan(
+		&qs.QueueName, &qs.Paused, &qs.PausedAt, &qs.PausedReason, &qs.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return &QueueState{
+				QueueName: queueName,
+				Paused:    false,
+			}, nil
+		}
+		return nil, fmt.Errorf("queuecore.Repository.GetQueueState: %w", err)
+	}
+	return &qs, nil
+}
+

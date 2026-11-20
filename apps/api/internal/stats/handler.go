@@ -3,6 +3,7 @@ package stats
 
 import (
 	"log/slog"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 
@@ -36,12 +37,15 @@ type totalsResponse struct {
 
 // queueResponse is the per-queue surface.
 type queueResponse struct {
-	Name            string `json:"name"`
-	Depth           int    `json:"depth"`
-	InFlight        int    `json:"inFlight"`
-	Succeeded24h    int    `json:"succeeded24h"`
-	Failed24h       int    `json:"failed24h"`
-	DeadLettered24h int    `json:"deadLettered24h"`
+	Name            string     `json:"name"`
+	Depth           int        `json:"depth"`
+	InFlight        int        `json:"inFlight"`
+	Succeeded24h    int        `json:"succeeded24h"`
+	Failed24h       int        `json:"failed24h"`
+	DeadLettered24h int        `json:"deadLettered24h"`
+	Paused          bool       `json:"paused"`
+	PausedAt        *time.Time `json:"pausedAt,omitempty"`
+	PausedReason    *string    `json:"pausedReason,omitempty"`
 }
 
 type statsResponse struct {
@@ -81,6 +85,9 @@ func (h *Handler) Get(c fiber.Ctx) error {
 			Succeeded24h:    q.Succeeded24h,
 			Failed24h:       q.Failed24h,
 			DeadLettered24h: q.DeadLettered24h,
+			Paused:          q.Paused,
+			PausedAt:        q.PausedAt,
+			PausedReason:    q.PausedReason,
 		})
 	}
 	return c.JSON(resp)

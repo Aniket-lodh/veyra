@@ -2,6 +2,7 @@ import { DlqReplayDialog } from '@/components/jobs/dlq-replay-dialog';
 import { JobCancelDialog } from '@/components/jobs/job-cancel-dialog';
 import { JobInspectorDrawer } from '@/components/jobs/job-inspector-drawer';
 import { QuickEnqueueDialog } from '@/components/jobs/quick-enqueue-dialog';
+import { QueuePauseDialog } from '@/components/queues/queue-pause-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -23,7 +24,12 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { useJobsList, useQueueStats, useRetryJob } from '@/hooks/api';
+import {
+  useJobsList,
+  useQueueStats,
+  useResumeQueue,
+  useRetryJob,
+} from '@/hooks/api';
 import {
   formatClockUTC,
   formatDateTimeUTC,
@@ -151,6 +157,12 @@ export function JobsPage() {
     [stats.data?.queues, queues],
   );
 
+  const queueStateMap = useMemo(
+    () => new Map(stats.data?.queues.map((q) => [q.name, q])),
+    [stats.data?.queues],
+  );
+  const selectedQueueState = queues[0] ? queueStateMap.get(queues[0]) : null;
+
   // Active Filter Tab inferred from query
   const activeTab = useMemo(() => inferTabFromStatuses(statuses), [statuses]);
 
@@ -159,6 +171,8 @@ export function JobsPage() {
   const [cancellingJob, setCancellingJob] = useState<Job | null>(null);
   const [isEnqueueOpen, setIsEnqueueOpen] = useState(false);
   const [isDlqReplayOpen, setIsDlqReplayOpen] = useState(false);
+  const [pausingQueue, setPausingQueue] = useState<string | null>(null);
+  const resumeQueueMutation = useResumeQueue();
   const [retryingJobId, setRetryingJobId] = useState<string | null>(null);
   const retryMutation = useRetryJob();
 
@@ -613,6 +627,65 @@ export function JobsPage() {
           </div>
         )}
 
+        {/* Active Queue Status & Control Banner */}
+        {queues[0] && (
+          <div
+            className={cn(
+              'flex flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-2 text-xs transition-colors',
+              selectedQueueState?.paused
+                ? 'border-status-warning-border bg-status-warning-bg text-status-warning-text'
+                : 'border-border-subtle bg-surface-canvas text-text-secondary',
+            )}
+          >
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge
+                tone={selectedQueueState?.paused ? 'warning' : 'success'}
+                className="text-[0.625rem]"
+              >
+                {selectedQueueState?.paused ? 'Queue Paused' : 'Queue Active'}
+              </Badge>
+              <span className="text-text-primary font-mono text-xs font-semibold">
+                {queues[0]}
+              </span>
+              {selectedQueueState?.paused &&
+                selectedQueueState.pausedReason && (
+                  <span className="text-text-muted text-[0.6875rem]">
+                    — Reason: {selectedQueueState.pausedReason}
+                  </span>
+                )}
+              {selectedQueueState?.paused && selectedQueueState.pausedAt && (
+                <span className="text-text-muted/70 text-[0.6875rem] tabular-nums">
+                  (since {formatDateTimeUTC(selectedQueueState.pausedAt)})
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              {selectedQueueState?.paused ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={resumeQueueMutation.isPending}
+                  onClick={() => resumeQueueMutation.mutate(queues[0])}
+                  className="border-status-warning-border text-status-warning-text hover:bg-status-warning-border/20 h-6 px-2 text-[0.6875rem] font-medium"
+                >
+                  {resumeQueueMutation.isPending ? 'Resuming…' : 'Resume Queue'}
+                </Button>
+              ) : (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setPausingQueue(queues[0])}
+                  className="border-border-subtle text-text-secondary hover:text-text-primary hover:bg-surface-elevated h-6 px-2 text-[0.6875rem] font-medium"
+                >
+                  Pause Queue
+                </Button>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Queue, Handler & Search Filters */}
         <div className="grid gap-3 pt-1 sm:grid-cols-3">
           {/* Queue Filter */}
@@ -636,11 +709,15 @@ export function JobsPage() {
               className="border-border-subtle bg-surface-base text-text-primary focus:border-border-strong h-8 w-full rounded-md border px-2 text-xs focus:outline-hidden"
             >
               <option value="">All Queues ({queueOptions.length})</option>
-              {queueOptions.map((q) => (
-                <option key={q} value={q}>
-                  Queue: {q}
-                </option>
-              ))}
+              {queueOptions.map((q) => {
+                const isPaused = queueStateMap.get(q)?.paused;
+                return (
+                  <option key={q} value={q}>
+                    Queue: {q}
+                    {isPaused ? ' (Paused)' : ''}
+                  </option>
+                );
+              })}
             </select>
           </div>
 
@@ -1229,6 +1306,19 @@ export function JobsPage() {
         initialQueue={queues[0] || ''}
         initialHandler={handlers[0] || ''}
         totalDeadLettered={stats.data?.totals.deadLettered}
+        onSuccess={() => {
+          refetch();
+          stats.refetch();
+        }}
+      />
+
+      {/* Queue Pause Dialog */}
+      <QueuePauseDialog
+        queueName={pausingQueue}
+        open={Boolean(pausingQueue)}
+        onOpenChange={(open) => {
+          if (!open) setPausingQueue(null);
+        }}
         onSuccess={() => {
           refetch();
           stats.refetch();

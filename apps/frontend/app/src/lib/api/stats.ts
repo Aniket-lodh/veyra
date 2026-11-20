@@ -17,6 +17,9 @@ export interface QueueAggregate {
   succeeded24h: number;
   failed24h: number;
   deadLettered24h: number;
+  paused?: boolean;
+  pausedAt?: string | null;
+  pausedReason?: string | null;
 }
 
 export interface QueueStatsResponse {

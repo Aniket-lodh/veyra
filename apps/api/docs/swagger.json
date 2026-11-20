@@ -26,7 +26,7 @@
     },
     {
       "name": "queue",
-      "description": "Aggregate queue statistics."
+      "description": "Aggregate queue statistics and queue pause/resume controls."
     },
     {
       "name": "debug (dev only)",
@@ -1006,6 +1006,110 @@
         }
       }
     },
+    "/queues/{name}/pause": {
+      "post": {
+        "tags": [
+          "queue"
+        ],
+        "summary": "Pause job claiming on a queue",
+        "description": "Idempotently pauses the queue so workers will not claim jobs from it. Requires jobs:write.",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "description": "Queue name",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "description": "Optional operator explanation for the pause"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Queue pause state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueueStateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid queue name or malformed body"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope (requires jobs:write)"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        }
+      }
+    },
+    "/queues/{name}/resume": {
+      "post": {
+        "tags": [
+          "queue"
+        ],
+        "summary": "Resume job claiming on a queue",
+        "description": "Idempotently resumes the queue, clearing paused status. Requires jobs:write.",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "description": "Queue name",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Queue pause state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueueStateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid queue name"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope (requires jobs:write)"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        }
+      }
+    },
     "/events": {
       "get": {
         "tags": [
@@ -1816,9 +1920,46 @@
                 },
                 "deadLettered24h": {
                   "type": "integer"
+                },
+                "paused": {
+                  "type": "boolean"
+                },
+                "pausedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "pausedReason": {
+                  "type": "string"
                 }
               }
             }
+          }
+        }
+      },
+      "QueueStateResponse": {
+        "type": "object",
+        "required": [
+          "queue",
+          "paused",
+          "updatedAt"
+        ],
+        "properties": {
+          "queue": {
+            "type": "string"
+          },
+          "paused": {
+            "type": "boolean"
+          },
+          "pausedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "pausedReason": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       },

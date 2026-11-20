@@ -150,12 +150,35 @@ type StatusCounts struct {
 
 // QueueAggregate is one queue's view.
 type QueueAggregate struct {
-	Name            string
-	Depth           int
-	InFlight        int
-	Succeeded24h    int
-	Failed24h       int
-	DeadLettered24h int
+	Name            string     `json:"name"`
+	Depth           int        `json:"depth"`
+	InFlight        int        `json:"inFlight"`
+	Succeeded24h    int        `json:"succeeded24h"`
+	Failed24h       int        `json:"failed24h"`
+	DeadLettered24h int        `json:"deadLettered24h"`
+	Paused          bool       `json:"paused"`
+	PausedAt        *time.Time `json:"pausedAt,omitempty"`
+	PausedReason    *string    `json:"pausedReason,omitempty"`
+}
+
+// QueueState represents the stored operational pause state of a queue.
+type QueueState struct {
+	QueueName    string     `json:"queueName"`
+	Paused       bool       `json:"paused"`
+	PausedAt     *time.Time `json:"pausedAt,omitempty"`
+	PausedReason *string    `json:"pausedReason,omitempty"`
+	UpdatedAt    time.Time  `json:"updatedAt"`
+}
+
+// PauseQueueParams is the input to PauseQueue.
+type PauseQueueParams struct {
+	QueueName string
+	Reason    string
+}
+
+// ResumeQueueParams is the input to ResumeQueue.
+type ResumeQueueParams struct {
+	QueueName string
 }
 
 // RunningLease is a thin row used by the workers handler to materialize `worker.leases[]` for the operator UI.

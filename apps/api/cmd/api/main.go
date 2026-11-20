@@ -23,6 +23,7 @@ import (
 	"github.com/Aniket-lodh/veyra/api/internal/jobs"
 	"github.com/Aniket-lodh/veyra/api/internal/live"
 	"github.com/Aniket-lodh/veyra/api/internal/logging"
+	"github.com/Aniket-lodh/veyra/api/internal/queues"
 	"github.com/Aniket-lodh/veyra/api/internal/reclaim"
 	"github.com/Aniket-lodh/veyra/api/internal/retries"
 	"github.com/Aniket-lodh/veyra/api/internal/stats"
@@ -107,6 +108,7 @@ func main() {
 	health.Register(app, health.NewHandler(dbPool))
 	auth.RegisterAuth(app, auth.NewSessionHandler(authStore, authn))
 	jobs.Register(app, jobs.NewHandler(jobRepo, liveHub), authn)
+	queues.Register(app, queues.NewHandler(jobRepo, liveHub), authn)
 	stats.Register(app, stats.NewHandler(jobRepo), authn)
 	workers.Register(app, workers.NewHandler(dbPool, jobRepo, liveHub), authn)
 	if cfg.EnableDebugEndpoints {
