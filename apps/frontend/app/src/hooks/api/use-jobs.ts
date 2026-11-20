@@ -7,12 +7,14 @@ import {
   listJobs,
   replayDlq,
   retryJob,
+  validateJob,
   type EnqueuedJob,
   type EnqueueJobInput,
   type ListJobsParams,
   type ListJobsResponse,
   type ReplayDlqParams,
   type ReplayDlqResponse,
+  type ValidateJobResponse,
 } from '@/lib/api/jobs';
 import { useLiveRefetchInterval } from '@/lib/live/use-live-refetch-interval';
 import type { Job, JobStatus } from '@/lib/types';
@@ -66,6 +68,15 @@ export function useEnqueueJob(
       queryClient.invalidateQueries({ queryKey: queryKeys.stats.all });
       return options?.onSuccess?.(...args);
     },
+    ...options,
+  });
+}
+
+export function useValidateJob(
+  options?: UseMutationOptions<ValidateJobResponse, ApiError, EnqueueJobInput>,
+) {
+  return useMutation<ValidateJobResponse, ApiError, EnqueueJobInput>({
+    mutationFn: (input) => validateJob(input),
     ...options,
   });
 }

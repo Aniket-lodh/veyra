@@ -309,6 +309,84 @@
         }
       }
     },
+    "/jobs/validate": {
+      "post": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Dry-run validate a job enqueue payload",
+        "description": "Validates the job dispatch payload against identical enqueue rules (required handler/queue, valid JSON payload, priority range [0, 9], maxAttempts >= 1, valid backoff strategy, idempotency key format) without persisting a job or triggering UI dirty notifications.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateJobRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Payload is valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobValidationResponse"
+                },
+                "example": {
+                  "valid": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Payload failed validation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobValidationResponse"
+                },
+                "example": {
+                  "valid": false,
+                  "error": "priority must be between 0 and 9"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "API key lacks 'jobs:write' scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/jobs/{id}": {
       "get": {
         "tags": [
@@ -2040,6 +2118,27 @@
             "items": {
               "$ref": "#/components/schemas/JobAttempt"
             }
+          },
+          "isReplay": {
+            "type": "boolean",
+            "description": "True if the returned job was an idempotent replay of an existing job; false if freshly created."
+          }
+        }
+      },
+      "JobValidationResponse": {
+        "type": "object",
+        "description": "Result of dry-run job payload validation.",
+        "required": [
+          "valid"
+        ],
+        "properties": {
+          "valid": {
+            "type": "boolean",
+            "description": "True if payload meets all validation constraints, false otherwise."
+          },
+          "error": {
+            "type": "string",
+            "description": "Validation error message when valid is false."
           }
         }
       },

@@ -58,6 +58,7 @@ func NewHandler(repo jobRepository, broadcaster ...eventBroadcaster) *Handler {
 // Register mounts the job routes on the fiber app.
 func Register(app *fiber.App, h *Handler, authn *auth.Authenticator) {
 	app.Post("/jobs", authn.Require(auth.ScopeJobsWrite), h.Create)
+	app.Post("/jobs/validate", authn.Require(auth.ScopeJobsWrite), h.Validate)
 	app.Get("/jobs", authn.Require(auth.ScopeJobsRead), h.List)
 	app.Post("/jobs/dlq/replay", authn.Require(auth.ScopeJobsWrite), h.ReplayDLQ)
 	app.Post("/jobs/:id/retry", authn.Require(auth.ScopeJobsWrite), h.Retry)
@@ -106,6 +107,7 @@ type jobResponse struct {
 	NextRetryAt     *time.Time `json:"nextRetryAt"`
 
 	Attempts []attemptResponse `json:"attempts"`
+	IsReplay bool              `json:"isReplay"`
 }
 
 // attemptResponse is the API view of one job_attempts row.
@@ -184,6 +186,7 @@ func toResponse(j *queuecore.Job) jobResponse {
 		LeaseExpiresAt:  j.LeaseExpiresAt,
 		NextRetryAt:     j.NextRetryAt,
 		Attempts:        []attemptResponse{},
+		IsReplay:        j.IsReplay,
 	}
 }
 
@@ -247,6 +250,42 @@ func (h *Handler) Create(c fiber.Ctx) error {
 		c.Set("Idempotent-Replay", "true")
 	}
 	return c.Status(fiber.StatusCreated).JSON(toResponse(job))
+}
+
+// Validate handles POST /jobs/validate.
+// It applies identical validation rules as Create without persisting the job or broadcasting events.
+func (h *Handler) Validate(c fiber.Ctx) error {
+	var req createRequest
+	if err := json.Unmarshal(c.Body(), &req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"valid": false,
+			"error": "invalid JSON body: " + err.Error(),
+		})
+	}
+
+	headerKey := strings.TrimSpace(c.Get("Idempotency-Key"))
+	if req.IdempotencyKey != nil && strings.TrimSpace(*req.IdempotencyKey) != "" {
+		bodyKey := strings.TrimSpace(*req.IdempotencyKey)
+		if headerKey != "" && headerKey != bodyKey {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"valid": false,
+				"error": "Idempotency-Key header and request body idempotencyKey do not match",
+			})
+		}
+	} else if headerKey != "" {
+		req.IdempotencyKey = &headerKey
+	}
+
+	if _, err := buildCreateParams(req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"valid": false,
+			"error": err.Error(),
+		})
+	}
+
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{
+		"valid": true,
+	})
 }
 
 // Cancel handles POST /jobs/:id/cancel.
