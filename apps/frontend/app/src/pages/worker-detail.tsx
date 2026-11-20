@@ -25,7 +25,14 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { useWorker, useReleaseWorkerLease } from '@/hooks/api';
+import {
+  useWorker,
+  useReleaseWorkerLease,
+  useDrainWorker,
+  useCordonWorker,
+  useResumeWorker,
+  useDeregisterWorker,
+} from '@/hooks/api';
 import { ApiError } from '@/lib/api/client';
 import { formatDateTimeUTC, formatRelative } from '@/lib/format';
 import {
@@ -81,6 +88,26 @@ export function WorkerDetailPage() {
   const releaseLeaseMutation = useReleaseWorkerLease({
     onSuccess: () => {
       setReleaseTargetLease(null);
+    },
+  });
+
+  // Worker lifecycle mutations & dialog states
+  const [isDrainDialogOpen, setIsDrainDialogOpen] = useState(false);
+  const [isDeregisterDialogOpen, setIsDeregisterDialogOpen] = useState(false);
+
+  const drainMutation = useDrainWorker({
+    onSuccess: () => {
+      setIsDrainDialogOpen(false);
+    },
+  });
+
+  const cordonMutation = useCordonWorker();
+  const resumeMutation = useResumeWorker();
+
+  const deregisterMutation = useDeregisterWorker({
+    onSuccess: () => {
+      setIsDeregisterDialogOpen(false);
+      navigate(ROUTES.workers);
     },
   });
 
@@ -326,30 +353,70 @@ export function WorkerDetailPage() {
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-56">
               <DropdownMenuLabel className="text-text-muted text-[0.625rem] font-medium tracking-wider uppercase">
-                Fleet Operations (Pending API)
+                Fleet Operations
               </DropdownMenuLabel>
 
               <DropdownMenuItem
-                disabled
-                title="Backend capability pending: POST /workers/:id/drain"
-                className="text-text-disabled cursor-not-allowed justify-between"
+                disabled={
+                  worker.state === 'disconnected' ||
+                  worker.state === 'draining' ||
+                  drainMutation.isPending
+                }
+                title={
+                  worker.state === 'disconnected'
+                    ? 'Worker is already disconnected'
+                    : worker.state === 'draining'
+                      ? 'Worker is already draining'
+                      : 'Drain worker: finish active leases then stop'
+                }
+                onClick={() => setIsDrainDialogOpen(true)}
+                className={cn(
+                  'justify-between',
+                  worker.state === 'disconnected' || worker.state === 'draining'
+                    ? 'text-text-disabled cursor-not-allowed'
+                    : 'text-text-primary hover:text-text-primary',
+                )}
               >
                 <span>Drain Worker</span>
-                <span className="border-border-subtle bg-surface-elevated text-text-muted rounded px-1 py-0.5 text-[0.5625rem]">
-                  API Pending
-                </span>
+                {worker.state === 'draining' && (
+                  <span className="border-status-info-border/60 bg-status-info-bg text-status-info-text rounded px-1 py-0.5 text-[0.5625rem]">
+                    Draining
+                  </span>
+                )}
               </DropdownMenuItem>
 
-              <DropdownMenuItem
-                disabled
-                title="Backend capability pending: PATCH /workers/:id/cordon"
-                className="text-text-disabled cursor-not-allowed justify-between"
-              >
-                <span>Cordon / Pause</span>
-                <span className="border-border-subtle bg-surface-elevated text-text-muted rounded px-1 py-0.5 text-[0.5625rem]">
-                  API Pending
-                </span>
-              </DropdownMenuItem>
+              {worker.state === 'cordoned' ? (
+                <DropdownMenuItem
+                  disabled={resumeMutation.isPending}
+                  onClick={() => resumeMutation.mutate(worker.id)}
+                  className="text-status-success-text hover:text-status-success-text justify-between"
+                >
+                  <span>Resume Worker</span>
+                  <span className="border-status-success-border/60 bg-status-success-bg text-status-success-text rounded px-1 py-0.5 text-[0.5625rem]">
+                    Cordoned
+                  </span>
+                </DropdownMenuItem>
+              ) : (
+                <DropdownMenuItem
+                  disabled={
+                    worker.state === 'disconnected' || cordonMutation.isPending
+                  }
+                  title={
+                    worker.state === 'disconnected'
+                      ? 'Worker is disconnected'
+                      : 'Pause worker from claiming new jobs'
+                  }
+                  onClick={() => cordonMutation.mutate(worker.id)}
+                  className={cn(
+                    'justify-between',
+                    worker.state === 'disconnected'
+                      ? 'text-text-disabled cursor-not-allowed'
+                      : 'text-status-warning-text hover:text-status-warning-text',
+                  )}
+                >
+                  <span>Cordon / Pause</span>
+                </DropdownMenuItem>
+              )}
 
               {worker.leases.length === 0 ? (
                 <DropdownMenuItem
@@ -400,16 +467,26 @@ export function WorkerDetailPage() {
               </DropdownMenuItem>
 
               <DropdownMenuItem
-                disabled
-                title="Backend capability pending: DELETE /workers/:id"
-                className="text-text-disabled cursor-not-allowed justify-between"
+                disabled={worker.inFlight > 0 || deregisterMutation.isPending}
+                title={
+                  worker.inFlight > 0
+                    ? `Cannot deregister worker with active leases (${worker.inFlight} active)`
+                    : 'Permanently remove worker record'
+                }
+                onClick={() => setIsDeregisterDialogOpen(true)}
+                className={cn(
+                  'justify-between',
+                  worker.inFlight > 0
+                    ? 'text-text-disabled cursor-not-allowed'
+                    : 'text-status-danger-text hover:text-status-danger-text',
+                )}
               >
-                <span className="text-status-danger-text/60">
-                  Deregister Worker
-                </span>
-                <span className="border-border-subtle bg-surface-elevated text-text-muted rounded px-1 py-0.5 text-[0.5625rem]">
-                  API Pending
-                </span>
+                <span>Deregister Worker</span>
+                {worker.inFlight > 0 && (
+                  <span className="border-border-subtle bg-surface-elevated text-text-muted rounded px-1 py-0.5 text-[0.5625rem]">
+                    {worker.inFlight} Active
+                  </span>
+                )}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -882,6 +959,125 @@ export function WorkerDetailPage() {
               {releaseLeaseMutation.isPending
                 ? 'Releasing…'
                 : 'Confirm Release'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Drain Worker Confirmation Dialog */}
+      <Dialog
+        open={isDrainDialogOpen}
+        onOpenChange={(open) => {
+          if (!open && !drainMutation.isPending) {
+            setIsDrainDialogOpen(false);
+          }
+        }}
+      >
+        <DialogContent className="border-border-strong bg-surface-base sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Drain Worker</DialogTitle>
+            <DialogDescription>
+              Drain worker{' '}
+              <span className="text-text-primary font-mono font-medium">
+                {worker?.hostname}
+              </span>
+              ? The worker will cease claiming new jobs from all queues while
+              completing its current in-flight executions.
+            </DialogDescription>
+          </DialogHeader>
+
+          {drainMutation.isError && (
+            <div
+              role="alert"
+              className="border-status-danger-border bg-status-danger-bg text-status-danger-text rounded-md border p-2.5 text-xs"
+            >
+              {drainMutation.error?.message ?? 'Failed to drain worker'}
+            </div>
+          )}
+
+          <DialogFooter className="gap-2 sm:justify-end">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setIsDrainDialogOpen(false)}
+              disabled={drainMutation.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="default"
+              size="sm"
+              onClick={() => {
+                if (worker) {
+                  drainMutation.mutate(worker.id);
+                }
+              }}
+              disabled={drainMutation.isPending}
+            >
+              {drainMutation.isPending ? 'Draining…' : 'Confirm Drain'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Deregister Worker Confirmation Dialog */}
+      <Dialog
+        open={isDeregisterDialogOpen}
+        onOpenChange={(open) => {
+          if (!open && !deregisterMutation.isPending) {
+            setIsDeregisterDialogOpen(false);
+          }
+        }}
+      >
+        <DialogContent className="border-border-strong bg-surface-base sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Deregister Worker</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to deregister worker{' '}
+              <span className="text-text-primary font-mono font-medium">
+                {worker?.hostname}
+              </span>
+              ? This will permanently remove the worker record from the registry
+              and return to the fleet overview.
+            </DialogDescription>
+          </DialogHeader>
+
+          {deregisterMutation.isError && (
+            <div
+              role="alert"
+              className="border-status-danger-border bg-status-danger-bg text-status-danger-text rounded-md border p-2.5 text-xs"
+            >
+              {deregisterMutation.error?.message ??
+                'Failed to deregister worker'}
+            </div>
+          )}
+
+          <DialogFooter className="gap-2 sm:justify-end">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setIsDeregisterDialogOpen(false)}
+              disabled={deregisterMutation.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              size="sm"
+              onClick={() => {
+                if (worker) {
+                  deregisterMutation.mutate(worker.id);
+                }
+              }}
+              disabled={deregisterMutation.isPending}
+            >
+              {deregisterMutation.isPending
+                ? 'Deregistering…'
+                : 'Confirm Deregister'}
             </Button>
           </DialogFooter>
         </DialogContent>

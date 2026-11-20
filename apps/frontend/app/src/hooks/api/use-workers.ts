@@ -1,9 +1,14 @@
 import { queryKeys } from './query-keys';
 import { ApiError } from '@/lib/api/client';
 import {
+  cordonWorker,
+  deregisterWorker,
+  drainWorker,
   getWorker,
   listWorkers,
   releaseWorkerLease,
+  resumeWorker,
+  type DeregisterWorkerResponse,
   type ListWorkersResponse,
   type ReleaseWorkerLeaseResponse,
 } from '@/lib/api/workers';
@@ -67,6 +72,70 @@ export function useReleaseWorkerLease(
       queryClient.invalidateQueries({ queryKey: queryKeys.jobs.all });
       queryClient.invalidateQueries({ queryKey: queryKeys.stats.all });
       return options?.onSuccess?.(data, variables, ...rest);
+    },
+    ...options,
+  });
+}
+
+export function useDrainWorker(
+  options?: UseMutationOptions<Worker, ApiError, string>,
+) {
+  const queryClient = useQueryClient();
+  return useMutation<Worker, ApiError, string>({
+    mutationFn: (id: string) => drainWorker(id),
+    onSuccess: (data, id, ...rest) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.workers.all });
+      queryClient.invalidateQueries({ queryKey: queryKeys.workers.detail(id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.stats.all });
+      return options?.onSuccess?.(data, id, ...rest);
+    },
+    ...options,
+  });
+}
+
+export function useCordonWorker(
+  options?: UseMutationOptions<Worker, ApiError, string>,
+) {
+  const queryClient = useQueryClient();
+  return useMutation<Worker, ApiError, string>({
+    mutationFn: (id: string) => cordonWorker(id),
+    onSuccess: (data, id, ...rest) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.workers.all });
+      queryClient.invalidateQueries({ queryKey: queryKeys.workers.detail(id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.stats.all });
+      return options?.onSuccess?.(data, id, ...rest);
+    },
+    ...options,
+  });
+}
+
+export function useResumeWorker(
+  options?: UseMutationOptions<Worker, ApiError, string>,
+) {
+  const queryClient = useQueryClient();
+  return useMutation<Worker, ApiError, string>({
+    mutationFn: (id: string) => resumeWorker(id),
+    onSuccess: (data, id, ...rest) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.workers.all });
+      queryClient.invalidateQueries({ queryKey: queryKeys.workers.detail(id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.stats.all });
+      return options?.onSuccess?.(data, id, ...rest);
+    },
+    ...options,
+  });
+}
+
+export function useDeregisterWorker(
+  options?: UseMutationOptions<DeregisterWorkerResponse, ApiError, string>,
+) {
+  const queryClient = useQueryClient();
+  return useMutation<DeregisterWorkerResponse, ApiError, string>({
+    mutationFn: (id: string) => deregisterWorker(id),
+    onSuccess: (data, id, ...rest) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.workers.all });
+      queryClient.invalidateQueries({ queryKey: queryKeys.workers.detail(id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.stats.all });
+      return options?.onSuccess?.(data, id, ...rest);
     },
     ...options,
   });

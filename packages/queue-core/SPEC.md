@@ -176,14 +176,15 @@ A row is **runnable** by this worker if **all** of the following hold:
      row. See [§5.10 Parameters](#510-parameters) for `reclaim_grace`'s
      definition and rationale.
 4. `NOT EXISTS (SELECT 1 FROM queue_states qs WHERE qs.queue_name = jobs.queue AND qs.paused = true)` — the queue is not paused. Paused queues yield no jobs to Dequeue.
+5. The calling worker runtime is in a runnable state. If a row exists in `workers` for `workerID`, its `state` must not be `draining`, `cordoned`, or `disconnected`. Workers in those states receive `(nil, nil)` from Dequeue.
 
 Failed jobs (`status='failed'`) are **not** considered here. They re-enter the
 runnable set only after the retries module transitions them back to `queued`.
 That transition is out of scope for Dequeue.
 
 `workers.queues[]` and `workers.handlers[]` are **not** consulted. The dequeue
-hot path never reads or joins the `workers` table — capability is a parameter,
-not a row. See `docs/architecture/database-schema.md`, "What this schema deliberately does not do", for the why.
+hot path never reads or joins the `workers` table for queue subscriptions — capability is a parameter,
+not a row. However, worker lifecycle state (`workers.state`) is checked to enforce drain, cordon, and deregister rules. See [§4.11](#411-worker-lifecycle-controls-drain-cordon-resume-deregister).
 
 ### 1.3 Ordering
 
@@ -1050,6 +1051,46 @@ In one transaction:
 
 - Log `queue.lease.force_released` at `info` level with `workerId` and `jobId`.
 - API layer broadcasts SSE invalidation on `["workers", "jobs", "stats"]`.
+
+### 4.11 Worker Lifecycle Controls (Drain, Cordon, Resume, Deregister)
+
+Workers undergo managed administrative lifecycle transitions to support orderly fleet maintenance, rolling deployments, and decommissioning.
+
+#### 4.11.1 Worker States
+
+| State | Runnable (`ClaimNextJob`) | Heartbeat Tracked | In-Flight Execution |
+|-------|--------------------------|-------------------|---------------------|
+| `active` | Yes | Yes | Executes and claims new jobs. |
+| `idle` | Yes | Yes | Waiting for work; eligible to claim. |
+| `cordoned` | **No** | Yes | Paused from taking new jobs; in-flight leases continue executing, renewing, and completing normally. |
+| `draining` | **No** | Yes | Finishing active leases before shutdown; blocked from claiming new work. |
+| `disconnected` | **No** | No (swept) | Offline/dead runtime. Leases expire and are reclaimed by surviving workers. |
+
+#### 4.11.2 Lifecycle Operations
+
+1. **Drain (`POST /workers/:id/drain`)**
+   - Transitions a live worker (`active`, `idle`, or `cordoned`) to `draining`.
+   - Prevents the worker from claiming any further jobs via `ClaimNextJob`.
+   - Existing active leases held by the worker continue executing and may be completed or failed normally.
+   - Idempotent for already-draining workers. Rejects disconnected workers with `409 Conflict`.
+2. **Cordon (`POST /workers/:id/cordon`, `PATCH /workers/:id/cordon`)**
+   - Transitions a live worker to `cordoned`.
+   - Halts new job claims without terminating the worker process.
+   - Idempotent for already-cordoned workers. Rejects disconnected workers with `409 Conflict`.
+3. **Resume / Uncordon (`POST /workers/:id/resume`, `PATCH /workers/:id/resume`)**
+   - Transitions a `cordoned` or `draining` live worker back to `active` (or `idle`).
+   - Re-enables the worker for new job claims in `ClaimNextJob`.
+   - Idempotent for active/idle workers. Rejects disconnected workers with `409 Conflict`.
+4. **Deregister (`DELETE /workers/:id`, `POST /workers/:id/deregister`)**
+   - Safely removes a worker record from the `workers` table when it has **zero** in-flight leases (`inFlight == 0`).
+   - If the worker currently has in-flight leases (`inFlight > 0`), the request is rejected with `409 Conflict` (`cannot deregister worker with active leases`).
+   - If the worker does not exist, returns `404 Not Found`.
+
+#### 4.11.3 Interaction with Sweeper and Reclaim
+
+- The stale worker sweeper scans for heartbeats overdue by more than `3 × heartbeat_interval_seconds` across `('active', 'idle', 'draining', 'cordoned')`.
+- If a cordoned or draining worker crashes or ceases heartbeating, the sweeper marks it `disconnected`.
+- Reclaim processes leases solely based on `jobs.status = 'running'` and `jobs.lease_expires_at`. Worker lifecycle state changes do not interrupt running leases or reclaim timers.
 
 ---
 

@@ -4,6 +4,7 @@ export type WorkerLifecycleStatus =
   | 'busy'
   | 'idle'
   | 'draining'
+  | 'cordoned'
   | 'stale'
   | 'disconnected';
 
@@ -11,6 +12,7 @@ export type WorkerFilterTab =
   | 'all'
   | 'busy'
   | 'idle'
+  | 'cordoned'
   | 'stale'
   | 'disconnected';
 
@@ -26,6 +28,7 @@ export interface FleetMetrics {
   busyWorkers: number;
   idleWorkers: number;
   drainingWorkers: number;
+  cordonedWorkers: number;
   staleWorkers: number;
   disconnectedWorkers: number;
   activeFleetWorkers: number;
@@ -98,6 +101,9 @@ export function getWorkerLifecycle(
   ) {
     return 'stale';
   }
+  if (worker.state === 'cordoned') {
+    return 'cordoned';
+  }
   if (worker.state === 'draining') {
     return 'draining';
   }
@@ -136,7 +142,14 @@ export function getWorkerStatusBadgeProps(status: WorkerLifecycleStatus): {
         label: 'Draining',
         tone: 'info',
         dotColorClass: 'bg-status-info-solid',
-        description: 'Cordoned: finishing in-flight jobs before shutting down.',
+        description: 'Finishing in-flight jobs before shutting down.',
+      };
+    case 'cordoned':
+      return {
+        label: 'Cordoned',
+        tone: 'warning',
+        dotColorClass: 'bg-status-warning-solid',
+        description: 'Paused from claiming new jobs; in-flight work continues.',
       };
     case 'stale':
       return {
@@ -171,6 +184,7 @@ export function computeFleetMetrics(
   let busyWorkers = 0;
   let idleWorkers = 0;
   let drainingWorkers = 0;
+  let cordonedWorkers = 0;
   let staleWorkers = 0;
   let disconnectedWorkers = 0;
   let activeFleetWorkers = 0;
@@ -185,6 +199,9 @@ export function computeFleetMetrics(
         break;
       case 'idle':
         idleWorkers++;
+        break;
+      case 'cordoned':
+        cordonedWorkers++;
         break;
       case 'draining':
         drainingWorkers++;
@@ -215,6 +232,7 @@ export function computeFleetMetrics(
     busyWorkers,
     idleWorkers,
     drainingWorkers,
+    cordonedWorkers,
     staleWorkers,
     disconnectedWorkers,
     activeFleetWorkers,
