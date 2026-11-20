@@ -38,7 +38,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/Aniket-lodh/veyra.git",
+    "url": "git+https://github.com/Aniket-lodh/veyra.git",
     "directory": "packages/sdk-ts"
   },
   "homepage": "https://github.com/Aniket-lodh/veyra#readme",
