@@ -175,6 +175,7 @@ A row is **runnable** by this worker if **all** of the following hold:
      primitive inline within its FOR UPDATE transaction to adopt the
      row. See [§5.10 Parameters](#510-parameters) for `reclaim_grace`'s
      definition and rationale.
+4. `NOT EXISTS (SELECT 1 FROM queue_states qs WHERE qs.queue_name = jobs.queue AND qs.paused = true)` — the queue is not paused. Paused queues yield no jobs to Dequeue.
 
 Failed jobs (`status='failed'`) are **not** considered here. They re-enter the
 runnable set only after the retries module transitions them back to `queued`.
@@ -735,20 +736,7 @@ predicate no longer matches.
 
 #### 3.5.7 Queue pause interaction
 
-(Forward reference — queue pause is not yet implemented.)
-
-When queue pause exists, retry promotion **respects pause**. A
-retry-due job in a paused queue must not become visible to dequeue.
-Two implementation options are equivalent for spec purposes; pick at
-implementation time:
-
-- **Promote-but-hide**: scheduler promotes `failed → queued` freely;
-  dequeue's predicate adds a pause filter.
-- **Defer-promote**: scheduler's predicate adds a pause filter,
-  leaving retry-due rows in `failed` until the queue resumes.
-
-The spec mandates the *behavior*: retries do not bypass pause. The
-implementation detail will be pinned in the pause spec.
+Retry promotion uses the **promote-but-hide** model: the retry scheduler promotes `failed -> queued` freely according to `next_retry_at <= now()`. Dequeue's candidate selection predicate (§1.2 item 4) excludes paused queues, preventing retried jobs from being claimed while their queue remains paused. Once resumed, retried jobs become visible to dequeue immediately.
 
 #### 3.5.8 Reclaim interaction
 
@@ -1399,23 +1387,11 @@ stay in sync.
 
 ### 5.9 Ordering vs queue pause / drain
 
-**Stub.** Forward-reference to the queue state machine SPEC entry
-(currently unwritten — see `feedback-queue-state-machine-explicit`
-memory). When pause/drain semantics land, this section will describe:
+Queue pause (§9) interacts with reclaim as follows:
 
-- Whether the tick reclaim runs on a queue in `paused` state.
-- Whether the tick reclaim runs on a queue in `draining` state.
-- How the tick interacts with the "no new claims" invariant of those
-  states (tick reclaim does not claim — `TickRequeue` requeues — but
-  does it count as a write the paused queue forbids?).
-- Whether the inline reclaim runs at all on a paused queue (Dequeue
-  itself is blocked, so this is moot in practice — note for
-  completeness).
-
-Until that SPEC entry is written, treat reclaim as ignoring queue
-state — i.e., both invocation sites operate regardless of any
-queue-level pause / drain flag. Document any change here BEFORE
-implementing it.
+- **Tick reclaim (`TickRequeue`) operates across all queues regardless of pause state.** When a lease expires on a job in a paused queue, the periodic tick driver safely transitions it back to `queued` (or DLQs it if attempts are exhausted). The row remains safely in `queued` status and cannot be dequeued while the queue is paused.
+- **Inline reclaim (`InlineClaim`) is part of Dequeue (`ClaimNextJob`), which skips paused queues entirely (§1.2 item 4).** Therefore, inline reclaim never runs on a paused queue.
+- **In-flight leases on a paused queue continue to completion.** Workers holding active leases may succeed, fail, or renew leases normally.
 
 ### 5.10 Parameters
 
@@ -2114,4 +2090,47 @@ requeues batches of `dead_lettered` jobs matching optional queue and handler fil
 | Event | Level | Fields |
 |-------|-------|--------|
 | `queue.dlq.replay` | info | `replayedCount`, `queue`, `handler`, `limit` |
+
+---
+
+## 9. Queue Pause and Resume
+
+Queue pause (`PauseQueue`, HTTP `POST /queues/:name/pause`) and resume (`ResumeQueue`, HTTP `POST /queues/:name/resume`) provide operational control over job processing per queue.
+
+### 9.1 Inputs
+
+| Operation | Name | Type | Required | Description |
+|-----------|------|------|----------|-------------|
+| Pause | `queue` | `string` | yes | Valid non-empty queue name (max 128 chars, no control/spaces). |
+| Pause | `reason` | `string` | no | Optional operator explanation for the pause. |
+| Resume | `queue` | `string` | yes | Valid non-empty queue name (max 128 chars, no control/spaces). |
+
+### 9.2 State Model & Storage
+
+Queue pause state is persisted in PostgreSQL table `queue_states`:
+- `queue_name TEXT PRIMARY KEY`: Name of the queue.
+- `paused BOOLEAN NOT NULL DEFAULT false`: Whether job claiming is paused.
+- `paused_at TIMESTAMPTZ`: Timestamp when the queue was paused (NULL when active).
+- `paused_reason TEXT`: Optional operator-provided reason for the pause.
+- `updated_at TIMESTAMPTZ NOT NULL`: Timestamp of last state change.
+
+### 9.3 Semantics & Invariants
+
+1. **Claim Suppression**: When a queue has `paused = true`, Dequeue (`ClaimNextJob`, §1.2 item 4) strictly skips jobs in that queue. No worker can claim fresh `queued` jobs or inline-reclaim expired jobs from a paused queue.
+2. **In-Flight Isolation**: Workers currently executing jobs in a paused queue are unaffected. They may call `MarkJobSucceeded` (Ack, §2), `MarkJobFailed` (Nack, §3), `RenewLease` (§4), or `Cancel` (§6).
+3. **Enqueue Unaffected**: Enqueue (`Create`, §0) continues to accept new jobs into a paused queue. Newly enqueued jobs remain in `queued` status until the queue is resumed.
+4. **Reclaim Compatibility**: The background reclaim driver (§5.5.2 `TickRequeue`) continues to reclaim expired leases for jobs in a paused queue back to `queued`.
+5. **Idempotency & Re-Pause Handling**:
+   - Pausing an already paused queue preserves the initial `paused_at` timestamp.
+   - If a new reason is provided on re-pause, `paused_reason` is updated; if omitted/empty, the existing `paused_reason` is preserved.
+   - Resuming an unpaused or non-existent queue record is an idempotent no-op returning success (`200 OK`).
+6. **Queue Stats Reflection**: `QueueStats` joins with `queue_states` to surface `paused`, `pausedAt`, and `pausedReason` for every queue.
+
+### 9.4 Observability Contract
+
+| Event | Level | Fields |
+|-------|-------|--------|
+| `queue.pause` | info | `queue`, `reason` |
+| `queue.resume` | info | `queue` |
+
 

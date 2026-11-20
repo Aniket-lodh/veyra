@@ -329,6 +329,30 @@ describe('dashboard-helpers', () => {
       assert.equal(Number.isNaN(summary.failureRatePct24h), false);
       assert.equal(Number.isFinite(summary.failureRatePct24h), true);
     });
+
+    it('identifies paused queues and preserves pause details', () => {
+      const queue: QueueAggregate = {
+        name: 'batch-emails',
+        depth: 42,
+        inFlight: 2,
+        succeeded24h: 10,
+        failed24h: 0,
+        deadLettered24h: 0,
+        paused: true,
+        pausedAt: '2026-11-20T10:00:00Z',
+        pausedReason: 'Maintenance window',
+      };
+
+      const summary = computeQueueOperationalSummary(queue, [mockWorker]);
+
+      assert.equal(summary.name, 'batch-emails');
+      assert.equal(summary.paused, true);
+      assert.equal(summary.pausedReason, 'Maintenance window');
+      assert.equal(summary.pausedAt, '2026-11-20T10:00:00Z');
+      assert.equal(summary.health, 'warning');
+      assert.equal(summary.statusLabel, 'Paused');
+      assert.equal(summary.statusTone, 'warning');
+    });
   });
 
   describe('filterRecentJobs', () => {

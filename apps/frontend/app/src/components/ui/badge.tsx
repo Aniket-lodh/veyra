@@ -21,13 +21,18 @@ const TONE_STYLES: Record<BadgeTone, string> = {
   muted: 'bg-surface-elevated text-text-muted border border-border-subtle',
 };
 
-interface BadgeProps {
+interface BadgeProps extends React.HTMLAttributes<HTMLSpanElement> {
   tone?: BadgeTone;
   className?: string;
   children: React.ReactNode;
 }
 
-export function Badge({ tone = 'neutral', className, children }: BadgeProps) {
+export function Badge({
+  tone = 'neutral',
+  className,
+  children,
+  ...props
+}: BadgeProps) {
   return (
     <span
       className={cn(
@@ -35,6 +40,7 @@ export function Badge({ tone = 'neutral', className, children }: BadgeProps) {
         TONE_STYLES[tone],
         className,
       )}
+      {...props}
     >
       {children}
     </span>

@@ -243,6 +243,9 @@ export interface QueueOperationalSummary {
   health: 'healthy' | 'warning' | 'critical';
   statusLabel: string;
   statusTone: 'success' | 'warning' | 'danger' | 'neutral';
+  paused: boolean;
+  pausedAt?: string | null;
+  pausedReason?: string | null;
 }
 
 /**
@@ -273,7 +276,15 @@ export function computeQueueOperationalSummary(
   let statusLabel = 'Healthy';
   let statusTone: 'success' | 'warning' | 'danger' | 'neutral' = 'success';
 
-  if (assignedWorkerCount === 0 && queue.depth > 0) {
+  const paused = Boolean(queue.paused);
+  const pausedAt = queue.pausedAt ?? null;
+  const pausedReason = queue.pausedReason ?? null;
+
+  if (paused) {
+    health = 'warning';
+    statusLabel = 'Paused';
+    statusTone = 'warning';
+  } else if (assignedWorkerCount === 0 && queue.depth > 0) {
     health = 'critical';
     statusLabel = 'Unserviced Backlog';
     statusTone = 'danger';
@@ -308,6 +319,9 @@ export function computeQueueOperationalSummary(
     health,
     statusLabel,
     statusTone,
+    paused,
+    pausedAt,
+    pausedReason,
   };
 }
 
