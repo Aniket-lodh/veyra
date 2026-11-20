@@ -1,0 +1,33 @@
+{
+  "name": "@veyra/sdk",
+  "version": "0.1.0",
+  "description": "Lightweight TypeScript and Node.js SDK for Veyra Distributed Execution Platform",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test test/*.test.ts"
+  },
+  "keywords": [
+    "veyra",
+    "queue",
+    "distributed-systems",
+    "job-queue",
+    "workers",
+    "orchestration"
+  ],
+  "license": "Apache-2.0"
+}
