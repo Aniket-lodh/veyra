@@ -1,33 +1,4 @@
-// Package retries — the retry scheduler.
-//
-// A long-running goroutine that periodically scans the `jobs` table for
-// rows in (status='failed', next_retry_at <= now()) and promotes them
-// back to `queued` in one atomic UPDATE. This is the second phase of the
-// retry pipeline; the first phase is Nack-side computation of
-// `next_retry_at` in packages/queue-core/repository.go.
-//
-// HARD CONSTRAINTS (see SPEC.md §3.5):
-//
-//  1. The scheduler ONLY flips `(status, next_retry_at)`. It does NOT
-//     touch `attempt`, `priority`, `payload`, or anything else. Identity
-//     is preserved across retries.
-//
-//  2. The scheduler does NOT recompute `next_retry_at`. The jitter was
-//     sampled once by Nack and committed to the row; the scheduler is
-//     a pure mover, not a re-decider. (Violating this destroys the
-//     deterministic-after-commit invariant, SPEC §3.5.2.)
-//
-//  3. The scheduler does NOT consult `jobs.backoff` or any retry policy.
-//     All of that lives in Nack. If you find yourself reading backoff
-//     here, you are violating constraint 2.
-//
-//  4. The scheduler is stateless. Crash = delay, never loss / duplication.
-//     The next tick reproduces the same predicate against the same data.
-//
-// HA note: the UPDATE uses FOR UPDATE SKIP LOCKED, so two schedulers
-// running concurrently is safe — neither will promote the same row twice.
-// Today the api process is singleton, so we don't yet need an advisory
-// lock; ADR-0006 documents the future split if needed.
+// Package retries runs the retry scheduler.
 package retries
 
 import (
@@ -40,9 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Scheduler is the long-running goroutine handle. Construct with
-// NewScheduler; drive with Run. The Run method blocks until ctx is
-// cancelled.
+// Scheduler is the long-running goroutine handle.
 type Scheduler struct {
 	pool       *pgxpool.Pool
 	interval   time.Duration
@@ -57,12 +26,7 @@ func NewScheduler(pool *pgxpool.Pool, interval time.Duration, batchLimit int) *S
 	}
 }
 
-// Run drives one tick per `interval`. Errors during a tick are logged and
-// the loop continues — a single failed sweep should not bring the api
-// down, and the next tick will retry against the same predicate.
-//
-// Returns nil on graceful ctx cancellation; a non-nil error only if the
-// configuration is invalid at start time.
+// Run drives one tick per `interval`.
 func (s *Scheduler) Run(ctx context.Context) error {
 	if s.interval <= 0 {
 		return fmt.Errorf("retries.Scheduler: interval must be > 0, got %v", s.interval)
@@ -80,9 +44,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	t := time.NewTicker(s.interval)
 	defer t.Stop()
 
-	// Immediate tick on boot so an api restart promotes any backlog that
-	// accumulated during the downtime. Without this the worst-case
-	// post-restart promotion lag equals `interval`.
+	// Immediate tick on boot so an api restart promotes any backlog that accumulated during the downtime.
 	if err := s.tick(ctx); err != nil {
 		slog.ErrorContext(ctx, "queue.retry.scheduler.tick_failed",
 			"event", "queue.retry.scheduler.tick_failed",
@@ -110,20 +72,6 @@ func (s *Scheduler) Run(ctx context.Context) error {
 }
 
 // tick runs one promotion sweep.
-//
-// The CTE form is load-bearing: it lets us measure scheduler lag
-// (`now() - next_retry_at`) BEFORE the UPDATE clears `next_retry_at`,
-// so the per-row `lagMs` we emit in the queue.retry.promoted event is
-// meaningful. A naive `UPDATE … RETURNING EXTRACT(… - next_retry_at)`
-// would evaluate the EXTRACT against the post-UPDATE tuple, which has
-// `next_retry_at = NULL` — the lag would always be NULL/garbage.
-//
-// The atomic shape is preserved: the CTE locks rows with
-// FOR UPDATE SKIP LOCKED inside the same statement; the UPDATE…FROM
-// joins them; commit happens at statement boundary. SPEC §3.5.3.
-//
-// The partial index `idx_jobs_retry_pending` (migration 000001) serves
-// the predicate.
 func (s *Scheduler) tick(ctx context.Context) error {
 	const promoteSQL = `
 		WITH due AS (
@@ -167,10 +115,7 @@ func (s *Scheduler) tick(ctx context.Context) error {
 			}
 			continue
 		}
-		// One event per row promoted. SPEC §3.5.10. The fields are
-		// intentional and stable — downstreams correlate by jobId across
-		// queue.retry.scheduled (Nack) → queue.retry.promoted (here) →
-		// queue.dequeue.claimed (worker).
+		// One event per row promoted.
 		slog.InfoContext(ctx, "queue.retry.promoted",
 			"event", "queue.retry.promoted",
 			"jobId", id,

@@ -4,5 +4,8 @@
     "postcss.config.js",
     "src/**/*.tsx",
     "src/**/*.ts"
+  ],
+  "exclude": [
+    "src/**/*.test.ts"
   ]
 }

@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
-# Stop the dev stack. Preserves the postgres volume — for a destructive
-# reset, pass --wipe.
-#
-# Usage:
-#   scripts/dev/down.sh             # graceful stop, volume kept
-#   scripts/dev/down.sh --wipe      # also drops the postgres volume
+# Stop the dev stack (keeps postgres volume unless --wipe).
+
 set -euo pipefail
 
 COMPOSE_FILE="deployments/compose/docker-compose.yml"

@@ -1,8 +1,5 @@
 //go:build integration
 
-// Claim tests for the handler filter (SPEC §1.1, §1.2). Build-tagged; run with:
-//
-//	go test -tags integration ./...
 package queuecore_test
 
 import (
@@ -37,8 +34,7 @@ func mustCreateClaimJob(t *testing.T, ctx context.Context, repo *queuecore.Repos
 	}
 }
 
-// TestClaim_FiltersByHandler covers SPEC §1.2: a worker claims only jobs whose
-// handler is in its list, even when an earlier job for another handler is visible.
+// TestClaim_FiltersByHandler covers SPEC §1.2: a worker claims only jobs whose handler is in its list, even when an earlier job for another handler is visible.
 func TestClaim_FiltersByHandler(t *testing.T) {
 	pool := testsupport.StartPostgres(t)
 	repo := queuecore.NewRepository(pool)
@@ -74,8 +70,7 @@ func TestClaim_FiltersByHandler(t *testing.T) {
 	}
 }
 
-// TestClaim_RequiresQueuesAndHandlers covers SPEC §1.10: empty filters are
-// rejected before any SQL runs.
+// TestClaim_RequiresQueuesAndHandlers covers SPEC §1.10: empty filters are rejected before any SQL runs.
 func TestClaim_RequiresQueuesAndHandlers(t *testing.T) {
 	pool := testsupport.StartPostgres(t)
 	repo := queuecore.NewRepository(pool)
@@ -89,9 +84,7 @@ func TestClaim_RequiresQueuesAndHandlers(t *testing.T) {
 	}
 }
 
-// TestClaim_InlineReclaimRespectsHandler covers SPEC §1.1 and §5.1: an expired
-// lease is reclaimed inline only by a worker that runs that job's handler. The
-// reclaiming worker is a new runtime id, as after a restart (SPEC §5.2).
+// TestClaim_InlineReclaimRespectsHandler covers SPEC §1.1 and §5.1: an expired lease is reclaimed inline only by a worker that runs that job's handler.
 func TestClaim_InlineReclaimRespectsHandler(t *testing.T) {
 	pool := testsupport.StartPostgres(t)
 	repo := queuecore.NewRepository(pool)
@@ -106,8 +99,7 @@ func TestClaim_InlineReclaimRespectsHandler(t *testing.T) {
 		t.Fatalf("first claim: job=%v err=%v", first, err)
 	}
 
-	// Expire the lease well past the reclaim grace window. The lease is a
-	// database column, so this simulates a dead worker without waiting 40s.
+	// Expire the lease well past the reclaim grace window.
 	if _, err := pool.Exec(ctx,
 		`UPDATE jobs SET lease_expires_at = now() - interval '1 minute' WHERE id = $1`, jobID); err != nil {
 		t.Fatalf("expire lease: %v", err)

@@ -1,6 +1,5 @@
-// JSON body editor — CodeMirror 6 with highlight, lint gutter, and Beautify.
-// Same role as Postman/Insomnia's JSON body pane: edit a payload string.
 import { Button } from '@/components/ui/button';
+import { useTheme } from '@/lib/theme';
 import { cn } from '@/lib/utils';
 import { json, jsonParseLinter } from '@codemirror/lang-json';
 import { linter, lintGutter } from '@codemirror/lint';
@@ -62,6 +61,7 @@ export function JsonEditor({
   minHeight = '160px',
   'aria-label': ariaLabel = 'JSON body',
 }: JsonEditorProps) {
+  const { resolvedTheme } = useTheme();
   const [beautifyError, setBeautifyError] = useState<string | null>(null);
 
   const status = useMemo(() => jsonStatus(value), [value]);
@@ -88,12 +88,14 @@ export function JsonEditor({
             JSON
           </span>
           {status === 'invalid' && (
-            <span className="text-destructive text-[0.6875rem]">
+            <span className="text-status-danger-text text-[0.6875rem]">
               Invalid JSON
             </span>
           )}
           {status === 'valid' && (
-            <span className="text-[0.6875rem] text-emerald-700">Valid</span>
+            <span className="text-status-success-text text-[0.6875rem]">
+              Valid
+            </span>
           )}
         </div>
         <Button
@@ -117,7 +119,7 @@ export function JsonEditor({
         <CodeMirror
           value={value}
           height={minHeight}
-          theme="light"
+          theme={resolvedTheme}
           placeholder={placeholder}
           extensions={extensions}
           basicSetup={{
