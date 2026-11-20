@@ -21,6 +21,12 @@ import (
 // ErrWorkerNotFound is returned when no worker with the given ID exists.
 var ErrWorkerNotFound = errors.New("worker not found")
 
+// ErrWorkerConflict is returned when an invalid state transition is attempted (e.g. on a disconnected worker).
+var ErrWorkerConflict = errors.New("worker conflict")
+
+// ErrActiveLeases is returned when attempting to deregister a worker with active leases.
+var ErrActiveLeases = errors.New("cannot deregister worker with active leases")
+
 type eventBroadcaster interface {
 	MarkDirty(resources ...string)
 }
@@ -29,6 +35,10 @@ type workerStore interface {
 	QueryWorkers(ctx context.Context) ([]workerResponse, error)
 	GetWorker(ctx context.Context, id string) (*workerResponse, error)
 	ReleaseLease(ctx context.Context, workerID, jobID string) error
+	DrainWorker(ctx context.Context, id string) (*workerResponse, error)
+	CordonWorker(ctx context.Context, id string) (*workerResponse, error)
+	ResumeWorker(ctx context.Context, id string) (*workerResponse, error)
+	DeregisterWorker(ctx context.Context, id string) error
 }
 
 // Handler is the apps/api binding for workers-table reads and lease operations.
@@ -60,11 +70,18 @@ func newHandlerWithStore(store workerStore, broadcaster eventBroadcaster) *Handl
 	}
 }
 
-// Register mounts GET /workers, GET /workers/:id, and POST /workers/:id/leases/:jobId/release.
+// Register mounts worker read and lifecycle endpoints.
 func Register(app *fiber.App, h *Handler, authn *auth.Authenticator) {
 	app.Get("/workers", authn.Require(auth.ScopeQueueRead), h.List)
 	app.Get("/workers/:id", authn.Require(auth.ScopeQueueRead), h.GetByID)
 	app.Post("/workers/:id/leases/:jobId/release", authn.Require(auth.ScopeJobsWrite), h.ReleaseLease)
+	app.Post("/workers/:id/drain", authn.Require(auth.ScopeJobsWrite), h.Drain)
+	app.Post("/workers/:id/cordon", authn.Require(auth.ScopeJobsWrite), h.Cordon)
+	app.Patch("/workers/:id/cordon", authn.Require(auth.ScopeJobsWrite), h.Cordon)
+	app.Post("/workers/:id/resume", authn.Require(auth.ScopeJobsWrite), h.Resume)
+	app.Patch("/workers/:id/resume", authn.Require(auth.ScopeJobsWrite), h.Resume)
+	app.Delete("/workers/:id", authn.Require(auth.ScopeJobsWrite), h.Deregister)
+	app.Post("/workers/:id/deregister", authn.Require(auth.ScopeJobsWrite), h.Deregister)
 }
 
 // leaseResponse mirrors the frontend WorkerLease interface.
@@ -107,14 +124,9 @@ func (h *Handler) List(c fiber.Ctx) error {
 
 // GetByID handles GET /workers/:id.
 func (h *Handler) GetByID(c fiber.Ctx) error {
-	rawID := c.Params("id")
-	id, err := url.PathUnescape(rawID)
+	id, err := parseWorkerID(c)
 	if err != nil {
-		id = rawID
-	}
-	id = strings.TrimSpace(id)
-	if id == "" {
-		return badRequest(c, "worker id is required")
+		return badRequest(c, err.Error())
 	}
 
 	ctx := c.Context()
@@ -131,14 +143,9 @@ func (h *Handler) GetByID(c fiber.Ctx) error {
 
 // ReleaseLease handles POST /workers/:id/leases/:jobId/release.
 func (h *Handler) ReleaseLease(c fiber.Ctx) error {
-	rawWorkerID := c.Params("id")
-	workerID, err := url.PathUnescape(rawWorkerID)
+	workerID, err := parseWorkerID(c)
 	if err != nil {
-		workerID = rawWorkerID
-	}
-	workerID = strings.TrimSpace(workerID)
-	if workerID == "" {
-		return badRequest(c, "worker id is required")
+		return badRequest(c, err.Error())
 	}
 
 	rawJobID := c.Params("jobId")
@@ -182,6 +189,148 @@ func (h *Handler) ReleaseLease(c fiber.Ctx) error {
 		"workerId": workerID,
 		"jobId":    jobID,
 	})
+}
+
+// Drain handles POST /workers/:id/drain.
+func (h *Handler) Drain(c fiber.Ctx) error {
+	id, err := parseWorkerID(c)
+	if err != nil {
+		return badRequest(c, err.Error())
+	}
+
+	ctx := c.Context()
+	worker, err := h.store.DrainWorker(ctx, id)
+	if err != nil {
+		if errors.Is(err, ErrWorkerNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "worker not found"})
+		}
+		if errors.Is(err, ErrWorkerConflict) {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error()})
+		}
+		return internalError(c, err)
+	}
+
+	slog.InfoContext(ctx, "workers.drain",
+		"event", "workers.drain",
+		"workerId", id,
+		"state", worker.State,
+	)
+
+	if h.broadcaster != nil {
+		h.broadcaster.MarkDirty("workers", "stats")
+	}
+
+	return c.JSON(worker)
+}
+
+// Cordon handles POST & PATCH /workers/:id/cordon.
+func (h *Handler) Cordon(c fiber.Ctx) error {
+	id, err := parseWorkerID(c)
+	if err != nil {
+		return badRequest(c, err.Error())
+	}
+
+	ctx := c.Context()
+	worker, err := h.store.CordonWorker(ctx, id)
+	if err != nil {
+		if errors.Is(err, ErrWorkerNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "worker not found"})
+		}
+		if errors.Is(err, ErrWorkerConflict) {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error()})
+		}
+		return internalError(c, err)
+	}
+
+	slog.InfoContext(ctx, "workers.cordon",
+		"event", "workers.cordon",
+		"workerId", id,
+		"state", worker.State,
+	)
+
+	if h.broadcaster != nil {
+		h.broadcaster.MarkDirty("workers", "stats")
+	}
+
+	return c.JSON(worker)
+}
+
+// Resume handles POST & PATCH /workers/:id/resume.
+func (h *Handler) Resume(c fiber.Ctx) error {
+	id, err := parseWorkerID(c)
+	if err != nil {
+		return badRequest(c, err.Error())
+	}
+
+	ctx := c.Context()
+	worker, err := h.store.ResumeWorker(ctx, id)
+	if err != nil {
+		if errors.Is(err, ErrWorkerNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "worker not found"})
+		}
+		if errors.Is(err, ErrWorkerConflict) {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error()})
+		}
+		return internalError(c, err)
+	}
+
+	slog.InfoContext(ctx, "workers.resume",
+		"event", "workers.resume",
+		"workerId", id,
+		"state", worker.State,
+	)
+
+	if h.broadcaster != nil {
+		h.broadcaster.MarkDirty("workers", "stats")
+	}
+
+	return c.JSON(worker)
+}
+
+// Deregister handles DELETE /workers/:id and POST /workers/:id/deregister.
+func (h *Handler) Deregister(c fiber.Ctx) error {
+	id, err := parseWorkerID(c)
+	if err != nil {
+		return badRequest(c, err.Error())
+	}
+
+	ctx := c.Context()
+	if err := h.store.DeregisterWorker(ctx, id); err != nil {
+		if errors.Is(err, ErrWorkerNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "worker not found"})
+		}
+		if errors.Is(err, ErrActiveLeases) || errors.Is(err, ErrWorkerConflict) {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error()})
+		}
+		return internalError(c, err)
+	}
+
+	slog.InfoContext(ctx, "workers.deregister",
+		"event", "workers.deregister",
+		"workerId", id,
+	)
+
+	if h.broadcaster != nil {
+		h.broadcaster.MarkDirty("workers", "stats")
+	}
+
+	return c.JSON(fiber.Map{
+		"deregistered": true,
+		"workerId":     id,
+	})
+}
+
+func parseWorkerID(c fiber.Ctx) (string, error) {
+	rawID := c.Params("id")
+	id, err := url.PathUnescape(rawID)
+	if err != nil {
+		id = rawID
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return "", errors.New("worker id is required")
+	}
+	return id, nil
 }
 
 // pgWorkerStore implements workerStore backed by Postgres pool and queuecore.Repository.
@@ -336,6 +485,146 @@ func (s *pgWorkerStore) ReleaseLease(ctx context.Context, workerID, jobID string
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("workers.ReleaseLease: commit tx: %w", err)
 	}
+	return nil
+}
+
+func (s *pgWorkerStore) DrainWorker(ctx context.Context, id string) (*workerResponse, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("workers.DrainWorker: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var state string
+	err = tx.QueryRow(ctx, "SELECT state::text FROM workers WHERE id = $1 FOR UPDATE", id).Scan(&state)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrWorkerNotFound
+		}
+		return nil, fmt.Errorf("workers.DrainWorker: select: %w", err)
+	}
+
+	if state == "disconnected" {
+		return nil, fmt.Errorf("%w: cannot drain disconnected worker", ErrWorkerConflict)
+	}
+
+	if state != "draining" {
+		if _, err := tx.Exec(ctx, "UPDATE workers SET state = 'draining' WHERE id = $1", id); err != nil {
+			return nil, fmt.Errorf("workers.DrainWorker: update: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("workers.DrainWorker: commit: %w", err)
+	}
+
+	return s.GetWorker(ctx, id)
+}
+
+func (s *pgWorkerStore) CordonWorker(ctx context.Context, id string) (*workerResponse, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("workers.CordonWorker: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var state string
+	err = tx.QueryRow(ctx, "SELECT state::text FROM workers WHERE id = $1 FOR UPDATE", id).Scan(&state)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrWorkerNotFound
+		}
+		return nil, fmt.Errorf("workers.CordonWorker: select: %w", err)
+	}
+
+	if state == "disconnected" {
+		return nil, fmt.Errorf("%w: cannot cordon disconnected worker", ErrWorkerConflict)
+	}
+
+	if state != "cordoned" {
+		if _, err := tx.Exec(ctx, "UPDATE workers SET state = 'cordoned' WHERE id = $1", id); err != nil {
+			return nil, fmt.Errorf("workers.CordonWorker: update: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("workers.CordonWorker: commit: %w", err)
+	}
+
+	return s.GetWorker(ctx, id)
+}
+
+func (s *pgWorkerStore) ResumeWorker(ctx context.Context, id string) (*workerResponse, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("workers.ResumeWorker: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var state string
+	err = tx.QueryRow(ctx, "SELECT state::text FROM workers WHERE id = $1 FOR UPDATE", id).Scan(&state)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrWorkerNotFound
+		}
+		return nil, fmt.Errorf("workers.ResumeWorker: select: %w", err)
+	}
+
+	if state == "disconnected" {
+		return nil, fmt.Errorf("%w: cannot resume disconnected worker", ErrWorkerConflict)
+	}
+
+	if state == "cordoned" || state == "draining" {
+		if _, err := tx.Exec(ctx, "UPDATE workers SET state = 'active' WHERE id = $1", id); err != nil {
+			return nil, fmt.Errorf("workers.ResumeWorker: update: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("workers.ResumeWorker: commit: %w", err)
+	}
+
+	return s.GetWorker(ctx, id)
+}
+
+func (s *pgWorkerStore) DeregisterWorker(ctx context.Context, id string) error {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("workers.DeregisterWorker: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var exists int
+	err = tx.QueryRow(ctx, "SELECT 1 FROM workers WHERE id = $1 FOR UPDATE", id).Scan(&exists)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrWorkerNotFound
+		}
+		return fmt.Errorf("workers.DeregisterWorker: select worker: %w", err)
+	}
+
+	var activeLeases int
+	err = tx.QueryRow(ctx, `
+		SELECT count(*) FROM jobs
+		WHERE current_worker_id = $1
+		  AND status = 'running'
+	`, id).Scan(&activeLeases)
+	if err != nil {
+		return fmt.Errorf("workers.DeregisterWorker: check active leases: %w", err)
+	}
+
+	if activeLeases > 0 {
+		return fmt.Errorf("%w: cannot deregister worker with %d active lease(s)", ErrActiveLeases, activeLeases)
+	}
+
+	if _, err := tx.Exec(ctx, "DELETE FROM workers WHERE id = $1", id); err != nil {
+		return fmt.Errorf("workers.DeregisterWorker: delete: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("workers.DeregisterWorker: commit: %w", err)
+	}
+
 	return nil
 }
 

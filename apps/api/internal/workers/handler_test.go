@@ -18,9 +18,13 @@ import (
 )
 
 type mockWorkerStore struct {
-	queryWorkersFunc func(ctx context.Context) ([]workerResponse, error)
-	getWorkerFunc    func(ctx context.Context, id string) (*workerResponse, error)
-	releaseLeaseFunc func(ctx context.Context, workerID, jobID string) error
+	queryWorkersFunc     func(ctx context.Context) ([]workerResponse, error)
+	getWorkerFunc        func(ctx context.Context, id string) (*workerResponse, error)
+	releaseLeaseFunc     func(ctx context.Context, workerID, jobID string) error
+	drainWorkerFunc      func(ctx context.Context, id string) (*workerResponse, error)
+	cordonWorkerFunc     func(ctx context.Context, id string) (*workerResponse, error)
+	resumeWorkerFunc     func(ctx context.Context, id string) (*workerResponse, error)
+	deregisterWorkerFunc func(ctx context.Context, id string) error
 }
 
 func (m *mockWorkerStore) QueryWorkers(ctx context.Context) ([]workerResponse, error) {
@@ -44,6 +48,34 @@ func (m *mockWorkerStore) ReleaseLease(ctx context.Context, workerID, jobID stri
 	return nil
 }
 
+func (m *mockWorkerStore) DrainWorker(ctx context.Context, id string) (*workerResponse, error) {
+	if m.drainWorkerFunc != nil {
+		return m.drainWorkerFunc(ctx, id)
+	}
+	return nil, ErrWorkerNotFound
+}
+
+func (m *mockWorkerStore) CordonWorker(ctx context.Context, id string) (*workerResponse, error) {
+	if m.cordonWorkerFunc != nil {
+		return m.cordonWorkerFunc(ctx, id)
+	}
+	return nil, ErrWorkerNotFound
+}
+
+func (m *mockWorkerStore) ResumeWorker(ctx context.Context, id string) (*workerResponse, error) {
+	if m.resumeWorkerFunc != nil {
+		return m.resumeWorkerFunc(ctx, id)
+	}
+	return nil, ErrWorkerNotFound
+}
+
+func (m *mockWorkerStore) DeregisterWorker(ctx context.Context, id string) error {
+	if m.deregisterWorkerFunc != nil {
+		return m.deregisterWorkerFunc(ctx, id)
+	}
+	return nil
+}
+
 type mockBroadcaster struct {
 	dirty []string
 }
@@ -61,6 +93,13 @@ func setupTestApp(store workerStore, broadcaster eventBroadcaster, authn *auth.A
 		app.Get("/workers", h.List)
 		app.Get("/workers/:id", h.GetByID)
 		app.Post("/workers/:id/leases/:jobId/release", h.ReleaseLease)
+		app.Post("/workers/:id/drain", h.Drain)
+		app.Post("/workers/:id/cordon", h.Cordon)
+		app.Patch("/workers/:id/cordon", h.Cordon)
+		app.Post("/workers/:id/resume", h.Resume)
+		app.Patch("/workers/:id/resume", h.Resume)
+		app.Delete("/workers/:id", h.Deregister)
+		app.Post("/workers/:id/deregister", h.Deregister)
 	}
 	return app, h
 }
@@ -412,6 +451,18 @@ func TestWorkers_AuthScopesEnforced(t *testing.T) {
 		releaseLeaseFunc: func(ctx context.Context, workerID, jobID string) error {
 			return nil
 		},
+		drainWorkerFunc: func(ctx context.Context, id string) (*workerResponse, error) {
+			return &workerResponse{ID: id, State: "draining"}, nil
+		},
+		cordonWorkerFunc: func(ctx context.Context, id string) (*workerResponse, error) {
+			return &workerResponse{ID: id, State: "cordoned"}, nil
+		},
+		resumeWorkerFunc: func(ctx context.Context, id string) (*workerResponse, error) {
+			return &workerResponse{ID: id, State: "active"}, nil
+		},
+		deregisterWorkerFunc: func(ctx context.Context, id string) error {
+			return nil
+		},
 	}
 
 	authn := &auth.Authenticator{Store: auth.NewStore(nil)}
@@ -503,5 +554,250 @@ func TestWorkers_AuthScopesEnforced(t *testing.T) {
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("POST release with jobs:write expected 200, got %d", resp.StatusCode)
+	}
+
+	// 4. Lifecycle controls require jobs:write
+	endpoints := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodPost, "/workers/01WORKER1/drain"},
+		{http.MethodPost, "/workers/01WORKER1/cordon"},
+		{http.MethodPost, "/workers/01WORKER1/resume"},
+		{http.MethodDelete, "/workers/01WORKER1"},
+	}
+
+	for _, ep := range endpoints {
+		// 4a. Insufficient scope -> 403 Forbidden
+		reqForbidden := httptest.NewRequest(ep.method, ep.path, nil)
+		reqForbidden.Header.Set("X-Test-Scopes", auth.ScopeQueueRead)
+		rForbidden, err := app.Test(reqForbidden)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = rForbidden.Body.Close()
+		if rForbidden.StatusCode != http.StatusForbidden {
+			t.Fatalf("%s %s with queue:read expected 403, got %d", ep.method, ep.path, rForbidden.StatusCode)
+		}
+
+		// 4b. Authorized scope -> 200 OK
+		reqOK := httptest.NewRequest(ep.method, ep.path, nil)
+		reqOK.Header.Set("X-Test-Scopes", auth.ScopeJobsWrite)
+		rOK, err := app.Test(reqOK)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = rOK.Body.Close()
+		if rOK.StatusCode != http.StatusOK {
+			t.Fatalf("%s %s with jobs:write expected 200, got %d", ep.method, ep.path, rOK.StatusCode)
+		}
+	}
+}
+
+func TestDrain_Success(t *testing.T) {
+	t.Parallel()
+
+	broadcaster := &mockBroadcaster{}
+	store := &mockWorkerStore{
+		drainWorkerFunc: func(ctx context.Context, id string) (*workerResponse, error) {
+			if id == "01WORKER1" {
+				return &workerResponse{
+					ID:    "01WORKER1",
+					State: "draining",
+				}, nil
+			}
+			return nil, ErrWorkerNotFound
+		},
+	}
+	app, _ := setupTestApp(store, broadcaster, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/workers/01WORKER1/drain", nil)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", resp.StatusCode)
+	}
+
+	var res workerResponse
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		t.Fatal(err)
+	}
+	if res.State != "draining" {
+		t.Fatalf("expected state draining, got %s", res.State)
+	}
+	if len(broadcaster.dirty) == 0 {
+		t.Fatal("expected broadcaster MarkDirty to be called")
+	}
+}
+
+func TestDrain_Conflict(t *testing.T) {
+	t.Parallel()
+
+	store := &mockWorkerStore{
+		drainWorkerFunc: func(ctx context.Context, id string) (*workerResponse, error) {
+			return nil, ErrWorkerConflict
+		},
+	}
+	app, _ := setupTestApp(store, nil, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/workers/01WORKER1/drain", nil)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict, got %d", resp.StatusCode)
+	}
+}
+
+func TestCordon_Success(t *testing.T) {
+	t.Parallel()
+
+	broadcaster := &mockBroadcaster{}
+	store := &mockWorkerStore{
+		cordonWorkerFunc: func(ctx context.Context, id string) (*workerResponse, error) {
+			return &workerResponse{
+				ID:    id,
+				State: "cordoned",
+			}, nil
+		},
+	}
+	app, _ := setupTestApp(store, broadcaster, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/workers/01WORKER1/cordon", nil)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", resp.StatusCode)
+	}
+
+	var res workerResponse
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		t.Fatal(err)
+	}
+	if res.State != "cordoned" {
+		t.Fatalf("expected state cordoned, got %s", res.State)
+	}
+}
+
+func TestResume_Success(t *testing.T) {
+	t.Parallel()
+
+	broadcaster := &mockBroadcaster{}
+	store := &mockWorkerStore{
+		resumeWorkerFunc: func(ctx context.Context, id string) (*workerResponse, error) {
+			return &workerResponse{
+				ID:    id,
+				State: "active",
+			}, nil
+		},
+	}
+	app, _ := setupTestApp(store, broadcaster, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/workers/01WORKER1/resume", nil)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", resp.StatusCode)
+	}
+
+	var res workerResponse
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		t.Fatal(err)
+	}
+	if res.State != "active" {
+		t.Fatalf("expected state active, got %s", res.State)
+	}
+}
+
+func TestDeregister_Success(t *testing.T) {
+	t.Parallel()
+
+	broadcaster := &mockBroadcaster{}
+	store := &mockWorkerStore{
+		deregisterWorkerFunc: func(ctx context.Context, id string) error {
+			if id == "01WORKER1" {
+				return nil
+			}
+			return ErrWorkerNotFound
+		},
+	}
+	app, _ := setupTestApp(store, broadcaster, nil)
+
+	req := httptest.NewRequest(http.MethodDelete, "/workers/01WORKER1", nil)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", resp.StatusCode)
+	}
+
+	var res map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		t.Fatal(err)
+	}
+	if res["deregistered"] != true || res["workerId"] != "01WORKER1" {
+		t.Fatalf("unexpected deregister payload: %v", res)
+	}
+}
+
+func TestDeregister_ConflictWithActiveLeases(t *testing.T) {
+	t.Parallel()
+
+	store := &mockWorkerStore{
+		deregisterWorkerFunc: func(ctx context.Context, id string) error {
+			return ErrActiveLeases
+		},
+	}
+	app, _ := setupTestApp(store, nil, nil)
+
+	req := httptest.NewRequest(http.MethodDelete, "/workers/01WORKER1", nil)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict, got %d", resp.StatusCode)
+	}
+}
+
+func TestDeregister_NotFound(t *testing.T) {
+	t.Parallel()
+
+	store := &mockWorkerStore{
+		deregisterWorkerFunc: func(ctx context.Context, id string) error {
+			return ErrWorkerNotFound
+		},
+	}
+	app, _ := setupTestApp(store, nil, nil)
+
+	req := httptest.NewRequest(http.MethodDelete, "/workers/nonexistent", nil)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 Not Found, got %d", resp.StatusCode)
 	}
 }

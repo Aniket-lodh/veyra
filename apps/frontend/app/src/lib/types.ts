@@ -64,7 +64,12 @@ export interface Job {
   attempts: JobAttempt[];
 }
 
-export type WorkerState = 'active' | 'idle' | 'draining' | 'disconnected';
+export type WorkerState =
+  | 'active'
+  | 'idle'
+  | 'draining'
+  | 'cordoned'
+  | 'disconnected';
 
 export interface WorkerLease {
   jobId: string;

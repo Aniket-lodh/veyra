@@ -68,7 +68,7 @@ func (s *Sweeper) tick(ctx context.Context) error {
 	const sql = `
 		UPDATE workers
 		SET state = 'disconnected'
-		WHERE state IN ('active', 'idle', 'draining')
+		WHERE state IN ('active', 'idle', 'draining', 'cordoned')
 		  AND last_heartbeat_at < now() - make_interval(secs => heartbeat_interval_seconds * 3)
 		RETURNING id, hostname, last_heartbeat_at,
 		          heartbeat_interval_seconds,

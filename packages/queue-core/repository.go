@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -276,6 +277,25 @@ func (r *Repository) ClaimNextJob(ctx context.Context, workerID string, queues, 
 	}
 	// Safe to call after Commit — pgx returns ErrTxClosed, which we discard.
 	defer func() { _ = tx.Rollback(ctx) }()
+
+	// (0) Check worker lifecycle state if registered.
+	// Workers in draining, cordoned, or disconnected states must not claim new jobs.
+	var workerState string
+	err = tx.QueryRow(ctx, "SELECT state::text FROM workers WHERE id = $1", workerID).Scan(&workerState)
+	if err == nil {
+		if workerState == "draining" || workerState == "cordoned" || workerState == "disconnected" {
+			slog.DebugContext(ctx, "queue.dequeue.worker_not_runnable",
+				"workerId", workerID,
+				"state", workerState,
+			)
+			return nil, nil
+		}
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "42P01" {
+			return nil, fmt.Errorf("queuecore.Repository.ClaimNextJob: check worker state: %w", err)
+		}
+	}
 
 	// (1) Pick one candidate under a row lock.
 	const selectCandidateSQL = `

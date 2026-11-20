@@ -122,6 +122,16 @@ describe('workers-helpers', () => {
       assert.equal(getWorkerLifecycle(w, fixedNow), 'draining');
     });
 
+    it('returns "cordoned" when worker state is cordoned and heartbeat is fresh', () => {
+      const w = mockWorker({
+        state: 'cordoned',
+        inFlight: 0,
+        lastHeartbeatAt: new Date(fixedNow - 4000).toISOString(),
+        heartbeatIntervalSeconds: 10,
+      });
+      assert.equal(getWorkerLifecycle(w, fixedNow), 'cordoned');
+    });
+
     it('returns "busy" when healthy worker has inFlight > 0', () => {
       const w = mockWorker({
         state: 'active',
@@ -153,6 +163,9 @@ describe('workers-helpers', () => {
 
       assert.equal(getWorkerStatusBadgeProps('draining').tone, 'info');
       assert.equal(getWorkerStatusBadgeProps('draining').label, 'Draining');
+
+      assert.equal(getWorkerStatusBadgeProps('cordoned').tone, 'warning');
+      assert.equal(getWorkerStatusBadgeProps('cordoned').label, 'Cordoned');
 
       assert.equal(getWorkerStatusBadgeProps('stale').tone, 'warning');
       assert.equal(
@@ -214,6 +227,8 @@ describe('workers-helpers', () => {
       assert.equal(metrics.totalWorkers, 4);
       assert.equal(metrics.busyWorkers, 1);
       assert.equal(metrics.idleWorkers, 1);
+      assert.equal(metrics.drainingWorkers, 0);
+      assert.equal(metrics.cordonedWorkers, 0);
       assert.equal(metrics.staleWorkers, 1);
       assert.equal(metrics.disconnectedWorkers, 1);
       assert.equal(metrics.activeFleetWorkers, 3); // w1 + w2 + w3 (excludes w4)
