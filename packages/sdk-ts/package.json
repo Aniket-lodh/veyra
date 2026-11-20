@@ -16,10 +16,14 @@
     "src",
     "README.md"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test test/*.test.ts"
+    "test": "node --experimental-strip-types --test test/*.test.ts",
+    "prepublishOnly": "tsc"
   },
   "keywords": [
     "veyra",
@@ -29,5 +33,17 @@
     "workers",
     "orchestration"
   ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Aniket-lodh/veyra.git",
+    "directory": "packages/sdk-ts"
+  },
+  "homepage": "https://github.com/Aniket-lodh/veyra#readme",
+  "bugs": {
+    "url": "https://github.com/Aniket-lodh/veyra/issues"
+  },
   "license": "Apache-2.0"
 }

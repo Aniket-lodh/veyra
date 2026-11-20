@@ -303,7 +303,7 @@ func (d *Dispatcher) deliver(ctx context.Context, j claimedJob) {
 			"jobId", j.ID,
 			"err", err.Error(),
 		)
-		d.recordFailure(ctx, j.ID, j.CallbackAttempts, fmt.Sprintf("marshal payload: %v", err), true)
+		d.recordFailure(ctx, j.ID, fmt.Sprintf("marshal payload: %v", err))
 		return
 	}
 
@@ -312,7 +312,7 @@ func (d *Dispatcher) deliver(ctx context.Context, j claimedJob) {
 
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, j.CallbackURL, bytes.NewReader(bodyBytes))
 	if err != nil {
-		d.recordFailure(ctx, j.ID, j.CallbackAttempts, fmt.Sprintf("build request: %v", err), true)
+		d.recordFailure(ctx, j.ID, fmt.Sprintf("build request: %v", err))
 		return
 	}
 
@@ -380,7 +380,7 @@ func (d *Dispatcher) deliver(ctx context.Context, j claimedJob) {
 			"permanent", true,
 			"durationMs", duration.Milliseconds(),
 		)
-		d.recordFailure(ctx, j.ID, j.CallbackAttempts, errDetail, true)
+		d.recordFailure(ctx, j.ID, errDetail)
 		return
 	}
 
@@ -418,7 +418,7 @@ func (d *Dispatcher) handleRetryOrFailure(ctx context.Context, j claimedJob, err
 			"err", errDetail,
 			"permanent", true,
 		)
-		d.recordFailure(ctx, j.ID, j.CallbackAttempts, errDetail, false)
+		d.recordFailure(ctx, j.ID, errDetail)
 	}
 }
 
@@ -455,7 +455,7 @@ func (d *Dispatcher) recordRetry(ctx context.Context, jobID string, delaySeconds
 	}
 }
 
-func (d *Dispatcher) recordFailure(ctx context.Context, jobID string, attempts int, errMsg string, permanent bool) {
+func (d *Dispatcher) recordFailure(ctx context.Context, jobID string, errMsg string) {
 	if d.pool == nil {
 		return
 	}

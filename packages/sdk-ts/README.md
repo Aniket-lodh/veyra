@@ -1,18 +1,19 @@
 # @veyra/sdk
 
-Lightweight TypeScript & Node.js SDK for the [Veyra](https://github.com/Aniket-lodh/veyra) Distributed Execution Platform.
+Lightweight, zero-dependency TypeScript & Node.js SDK for the [Veyra](https://github.com/Aniket-lodh/veyra) Distributed Execution Platform.
 
-Built directly on top of Veyra's REST API and HTTP Worker Protocol. **Zero runtime dependencies** — uses Node 18+ native web standards (`fetch`, `AbortController`, `crypto`). No PostgreSQL driver or native binary bindings required.
+Built directly on top of Veyra's REST API and HTTP Worker Protocol. Uses native web and Node 18+ standards (`fetch`, `AbortController`, `crypto`). No native binary bindings or direct database connections required.
 
 ---
 
 ## Features
 
 - **Client Methods:** `enqueue()`, `getJob()`, `cancelJob()`, `retryJob()`
-- **Robust Worker Loop:** Auto-registration, background heartbeats, empty queue backoff (`204 No Content`), transparent `404` recovery/re-registration.
-- **Lease Renewal & Protection:** Automatic periodic lease renewals while jobs execute; automatic lease renewal termination and `AbortSignal` trigger on `409 Conflict` (lease expired or reclaimed).
-- **Graceful Shutdown & Draining:** Drains active workers, settles in-flight jobs, and safely deregisters.
+- **Robust Worker Engine:** Automatic worker registration, background heartbeats, empty queue backoff (`204 No Content`), and transparent `404` recovery/re-registration.
+- **Concurrency & Leases:** Tunable concurrency pool, automatic periodic lease renewals during execution, and instant lease termination with `AbortSignal` triggering on `409 Conflict` (lease expired or reclaimed).
+- **Completion Webhooks & HMAC Verification:** Supports enqueueing jobs with `callbackUrl` and provides guidance/helpers for verifying HMAC-SHA256 signatures (`X-Veyra-Signature`).
 - **Failures & Dead-Lettering:** Automatic error formatting, stack trace capture, and immediate dead-lettering via `NonRetryableError`.
+- **Graceful Shutdown:** Drains in-flight jobs within a configurable timeout, cancels timers, and cleanly deregisters from the fleet.
 
 ---
 
@@ -28,7 +29,7 @@ yarn add @veyra/sdk
 
 ---
 
-## Quickstart
+## Client Usage
 
 ### 1. Initialize Client & Enqueue a Job
 
@@ -41,7 +42,7 @@ const client = new VeyraClient({
   defaultQueue: 'default',
 });
 
-// Enqueue a job
+// Enqueue a job with priority, backoff, and completion webhook
 const job = await client.enqueue({
   queue: 'default',
   handler: 'sync_inventory',
@@ -57,12 +58,31 @@ const job = await client.enqueue({
     baseSeconds: 30,
     capSeconds: 3600,
   },
+  idempotencyKey: 'inv-sync-2026-11-20-001',
+  callbackUrl: 'https://api.example.com/webhooks/veyra-completion',
 });
 
 console.log('Enqueued job:', job.id, job.status);
 ```
 
-### 2. Implement and Run a Distributed Worker
+### 2. Inspect, Cancel, or Retry Jobs
+
+```typescript
+// Fetch job status and attempt history
+const job = await client.getJob('job_01JC...XYZ');
+
+// Cancel an active or queued job
+await client.cancelJob('job_01JC...XYZ');
+
+// Retry a failed, cancelled, or dead-lettered job
+await client.retryJob('job_01JC...XYZ');
+```
+
+---
+
+## Distributed Worker Usage
+
+### Running Custom Handlers with Concurrency & Leases
 
 ```typescript
 import { VeyraClient, NonRetryableError } from '@veyra/sdk';
@@ -72,39 +92,42 @@ const client = new VeyraClient({
   apiKey: process.env.VEYRA_API_KEY || 'veyra_...',
 });
 
-// Create worker listening to specific queues
+// Create managed worker
 const worker = client.createWorker({
   queues: ['default', 'inventory'],
-  concurrency: 5,
+  concurrency: 5, // Concurrent jobs executed in parallel
+  pollIntervalMs: 1_000, // Backoff when queue is empty (204 No Content)
+  heartbeatIntervalMs: 10_000, // Worker health heartbeat
+  leaseHeartbeatIntervalMs: 10_000, // In-flight lease renewal cadence
 });
 
-// Register handler function
+// Register custom handler
 worker.registerHandler('sync_inventory', async (job, ctx) => {
   console.log(`Processing job ${job.id} (attempt ${ctx.attempt})`);
 
-  // Check abort signal if lease lost
+  // Check abort signal: aborted if another worker reclaimed or lease expired
   if (ctx.signal.aborted) {
-    throw new Error('Aborted due to lease expiration');
+    throw new Error('Execution aborted: lease lost or expired');
   }
 
   const { sku, quantity } = job.payload as { sku: string; quantity: number };
 
   if (!sku) {
-    // Throw NonRetryableError to dead-letter immediately without exhausting retries
-    throw new NonRetryableError('SKU is required and cannot be empty');
+    // Throw NonRetryableError to dead-letter immediately without retries
+    throw new NonRetryableError('SKU is required');
   }
 
-  // Simulate business logic...
+  // Execute task...
   return { updated: true, sku, quantity, processedAt: new Date().toISOString() };
 });
 
-// Start worker
+// Start claiming and processing jobs
 await worker.start();
-console.log(`Worker ${worker.workerId} active and polling for jobs...`);
+console.log(`Worker ${worker.workerId} active and polling...`);
 
-// Graceful shutdown on SIGTERM / SIGINT
+// Handle graceful shutdown
 const shutdown = async () => {
-  console.log('Shutting down worker...');
+  console.log('Draining worker and shutting down...');
   await worker.stop({ timeoutMs: 15_000 });
   process.exit(0);
 };
@@ -112,3 +135,69 @@ const shutdown = async () => {
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 ```
+
+---
+
+## Completion Webhooks & HMAC Verification
+
+When jobs are enqueued with a `callbackUrl`, Veyra delivers an HTTP POST notification upon reaching a terminal state (`succeeded`, `failed`, `dead_lettered`, or `cancelled`).
+
+### Webhook Headers & Payload Structure
+
+Veyra includes the following headers with each webhook dispatch:
+
+- `Content-Type: application/json`
+- `X-Veyra-Event: job.completed`
+- `X-Veyra-Job-Id: <job_id>`
+- `X-Veyra-Status: <status>`
+- `X-Veyra-Attempt: <attempt_number>`
+- `X-Veyra-Delivery-Attempt: <callback_attempt>`
+- `X-Veyra-Timestamp: <iso_timestamp>`
+- `X-Veyra-Signature: sha256=<hex_hmac>` (when `VEYRA_CALLBACK_SECRET` is configured on API)
+
+### Verifying HMAC Signatures (Node.js / Express)
+
+```typescript
+import crypto from 'node:crypto';
+
+export function verifyVeyraWebhook(
+  rawBody: Buffer | string,
+  signatureHeader: string | undefined,
+  secret: string
+): boolean {
+  if (!signatureHeader || !signatureHeader.startsWith('sha256=')) {
+    return false;
+  }
+
+  const expectedSignature = signatureHeader.slice('sha256='.length);
+  const hmac = crypto.createHmac('sha256', secret);
+  hmac.update(rawBody);
+  const actualSignature = hmac.digest('hex');
+
+  return crypto.timingSafeEqual(
+    Buffer.from(actualSignature, 'hex'),
+    Buffer.from(expectedSignature, 'hex')
+  );
+}
+```
+
+---
+
+## Development & Testing
+
+```bash
+# Typecheck
+pnpm typecheck
+
+# Run unit tests
+pnpm test
+
+# Build bundle and declaration files
+pnpm build
+```
+
+---
+
+## License
+
+[Apache-2.0](LICENSE)

@@ -542,7 +542,7 @@ func (r *Repository) MarkJobSucceeded(ctx context.Context, p SucceedParams) (*Jo
 	return job, nil
 }
 
-// MarkJobFailed closes the in-flight attempt with outcome='failed' and either dead-letters the job (permanent.
+// MarkJobFailed closes the in-flight attempt with outcome='failed' and either dead-letters or reschedules the job.
 func (r *Repository) MarkJobFailed(ctx context.Context, p FailParams) (*Job, error) {
 	if p.WorkerID == "" {
 		return nil, errors.New("queuecore.Repository.MarkJobFailed: workerID is required")
@@ -740,7 +740,7 @@ func (r *Repository) RenewLease(ctx context.Context, p RenewParams) (*Job, error
 	return job, nil
 }
 
-// lockJobForCompletion is the shared lock+guard path for Ack, Nack, and RenewLease — every operation that.
+// lockJobForCompletion is the shared lock and guard path for Ack, Nack, and RenewLease.
 func (r *Repository) lockJobForCompletion(
 	ctx context.Context,
 	tx pgx.Tx,
