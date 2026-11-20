@@ -8,7 +8,9 @@ import {
   getPriorityMeta,
   inferTabFromStatuses,
   isJobCancellable,
+  isJobRetryable,
   mapTabToStatuses,
+  RETRYABLE_STATUS_SET,
   validateJsonString,
 } from './jobs-helpers.ts';
 import assert from 'node:assert/strict';
@@ -29,6 +31,22 @@ describe('jobs-helpers', () => {
       assert.equal(isJobCancellable('succeeded'), false);
       assert.equal(isJobCancellable('dead-lettered'), false);
       assert.equal(isJobCancellable('cancelled'), false);
+    });
+  });
+
+  describe('isJobRetryable & RETRYABLE_STATUS_SET', () => {
+    it('allows retrying failed, dead-lettered, and cancelled jobs', () => {
+      assert.equal(RETRYABLE_STATUS_SET.size, 3);
+      assert.equal(isJobRetryable('failed'), true);
+      assert.equal(isJobRetryable('dead-lettered'), true);
+      assert.equal(isJobRetryable('cancelled'), true);
+    });
+
+    it('rejects retry for queued, scheduled, running, and succeeded jobs', () => {
+      assert.equal(isJobRetryable('queued'), false);
+      assert.equal(isJobRetryable('scheduled'), false);
+      assert.equal(isJobRetryable('running'), false);
+      assert.equal(isJobRetryable('succeeded'), false);
     });
   });
 

@@ -12,6 +12,10 @@ export interface OperationalAlertItem {
   message: string;
   actionLabel: string;
   actionHref: string;
+  secondaryAction?: {
+    label: string;
+    actionKey: 'replay-dlq';
+  };
   disabledSecondaryAction?: {
     label: string;
     pendingReason: string;
@@ -117,10 +121,9 @@ export function computeSystemHealth(params: {
       message: `${deadLettered.toLocaleString()} job(s) exhausted their retry budget and were moved to DLQ (SPEC §7).`,
       actionLabel: 'Review DLQ Jobs',
       actionHref: jobsByStatusPath('dead-lettered'),
-      disabledSecondaryAction: {
+      secondaryAction: {
         label: 'Replay DLQ',
-        pendingReason:
-          'POST /jobs/dlq/replay endpoint pending backend implementation',
+        actionKey: 'replay-dlq',
       },
     });
   }

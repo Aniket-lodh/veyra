@@ -29,25 +29,38 @@ const (
 type jobRepository interface {
 	Create(ctx context.Context, p queuecore.CreateParams) (*queuecore.Job, error)
 	Cancel(ctx context.Context, p queuecore.CancelParams) (*queuecore.Job, error)
+	Retry(ctx context.Context, p queuecore.RetryParams) (*queuecore.Job, error)
+	ReplayDLQ(ctx context.Context, p queuecore.ReplayDLQParams) ([]string, error)
 	GetByID(ctx context.Context, id string) (*queuecore.Job, error)
 	List(ctx context.Context, p queuecore.ListParams) ([]*queuecore.Job, error)
 	Count(ctx context.Context, p queuecore.ListParams) (int, error)
 	ListAttempts(ctx context.Context, jobID string) ([]*queuecore.Attempt, error)
 }
 
-// Handler holds the dependencies the job HTTP routes need.
-type Handler struct {
-	repo jobRepository
+type eventBroadcaster interface {
+	MarkDirty(resources ...string)
 }
 
-func NewHandler(repo jobRepository) *Handler {
-	return &Handler{repo: repo}
+// Handler holds the dependencies the job HTTP routes need.
+type Handler struct {
+	repo        jobRepository
+	broadcaster eventBroadcaster
+}
+
+func NewHandler(repo jobRepository, broadcaster ...eventBroadcaster) *Handler {
+	var b eventBroadcaster
+	if len(broadcaster) > 0 {
+		b = broadcaster[0]
+	}
+	return &Handler{repo: repo, broadcaster: b}
 }
 
 // Register mounts the job routes on the fiber app.
 func Register(app *fiber.App, h *Handler, authn *auth.Authenticator) {
 	app.Post("/jobs", authn.Require(auth.ScopeJobsWrite), h.Create)
 	app.Get("/jobs", authn.Require(auth.ScopeJobsRead), h.List)
+	app.Post("/jobs/dlq/replay", authn.Require(auth.ScopeJobsWrite), h.ReplayDLQ)
+	app.Post("/jobs/:id/retry", authn.Require(auth.ScopeJobsWrite), h.Retry)
 	app.Get("/jobs/:id", authn.Require(auth.ScopeJobsRead), h.GetByID)
 	app.Post("/jobs/:id/cancel", authn.Require(auth.ScopeJobsWrite), h.Cancel)
 }
@@ -265,6 +278,117 @@ func (h *Handler) Cancel(c fiber.Ctx) error {
 		resp.Attempts = append(resp.Attempts, toAttemptResponse(a))
 	}
 	return c.JSON(resp)
+}
+
+// replayDLQRequest is the POST /jobs/dlq/replay body.
+type replayDLQRequest struct {
+	Queue   *string `json:"queue,omitempty"`
+	Handler *string `json:"handler,omitempty"`
+	Limit   *int    `json:"limit,omitempty"`
+}
+
+// replayDLQResponse is the response body for POST /jobs/dlq/replay.
+type replayDLQResponse struct {
+	ReplayedCount int      `json:"replayedCount"`
+	JobIDs        []string `json:"jobIds"`
+}
+
+// Retry handles POST /jobs/:id/retry.
+func (h *Handler) Retry(c fiber.Ctx) error {
+	id := c.Params("id")
+	if id == "" {
+		return badRequest(c, "id is required")
+	}
+	ctx := c.Context()
+	job, err := h.repo.Retry(ctx, queuecore.RetryParams{JobID: id})
+	if err != nil {
+		if errors.Is(err, queuecore.ErrJobNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "job not found"})
+		}
+		if errors.Is(err, queuecore.ErrNotRetryable) {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+				"error": "job is not retryable: status must be failed, dead_lettered, or cancelled",
+			})
+		}
+		return internalError(c, err)
+	}
+	slog.InfoContext(ctx, "jobs.retry",
+		"event", "jobs.retry",
+		"jobId", job.ID,
+		"status", string(job.Status),
+	)
+	if h.broadcaster != nil {
+		h.broadcaster.MarkDirty("jobs", "stats")
+	}
+	attempts, err := h.repo.ListAttempts(ctx, id)
+	if err != nil {
+		return internalError(c, err)
+	}
+	resp := toResponse(job)
+	resp.Attempts = make([]attemptResponse, 0, len(attempts))
+	for _, a := range attempts {
+		resp.Attempts = append(resp.Attempts, toAttemptResponse(a))
+	}
+	return c.JSON(resp)
+}
+
+// ReplayDLQ handles POST /jobs/dlq/replay.
+func (h *Handler) ReplayDLQ(c fiber.Ctx) error {
+	var req replayDLQRequest
+	if len(c.Body()) > 0 {
+		if err := json.Unmarshal(c.Body(), &req); err != nil {
+			return badRequest(c, "invalid JSON body: "+err.Error())
+		}
+	}
+
+	limit := 100
+	if req.Limit != nil {
+		if *req.Limit < 1 || *req.Limit > 500 {
+			return badRequest(c, "limit must be between 1 and 500")
+		}
+		limit = *req.Limit
+	}
+
+	var queue string
+	if req.Queue != nil {
+		queue = strings.TrimSpace(*req.Queue)
+	}
+	var handler string
+	if req.Handler != nil {
+		handler = strings.TrimSpace(*req.Handler)
+	}
+
+	ctx := c.Context()
+	jobIDs, err := h.repo.ReplayDLQ(ctx, queuecore.ReplayDLQParams{
+		Queue:   queue,
+		Handler: handler,
+		Limit:   limit,
+	})
+	if err != nil {
+		return internalError(c, err)
+	}
+
+	replayedCount := len(jobIDs)
+	slog.InfoContext(ctx, "jobs.dlq.replay",
+		"event", "jobs.dlq.replay",
+		"replayedCount", replayedCount,
+		"queue", queue,
+		"handler", handler,
+		"limit", limit,
+	)
+
+	if replayedCount > 0 && h.broadcaster != nil {
+		h.broadcaster.MarkDirty("jobs", "stats")
+	}
+
+	if jobIDs == nil {
+		jobIDs = []string{}
+	}
+
+	return c.JSON(replayDLQResponse{
+		ReplayedCount: replayedCount,
+		JobIDs:        jobIDs,
+	})
 }
 
 // GetByID handles GET /jobs/:id.

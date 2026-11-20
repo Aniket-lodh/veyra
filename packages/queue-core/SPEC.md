@@ -24,6 +24,7 @@ it verifies. See
 | **Cancel**        | [§6 Cancel](#6-cancel)                                             | implemented   |
 | **Timeout / Reclaim** | [§5 Reclaim](#5-reclaim) — a top-level primitive with multiple invocation sites (dequeue inline + api-side periodic tick) | implemented   |
 | **Failure classification** (retryable vs permanent) | [§7 Failure classification](#7-failure-classification--retryable-vs-permanent) | implemented   |
+| **Manual Retry & Bulk DLQ Replay** | [§8 Manual Retry and DLQ Replay](#8-manual-retry-and-dlq-replay) | implemented   |
 
 A "not yet written" section is a hole, not a license to invent semantics. Stop
 and add the section first.
@@ -1969,3 +1970,90 @@ Integration tests in `packages/queue-core/repository_complete_test.go`
   today's retryable behavior).
 - `TestReclaim_BudgetExhausted_NeverPermanent` — §7.6 (reclaim DLQ uses
   `AttemptBudgetExhausted`, not a permanent disposition).
+
+---
+
+## 8. Manual Retry and DLQ Replay
+
+> **Status: implemented.** Operator-initiated manual transitions to return
+> failed, dead-lettered, or cancelled jobs back to `queued` for fresh execution.
+
+### 8.1 Manual Single Job Retry
+
+Manual single job retry (`Repository.Retry`, HTTP `POST /jobs/:id/retry`) allows an
+operator to resurrect a single job that has reached a terminal or attention state.
+
+#### 8.1.1 Inputs
+
+| Name    | Type     | Meaning                                   |
+|---------|----------|-------------------------------------------|
+| `jobId` | `string` | The job to retry. Required, non-empty.   |
+
+#### 8.1.2 Outcome by prior status
+
+Retry locks the `jobs` row `FOR UPDATE`, then checks `status`:
+
+| Prior status | Result | Field writes |
+|--------------|--------|--------------|
+| `failed` | **transition** | `status='queued'`, `attempt=0`, `error=NULL`, `scheduled_for=now()`, `next_retry_at=NULL`, `current_worker_id=NULL`, `lease_expires_at=NULL`, `completed_at=NULL`, `cancelled_at=NULL`, `dead_lettered_at=NULL` |
+| `dead_lettered` | **transition** | same as failed |
+| `cancelled` | **transition** | same as failed |
+| `queued` | **reject** `ErrNotRetryable` | unchanged (already queued/scheduled) |
+| `running` | **reject** `ErrNotRetryable` | unchanged (actively leased by worker) |
+| `succeeded` | **reject** `ErrNotRetryable` | unchanged (terminal success) |
+| (missing row) | **reject** `ErrJobNotFound` | — |
+
+`attempt` is reset to 0, providing the job with a complete fresh attempt budget (`max_attempts`).
+`error` is cleared. `scheduled_for` is set to `now()` so it becomes immediately runnable by workers.
+All DB constraints (`jobs_lease_consistency`, `jobs_retry_consistency`, `jobs_terminal_exclusivity`, `jobs_attempt_bounds`) are satisfied.
+
+#### 8.1.3 Errors
+
+| Sentinel | When |
+|----------|------|
+| `ErrJobNotFound` | No row with `jobId` |
+| `ErrNotRetryable` | Row is in `queued`, `running`, or `succeeded` |
+
+The HTTP API maps `ErrJobNotFound` to 404 Not Found and `ErrNotRetryable` to 409 Conflict.
+
+#### 8.1.4 Observability
+
+| Event | Level | Fields |
+|-------|-------|--------|
+| `queue.retry.manual.success` | info | `jobId`, `priorStatus` |
+| `queue.retry.manual.rejected` | info | `jobId`, `priorStatus`, `reason` ∈ {`not_retryable`, `not_found`} |
+
+---
+
+### 8.2 Bulk DLQ Replay
+
+Bulk DLQ replay (`Repository.ReplayDLQ`, HTTP `POST /jobs/dlq/replay`) atomically
+requeues batches of `dead_lettered` jobs matching optional queue and handler filters.
+
+#### 8.2.1 Inputs
+
+| Name      | Type     | Required | Default | Meaning                                |
+|-----------|----------|----------|---------|----------------------------------------|
+| `queue`   | `string` | no       | none    | Filter by specific queue.              |
+| `handler` | `string` | no       | none    | Filter by specific handler.            |
+| `limit`   | `int`    | no       | 100     | Max jobs to replay (1..500).           |
+
+#### 8.2.2 Semantics & Selection
+
+- Matches rows strictly with `status = 'dead_lettered'`.
+- Uses `FOR UPDATE SKIP LOCKED` ordered by `enqueued_at ASC` up to `limit`.
+- Atomically updates selected rows:
+  - `status = 'queued'`
+  - `attempt = 0`
+  - `error = NULL`
+  - `scheduled_for = now()`
+  - `current_worker_id = NULL`, `lease_expires_at = NULL`, `next_retry_at = NULL`
+  - `completed_at = NULL`, `cancelled_at = NULL`, `dead_lettered_at = NULL`
+- Returns the list of replayed job IDs (`jobIds`) and count (`replayedCount`).
+
+#### 8.2.3 Observability
+
+| Event | Level | Fields |
+|-------|-------|--------|
+| `queue.dlq.replay` | info | `replayedCount`, `queue`, `handler`, `limit` |
+

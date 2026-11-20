@@ -1,3 +1,4 @@
+import { DlqReplayDialog } from '@/components/jobs/dlq-replay-dialog';
 import { JobCancelDialog } from '@/components/jobs/job-cancel-dialog';
 import { JobInspectorDrawer } from '@/components/jobs/job-inspector-drawer';
 import { QuickEnqueueDialog } from '@/components/jobs/quick-enqueue-dialog';
@@ -79,6 +80,7 @@ export function DashboardPage() {
   const [inspectingJobId, setInspectingJobId] = useState<string | null>(null);
   const [cancellingJob, setCancellingJob] = useState<Job | null>(null);
   const [isQuickEnqueueOpen, setIsQuickEnqueueOpen] = useState(false);
+  const [isDlqReplayOpen, setIsDlqReplayOpen] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [isManualRefreshing, setIsManualRefreshing] = useState(false);
   const [lastRefreshedAt, setLastRefreshedAt] = useState<Date>(
@@ -353,7 +355,21 @@ export function DashboardPage() {
                   </Button>
                 )}
 
-                {alert.disabledSecondaryAction && (
+                {alert.secondaryAction ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      if (alert.secondaryAction?.actionKey === 'replay-dlq') {
+                        setIsDlqReplayOpen(true);
+                      }
+                    }}
+                    className="bg-surface-base text-text-primary hover:bg-surface-elevated h-7 px-2 text-[0.6875rem]"
+                  >
+                    {alert.secondaryAction.label}
+                  </Button>
+                ) : alert.disabledSecondaryAction ? (
                   <Button
                     type="button"
                     variant="ghost"
@@ -364,7 +380,7 @@ export function DashboardPage() {
                   >
                     {alert.disabledSecondaryAction.label}
                   </Button>
-                )}
+                ) : null}
               </div>
             </div>
           ))}
@@ -426,9 +442,12 @@ export function DashboardPage() {
           tone={totals && totals.deadLettered > 0 ? 'danger' : 'default'}
           secondaryAction={{
             label: 'Replay DLQ',
-            disabled: true,
+            disabled: !totals || totals.deadLettered === 0,
+            onClick: () => setIsDlqReplayOpen(true),
             title:
-              'Bulk DLQ replay (POST /jobs/dlq/replay) pending backend implementation',
+              totals && totals.deadLettered > 0
+                ? 'Replay dead-lettered jobs back to queued'
+                : 'No dead-lettered jobs to replay',
           }}
         />
 
@@ -1045,6 +1064,15 @@ export function DashboardPage() {
           handleRefresh();
         }}
       />
+
+      <DlqReplayDialog
+        open={isDlqReplayOpen}
+        onOpenChange={setIsDlqReplayOpen}
+        totalDeadLettered={totals?.deadLettered}
+        onSuccess={() => {
+          handleRefresh();
+        }}
+      />
     </div>
   );
 }
@@ -1074,6 +1102,7 @@ function MetricCard({
     label: string;
     disabled?: boolean;
     title?: string;
+    onClick?: () => void;
   };
 }) {
   const isHot =
@@ -1132,25 +1161,30 @@ function MetricCard({
           onClick={(e) => {
             e.stopPropagation();
             e.preventDefault();
+            if (!secondaryAction.disabled) {
+              secondaryAction.onClick?.();
+            }
           }}
         >
-          <span
+          <button
+            type="button"
+            disabled={secondaryAction.disabled}
             className={cn(
-              'text-[0.625rem] font-medium transition-colors',
+              'text-left text-[0.625rem] font-medium transition-colors',
               secondaryAction.disabled
                 ? 'text-text-disabled cursor-not-allowed'
-                : 'text-text-muted hover:text-text-primary',
+                : 'text-text-primary cursor-pointer hover:underline',
             )}
             title={secondaryAction.title}
           >
             {secondaryAction.label}
-          </span>
+          </button>
           {secondaryAction.disabled && (
             <span
               className="border-border-subtle text-text-muted/60 rounded border px-1 py-0.5 text-[0.5625rem] font-medium"
               title={secondaryAction.title}
             >
-              pending API
+              empty
             </span>
           )}
         </div>

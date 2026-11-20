@@ -103,7 +103,7 @@ describe('dashboard-helpers', () => {
       assert.equal(res.alerts[0].severity, 'critical');
       assert.equal(res.alerts[0].actionLabel, 'Review DLQ Jobs');
       assert.match(res.alerts[0].actionHref, /dead-lettered/);
-      assert.equal(res.alerts[0].disabledSecondaryAction?.label, 'Replay DLQ');
+      assert.equal(res.alerts[0].secondaryAction?.label, 'Replay DLQ');
     });
 
     it('returns at_risk when active workers are 0 and jobs are waiting', () => {

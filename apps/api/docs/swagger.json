@@ -644,6 +644,127 @@
         }
       }
     },
+    "/jobs/{id}/retry": {
+      "post": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Retry a job",
+        "description": "Manual job retry (queue-core SPEC §8.1). Resurrects a job from failed, dead_lettered, or cancelled state back to queued with reset attempt count. Returns 409 when the job is queued, running, or succeeded.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Job retried successfully and requeued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown job id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Job not in a retryable state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/jobs/dlq/replay": {
+      "post": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Bulk DLQ replay",
+        "description": "Replay dead-lettered jobs in bulk (queue-core SPEC §8.2). Resets matched dead-lettered jobs back to queued.",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "queue": {
+                    "type": "string"
+                  },
+                  "handler": {
+                    "type": "string"
+                  },
+                  "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 500,
+                    "default": 100
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Dead-lettered jobs replayed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "replayedCount",
+                    "jobIds"
+                  ],
+                  "properties": {
+                    "replayedCount": {
+                      "type": "integer"
+                    },
+                    "jobIds": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid limit or request body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/workers": {
       "get": {
         "tags": [

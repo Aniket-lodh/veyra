@@ -17,7 +17,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { useJob } from '@/hooks/api';
+import { useJob, useRetryJob } from '@/hooks/api';
 import {
   formatDateTimeUTC,
   formatDurationMs,
@@ -27,6 +27,7 @@ import {
   formatAttemptRatio,
   getPriorityMeta,
   isJobCancellable,
+  isJobRetryable,
 } from '@/lib/jobs-helpers';
 import {
   jobDetailPath,
@@ -43,6 +44,7 @@ import {
   Cancel01Icon,
   Clock01Icon,
   Copy01Icon,
+  Refresh01Icon,
   ServerStack01Icon,
   Tick01Icon,
 } from '@hugeicons/core-free-icons';
@@ -108,6 +110,8 @@ export function JobInspectorDrawer({
 
   const priorityMeta = job ? getPriorityMeta(job.priority) : null;
   const cancellable = job ? isJobCancellable(job.status) : false;
+  const retryable = job ? isJobRetryable(job.status) : false;
+  const retryMutation = useRetryJob();
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -512,18 +516,36 @@ export function JobInspectorDrawer({
             </div>
 
             <div className="flex items-center gap-2">
-              {/* Disabled future capabilities with clear honest hints */}
               <Button
                 variant="outline"
                 size="sm"
-                disabled
-                title="Backend capability pending: POST /jobs/:id/retry"
-                className="text-text-disabled cursor-not-allowed text-xs"
+                disabled={!retryable || retryMutation.isPending}
+                title={
+                  retryable
+                    ? 'Retry this job'
+                    : `Status '${job.status}' is not retryable (failed, dead-lettered, or cancelled required)`
+                }
+                onClick={() => retryMutation.mutate(job.id)}
+                className={cn(
+                  !retryable && 'text-text-disabled cursor-not-allowed',
+                  'gap-1.5 text-xs',
+                )}
               >
-                <span>Retry Job</span>
-                <span className="border-border-subtle bg-surface-elevated text-text-muted ml-1.5 rounded px-1 py-0.5 text-[0.5625rem]">
-                  API Pending
+                <HugeiconsIcon
+                  icon={Refresh01Icon}
+                  className={cn(
+                    'h-3.5 w-3.5',
+                    retryMutation.isPending && 'animate-spin',
+                  )}
+                />
+                <span>
+                  {retryMutation.isPending ? 'Retrying…' : 'Retry Job'}
                 </span>
+                {!retryable && (
+                  <span className="border-border-subtle bg-surface-elevated text-text-muted ml-1 rounded px-1 py-0.5 text-[0.5625rem]">
+                    {job.status}
+                  </span>
+                )}
               </Button>
 
               <Button
