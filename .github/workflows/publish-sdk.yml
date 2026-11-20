@@ -36,6 +36,12 @@ jobs:
           cache: pnpm
           cache-dependency-path: packages/sdk-ts/pnpm-lock.yaml
 
+      - name: Upgrade npm to latest
+        run: npm install -g npm@latest
+
+      - name: Verify npm version
+        run: npm --version
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
@@ -49,4 +55,4 @@ jobs:
         run: pnpm test
 
       - name: Publish to npm
-        run: npm publish --provenance --access public
+        run: npm publish --provenance --access public --verbose
