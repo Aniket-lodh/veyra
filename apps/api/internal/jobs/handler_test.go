@@ -243,6 +243,17 @@ func TestCreate_IdempotentReplayHeader(t *testing.T) {
 			if gotHeader != tc.wantReplayHead {
 				t.Fatalf("expected Idempotent-Replay=%q, got %q", tc.wantReplayHead, gotHeader)
 			}
+
+			var bodyRes struct {
+				ID       string `json:"id"`
+				IsReplay bool   `json:"isReplay"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&bodyRes); err != nil {
+				t.Fatalf("failed to decode response: %v", err)
+			}
+			if bodyRes.IsReplay != tc.isReplay {
+				t.Fatalf("expected response body isReplay=%v, got %v", tc.isReplay, bodyRes.IsReplay)
+			}
 		})
 	}
 }
@@ -752,7 +763,7 @@ func TestJobRoutes_ScopeEnforcement(t *testing.T) {
 	Register(app, h, authn)
 
 	// 1. Unauthenticated requests should be 401
-	for _, path := range []string{"/jobs", "/jobs/01JOB/retry", "/jobs/dlq/replay"} {
+	for _, path := range []string{"/jobs", "/jobs/validate", "/jobs/01JOB/retry", "/jobs/dlq/replay"} {
 		method := http.MethodPost
 		if path == "/jobs" {
 			method = http.MethodGet
@@ -964,5 +975,283 @@ func TestList_InternalErrorSanitization(t *testing.T) {
 	}
 	if strings.Contains(bodyStr, "pgx") || strings.Contains(bodyStr, "internal-db.cluster") {
 		t.Fatalf("database details leaked in 500 response: %s", bodyStr)
+	}
+}
+
+func TestValidate_SuccessZeroDBCalls(t *testing.T) {
+	t.Parallel()
+
+	dbCalled := false
+	repo := &mockJobRepo{
+		createFunc: func(ctx context.Context, p queuecore.CreateParams) (*queuecore.Job, error) {
+			dbCalled = true
+			return nil, errors.New("should not be called")
+		},
+	}
+
+	h := NewHandler(repo)
+	app := fiber.New()
+	app.Post("/jobs/validate", h.Validate)
+
+	payload := map[string]any{
+		"handler":     "http_request",
+		"queue":       "notifications",
+		"payload":     map[string]any{"url": "https://example.com"},
+		"priority":    3,
+		"maxAttempts": 5,
+		"backoff": map[string]any{
+			"kind":        "exponential",
+			"baseSeconds": 10,
+			"capSeconds":  300,
+		},
+		"idempotencyKey": "test-key-123",
+	}
+	body, _ := json.Marshal(payload)
+
+	req := httptest.NewRequest(http.MethodPost, "/jobs/validate", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "test-key-123")
+
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", resp.StatusCode)
+	}
+
+	var res struct {
+		Valid bool   `json:"valid"`
+		Error string `json:"error,omitempty"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if !res.Valid {
+		t.Fatalf("expected valid=true, got valid=false (error: %s)", res.Error)
+	}
+	if dbCalled {
+		t.Fatal("expected zero database calls during dry-run validation")
+	}
+}
+
+func TestValidate_ValidationErrors(t *testing.T) {
+	t.Parallel()
+
+	h := NewHandler(&mockJobRepo{})
+	app := fiber.New()
+	app.Post("/jobs/validate", h.Validate)
+
+	tests := []struct {
+		name          string
+		body          any
+		headerKey     string
+		wantSubstring string
+	}{
+		{
+			name:          "invalid JSON syntax",
+			body:          `{"handler": `,
+			wantSubstring: "invalid JSON body",
+		},
+		{
+			name: "missing handler",
+			body: map[string]any{
+				"queue":   "default",
+				"payload": map[string]any{"foo": "bar"},
+			},
+			wantSubstring: "handler is required",
+		},
+		{
+			name: "missing queue",
+			body: map[string]any{
+				"handler": "http_request",
+				"payload": map[string]any{"foo": "bar"},
+			},
+			wantSubstring: "queue is required",
+		},
+		{
+			name: "missing payload",
+			body: map[string]any{
+				"handler": "http_request",
+				"queue":   "default",
+			},
+			wantSubstring: "payload is required",
+		},
+		{
+			name: "priority below 0",
+			body: map[string]any{
+				"handler":  "http_request",
+				"queue":    "default",
+				"payload":  map[string]any{"foo": "bar"},
+				"priority": -1,
+			},
+			wantSubstring: "priority must be between 0 and 9",
+		},
+		{
+			name: "priority above 9",
+			body: map[string]any{
+				"handler":  "http_request",
+				"queue":    "default",
+				"payload":  map[string]any{"foo": "bar"},
+				"priority": 10,
+			},
+			wantSubstring: "priority must be between 0 and 9",
+		},
+		{
+			name: "maxAttempts below 1",
+			body: map[string]any{
+				"handler":     "http_request",
+				"queue":       "default",
+				"payload":     map[string]any{"foo": "bar"},
+				"maxAttempts": 0,
+			},
+			wantSubstring: "maxAttempts must be >= 1",
+		},
+		{
+			name: "invalid backoff baseSeconds",
+			body: map[string]any{
+				"handler": "http_request",
+				"queue":   "default",
+				"payload": map[string]any{"foo": "bar"},
+				"backoff": map[string]any{
+					"kind":        "exponential",
+					"baseSeconds": 0,
+					"capSeconds":  60,
+				},
+			},
+			wantSubstring: "must be positive",
+		},
+		{
+			name: "idempotency key mismatch",
+			body: map[string]any{
+				"handler":        "http_request",
+				"queue":          "default",
+				"payload":        map[string]any{"foo": "bar"},
+				"idempotencyKey": "key-body",
+			},
+			headerKey:     "key-header",
+			wantSubstring: "do not match",
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var bodyReader io.Reader
+			if s, ok := tc.body.(string); ok {
+				bodyReader = strings.NewReader(s)
+			} else {
+				b, _ := json.Marshal(tc.body)
+				bodyReader = bytes.NewReader(b)
+			}
+
+			req := httptest.NewRequest(http.MethodPost, "/jobs/validate", bodyReader)
+			req.Header.Set("Content-Type", "application/json")
+			if tc.headerKey != "" {
+				req.Header.Set("Idempotency-Key", tc.headerKey)
+			}
+
+			resp, err := app.Test(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("expected 400 Bad Request, got %d", resp.StatusCode)
+			}
+
+			var res struct {
+				Valid bool   `json:"valid"`
+				Error string `json:"error"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+				t.Fatalf("failed to decode response: %v", err)
+			}
+			if res.Valid {
+				t.Fatal("expected valid=false, got valid=true")
+			}
+			if !strings.Contains(res.Error, tc.wantSubstring) {
+				t.Fatalf("expected error containing %q, got %q", tc.wantSubstring, res.Error)
+			}
+		})
+	}
+}
+
+func TestValidate_AuthScopeEnforcement(t *testing.T) {
+	t.Parallel()
+
+	h := NewHandler(&mockJobRepo{})
+	app := fiber.New()
+
+	app.Use(func(c fiber.Ctx) error {
+		if header := c.Get("X-Test-Scopes"); header != "" {
+			scopes := strings.Split(header, ",")
+			p := auth.Principal{
+				ID:     "test-principal",
+				Kind:   "api_key",
+				Scopes: scopes,
+			}
+			c.SetContext(auth.ContextWithPrincipal(c.Context(), p))
+		}
+		return c.Next()
+	})
+
+	authn := &auth.Authenticator{Store: auth.NewStore(nil)}
+	Register(app, h, authn)
+
+	validPayload := map[string]any{
+		"handler": "http_request",
+		"queue":   "default",
+		"payload": map[string]any{"foo": "bar"},
+	}
+	body, _ := json.Marshal(validPayload)
+
+	// 1. Unauthenticated -> 401
+	{
+		req := httptest.NewRequest(http.MethodPost, "/jobs/validate", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := app.Test(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("expected 401 Unauthorized, got %d", resp.StatusCode)
+		}
+	}
+
+	// 2. Read-only scope -> 403 Forbidden
+	{
+		req := httptest.NewRequest(http.MethodPost, "/jobs/validate", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Test-Scopes", auth.ScopeJobsRead)
+		resp, err := app.Test(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("expected 403 Forbidden, got %d", resp.StatusCode)
+		}
+	}
+
+	// 3. jobs:write scope -> 200 OK
+	{
+		req := httptest.NewRequest(http.MethodPost, "/jobs/validate", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Test-Scopes", auth.ScopeJobsWrite)
+		resp, err := app.Test(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d", resp.StatusCode)
+		}
 	}
 }

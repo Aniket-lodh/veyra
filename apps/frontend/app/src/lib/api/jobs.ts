@@ -1,4 +1,4 @@
-import { apiFetch, apiFetchWithMeta } from './client';
+import { ApiError, apiFetch, apiFetchWithMeta } from './client';
 import type { BackoffStrategy, Job, JobStatus } from '@/lib/types';
 
 export interface ListJobsParams {
@@ -55,6 +55,42 @@ export interface EnqueuedJob extends Job {
   isReplay?: boolean;
 }
 
+export interface ValidateJobResponse {
+  valid: boolean;
+  error?: string;
+}
+
+export async function validateJob(
+  input: EnqueueJobInput,
+  signal?: AbortSignal,
+): Promise<ValidateJobResponse> {
+  const headers: Record<string, string> = {};
+  if (input.idempotencyKey && input.idempotencyKey.trim() !== '') {
+    headers['Idempotency-Key'] = input.idempotencyKey.trim();
+  }
+
+  try {
+    return await apiFetch<ValidateJobResponse>('/jobs/validate', {
+      method: 'POST',
+      headers,
+      body: input,
+      signal,
+    });
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 400) {
+      if (
+        err.body !== null &&
+        typeof err.body === 'object' &&
+        'valid' in err.body
+      ) {
+        return err.body as ValidateJobResponse;
+      }
+      return { valid: false, error: err.message };
+    }
+    throw err;
+  }
+}
+
 export async function enqueueJob(
   input: EnqueueJobInput,
   signal?: AbortSignal,
@@ -71,7 +107,8 @@ export async function enqueueJob(
     signal,
   });
 
-  const isReplay = res.headers.get('idempotent-replay') === 'true';
+  const isReplay =
+    res.data.isReplay ?? res.headers.get('idempotent-replay') === 'true';
   return Object.assign(res.data, { isReplay });
 }
 

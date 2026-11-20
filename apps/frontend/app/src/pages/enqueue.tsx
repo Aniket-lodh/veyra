@@ -7,7 +7,12 @@ import { JsonEditor } from '@/components/ui/json-editor';
 import { Label } from '@/components/ui/label';
 import { StatusBadge } from '@/components/ui/status-badge';
 import { Textarea } from '@/components/ui/textarea';
-import { useEnqueueJob, useQueueStats, useWorkers } from '@/hooks/api';
+import {
+  useEnqueueJob,
+  useQueueStats,
+  useValidateJob,
+  useWorkers,
+} from '@/hooks/api';
 import { ApiError } from '@/lib/api/client';
 import type { EnqueuedJob } from '@/lib/api/jobs';
 import {
@@ -65,6 +70,10 @@ export function EnqueuePage() {
     key: string;
     message: string;
   } | null>(null);
+  const [dryRunResult, setDryRunResult] = useState<{
+    valid: boolean;
+    error?: string;
+  } | null>(null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
   // Queries for live queue and worker readiness
@@ -107,6 +116,7 @@ export function EnqueuePage() {
       setIdempotencyConflict(null);
       setValidationError(null);
       setValidationField(null);
+      setDryRunResult(null);
     },
     onError: (err) => {
       if (err instanceof ApiError && err.status === 409) {
@@ -120,6 +130,23 @@ export function EnqueuePage() {
     },
   });
 
+  const dryRunMutation = useValidateJob({
+    onSuccess: (res) => {
+      setDryRunResult(res);
+      if (res.valid) {
+        setValidationError(null);
+        setValidationField(null);
+      } else if (res.error) {
+        setValidationError(res.error);
+      }
+    },
+    onError: (err) => {
+      const msg = err instanceof ApiError ? err.message : String(err);
+      setDryRunResult({ valid: false, error: msg });
+      setValidationError(msg);
+    },
+  });
+
   const update = <K extends keyof EnqueueFormState>(
     key: K,
     value: EnqueueFormState[K],
@@ -127,6 +154,7 @@ export function EnqueuePage() {
     setForm((prev) => ({ ...prev, [key]: value }));
     setValidationError(null);
     setValidationField(null);
+    setDryRunResult(null);
     if (key === 'idempotencyKey') {
       setIdempotencyConflict(null);
     }
@@ -170,6 +198,7 @@ export function EnqueuePage() {
   };
 
   const handleHttpBodyChange = (body: string) => {
+    setDryRunResult(null);
     setForm((prev) => {
       let headers = prev.httpHeaders;
       if (body.trim() !== '' && !hasContentType(headers)) {
@@ -180,6 +209,7 @@ export function EnqueuePage() {
   };
 
   const handleBackoffPresetSelect = (presetId: BackoffPresetId) => {
+    setDryRunResult(null);
     if (presetId === 'custom') {
       setForm((prev) => ({ ...prev, backoffPreset: 'custom' }));
       return;
@@ -219,6 +249,7 @@ export function EnqueuePage() {
   };
 
   const handleToggleRawMode = () => {
+    setDryRunResult(null);
     setForm((prev) => {
       const nextRawMode = !prev.rawMode;
       let nextRawPayload = prev.rawPayload;
@@ -240,6 +271,7 @@ export function EnqueuePage() {
     setValidationError(null);
     setValidationField(null);
     setIdempotencyConflict(null);
+    setDryRunResult(null);
 
     const result = validateAndParseEnqueueForm(form);
     if (!result.ok) {
@@ -253,12 +285,32 @@ export function EnqueuePage() {
     mutation.mutate(result.value);
   };
 
+  const handleDryRun = () => {
+    if (dryRunMutation.isPending || mutation.isPending) return;
+    setValidationError(null);
+    setValidationField(null);
+    setDryRunResult(null);
+
+    const result = validateAndParseEnqueueForm(form);
+    if (!result.ok) {
+      if ('error' in result) {
+        setValidationError(result.error);
+        if (result.field) setValidationField(result.field);
+        setDryRunResult({ valid: false, error: result.error });
+      }
+      return;
+    }
+
+    dryRunMutation.mutate(result.value);
+  };
+
   const handleRetryWithNewKey = () => {
     if (mutation.isPending) return;
     const newKey = generateIdempotencyKey('ulid');
     setForm((prev) => ({ ...prev, idempotencyKey: newKey }));
     setIdempotencyConflict(null);
     setValidationError(null);
+    setDryRunResult(null);
 
     const result = validateAndParseEnqueueForm({
       ...form,
@@ -345,6 +397,7 @@ export function EnqueuePage() {
                 setValidationError(null);
                 setValidationField(null);
                 setIdempotencyConflict(null);
+                setDryRunResult(null);
               }}
               className="text-[0.6875rem]"
               title={preset.description}
@@ -362,6 +415,7 @@ export function EnqueuePage() {
               setValidationField(null);
               setIdempotencyConflict(null);
               setSubmissionSuccess(null);
+              setDryRunResult(null);
               mutation.reset();
             }}
             className="text-text-muted hover:text-text-primary text-[0.6875rem]"
@@ -1416,26 +1470,32 @@ export function EnqueuePage() {
                   </div>
                 )}
 
-                {/* Future Backend Capabilities (Explicitly Disabled with Tooltip Badges) */}
+                {/* Advanced Dispatch Features */}
                 <div className="border-border-subtle bg-surface-elevated/20 flex flex-col gap-2 rounded-md border p-2.5">
                   <div className="flex items-center justify-between">
                     <span className="text-text-muted text-[0.625rem] font-medium tracking-wide uppercase">
                       Advanced Dispatch Features
                     </span>
-                    <Badge tone="muted" className="text-[0.5625rem]">
-                      Pending Backend Support
-                    </Badge>
                   </div>
                   <div className="flex flex-wrap gap-2">
                     <Button
                       type="button"
                       variant="outline"
                       size="xs"
-                      disabled
-                      className="cursor-not-allowed opacity-50"
-                      title="Requires backend dry-run endpoint POST /jobs/validate"
+                      onClick={handleDryRun}
+                      disabled={dryRunMutation.isPending || mutation.isPending}
+                      className="gap-1.5"
+                      title="Validate payload against server enqueue rules without persisting a job"
                     >
-                      Dry-run Validate
+                      {dryRunMutation.isPending ? (
+                        <HugeiconsIcon
+                          icon={Refresh01Icon}
+                          className="h-3 w-3 animate-spin"
+                        />
+                      ) : (
+                        <HugeiconsIcon icon={Tick01Icon} className="h-3 w-3" />
+                      )}
+                      <span>Dry-run Validate</span>
                     </Button>
                     <Button
                       type="button"
@@ -1459,6 +1519,64 @@ export function EnqueuePage() {
                     </Button>
                   </div>
                 </div>
+
+                {/* Dry-Run Validation Outcome Banner */}
+                {dryRunResult && (
+                  <div
+                    role="region"
+                    aria-label="Dry-run Validation Result"
+                    className={cn(
+                      'flex items-start gap-2.5 rounded-md border p-3 text-xs transition-all',
+                      dryRunResult.valid
+                        ? 'border-status-success-border bg-status-success-bg/30 text-text-primary'
+                        : 'border-status-danger-border bg-status-danger-bg/30 text-text-primary',
+                    )}
+                  >
+                    <div
+                      className={cn(
+                        'mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full',
+                        dryRunResult.valid
+                          ? 'bg-status-success-solid text-white'
+                          : 'bg-status-danger-solid text-white',
+                      )}
+                    >
+                      <HugeiconsIcon
+                        icon={dryRunResult.valid ? Tick01Icon : Alert02Icon}
+                        className="h-3 w-3"
+                      />
+                    </div>
+                    <div className="flex-1 space-y-0.5">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-xs font-semibold">
+                          {dryRunResult.valid
+                            ? 'Payload Dry-Run Valid'
+                            : 'Validation Failed'}
+                        </span>
+                        <Badge
+                          tone={dryRunResult.valid ? 'success' : 'danger'}
+                          className="font-mono text-[0.625rem]"
+                        >
+                          {dryRunResult.valid ? '200 OK' : '400 Bad Request'}
+                        </Badge>
+                      </div>
+                      <p className="text-text-muted text-[0.6875rem]">
+                        {dryRunResult.valid
+                          ? 'Payload passes all server-side validation rules (handler, queue, payload JSON, priority, backoff, and idempotency key format).'
+                          : dryRunResult.error ||
+                            'Server rejected payload parameters.'}
+                      </p>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="xs"
+                      onClick={() => setDryRunResult(null)}
+                      className="text-text-muted hover:text-text-primary h-6 px-1.5 text-[0.625rem]"
+                    >
+                      Dismiss
+                    </Button>
+                  </div>
+                )}
 
                 {/* Primary Dispatch Action */}
                 <div className="space-y-2 pt-1">

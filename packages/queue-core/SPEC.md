@@ -62,8 +62,9 @@ params.
 
 ### 0.2 Outputs
 
-The inserted row as a `Job`. The HTTP API returns it with status `201`. The API
-reports `status: "scheduled"` when the row is `queued` and `scheduledFor` is in
+The inserted row as a `Job`. The HTTP API returns it with status `201` including
+`"isReplay": false` on newly inserted jobs or `"isReplay": true` on idempotent replays.
+The API reports `status: "scheduled"` when the row is `queued` and `scheduledFor` is in
 the future (see `docs/architecture/database-schema.md`, "Status mapping").
 
 ### 0.3 Preconditions
@@ -85,8 +86,9 @@ of the row. A second `Create` with the same pair verifies that the request
 fingerprint (canonical `handler`, `payload`, `priority`, `maxAttempts`, and `backoff`)
 matches the existing job:
 - If parameters are identical, `Create` returns the **existing** job with
-  `IsReplay = true`. The API answers `201 Created` with the `Idempotent-Replay: true`
-  header so callers can programmatically distinguish replays.
+  `IsReplay = true`. The API answers `201 Created` with `"isReplay": true` in the JSON
+  response body and the `Idempotent-Replay: true` header so callers can programmatically
+  distinguish replays (freshly created jobs return `"isReplay": false`).
 - If parameters differ from the existing job, `Create` returns `ErrIdempotencyConflict`.
   The API maps this error to `409 Conflict`.
 A key is never released, even after the job succeeds.
@@ -113,7 +115,15 @@ Database errors are wrapped with the function name and returned, and the API
 maps them to generic `500` internal server error responses while logging full
 diagnostic details.
 
-### 0.9 Known gaps
+### 0.9 Dry-Run Payload Validation (`POST /jobs/validate`)
+
+Dry-run validation checks the request parameters against §0.1 input constraints
+without persisting the job or broadcasting UI dirty notifications.
+- Scope: `jobs:write`.
+- Valid payload: `200 OK` with `{"valid": true}`.
+- Invalid payload: `400 Bad Request` with `{"valid": false, "error": "<reason>"}`.
+
+### 0.10 Known gaps
 
 - The payload size cap (256 KiB, described in `docs/architecture/database-schema.md`)
   is not enforced yet.

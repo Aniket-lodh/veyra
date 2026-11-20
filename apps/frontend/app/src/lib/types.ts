@@ -62,6 +62,7 @@ export interface Job {
   nextRetryAt: string | null;
 
   attempts: JobAttempt[];
+  isReplay?: boolean;
 }
 
 export type WorkerState =
