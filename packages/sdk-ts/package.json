@@ -22,7 +22,7 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test test/*.test.ts",
+    "test": "tsc && node --experimental-strip-types --test test/*.test.ts",
     "prepublishOnly": "tsc"
   },
   "keywords": [
