@@ -1,6 +1,7 @@
 import type { QueueStatsResponse } from './api/stats';
 import {
   BACKOFF_PRESETS,
+  DEFAULT_CUSTOM_PAYLOAD_EXAMPLE,
   STARTER_PRESETS,
   buildEmailPayload,
   buildHttpPayload,
@@ -12,6 +13,7 @@ import {
   generateIdempotencyKey,
   generateULID,
   generateUUID,
+  generateWorkerSnippet,
   hasContentType,
   headersToObject,
   isValidHttpUrl,
@@ -500,9 +502,47 @@ describe('enqueue-helpers', () => {
     });
   });
 
+  describe('generateWorkerSnippet & Custom Helpers', () => {
+    it('generates a copy-pasteable TypeScript worker snippet tailored to handler and queue', () => {
+      const snippet = generateWorkerSnippet(
+        'sync_inventory',
+        'warehouse',
+        'http://localhost:8080',
+      );
+
+      assert.match(
+        snippet,
+        /import \{ VeyraClient, NonRetryableError \} from '@veyra\/sdk'/,
+      );
+      assert.match(
+        snippet,
+        /baseUrl: process\.env\.VEYRA_API_URL \|\| 'http:\/\/localhost:8080'/,
+      );
+      assert.match(snippet, /queues: \['warehouse'\]/);
+      assert.match(
+        snippet,
+        /worker\.registerHandler\('sync_inventory', async \(job, ctx\) =>/,
+      );
+      assert.match(snippet, /if \(ctx\.signal\.aborted\)/);
+      assert.match(snippet, /await worker\.start\(\)/);
+    });
+
+    it('falls back to default handler and queue names when empty', () => {
+      const snippet = generateWorkerSnippet('', '', 'http://api.internal');
+      assert.match(snippet, /queues: \['default'\]/);
+      assert.match(snippet, /worker\.registerHandler\('my_custom_task',/);
+    });
+
+    it('contains a valid JSON custom payload example', () => {
+      const parsed = JSON.parse(DEFAULT_CUSTOM_PAYLOAD_EXAMPLE);
+      assert.equal(parsed.action, 'process_event');
+      assert.equal(parsed.entityId, 'ent_98124');
+    });
+  });
+
   describe('Presets sanity', () => {
     it('has valid starter presets and backoff presets', () => {
-      assert.equal(STARTER_PRESETS.length >= 4, true);
+      assert.equal(STARTER_PRESETS.length >= 5, true);
       assert.equal(BACKOFF_PRESETS.length >= 5, true);
     });
   });

@@ -208,6 +208,29 @@ export const STARTER_PRESETS: HandlerStarterPreset[] = [
       priority: 5,
     },
   },
+  {
+    label: 'Custom Worker SDK',
+    description:
+      'Custom handler dispatched to an external Node/TypeScript worker',
+    handlerType: 'custom',
+    patch: {
+      customHandler: 'process_event',
+      queue: 'default',
+      rawMode: true,
+      rawPayload: JSON.stringify(
+        {
+          action: 'process_event',
+          entityId: 'ent_98124',
+          attributes: {
+            priority: 'high',
+            source: 'external_system',
+          },
+        },
+        null,
+        2,
+      ),
+    },
+  },
 ];
 
 export function hasContentType(rows: HeaderRow[]): boolean {
@@ -730,4 +753,61 @@ export function generateCurlSnippet(
   lines.push(`  -d '${body.replace(/'/g, "'\\''")}'`);
 
   return lines.join('\n');
+}
+
+export const DEFAULT_CUSTOM_PAYLOAD_EXAMPLE = JSON.stringify(
+  {
+    action: 'process_event',
+    entityId: 'ent_98124',
+    attributes: {
+      priority: 'high',
+      source: 'external_system',
+    },
+  },
+  null,
+  2,
+);
+
+export function generateWorkerSnippet(
+  handlerName = 'my_custom_task',
+  queueName = 'default',
+  apiOrigin = typeof window !== 'undefined' && window?.location?.origin
+    ? window.location.origin
+    : 'http://localhost:8080',
+): string {
+  const handler = handlerName.trim() || 'my_custom_task';
+  const queue = queueName.trim() || 'default';
+
+  return `import { VeyraClient, NonRetryableError } from '@veyra/sdk';
+
+const client = new VeyraClient({
+  baseUrl: process.env.VEYRA_API_URL || '${apiOrigin}',
+  apiKey: process.env.VEYRA_API_KEY || 'veyra_...',
+});
+
+const worker = client.createWorker({
+  queues: ['${queue}'],
+  concurrency: 5,
+});
+
+worker.registerHandler('${handler}', async (job, ctx) => {
+  console.log(\`[Worker] Processing job \${job.id} (attempt \${ctx.attempt})\`);
+
+  if (ctx.signal.aborted) {
+    throw new Error('Execution aborted: job lease was lost');
+  }
+
+  const payload = job.payload as Record<string, unknown>;
+  console.log('Received payload:', payload);
+
+  // Business logic execution:
+  // Throw NonRetryableError to immediately dead-letter invalid payloads without retries:
+  // if (!payload.entityId) throw new NonRetryableError('entityId is required');
+
+  return { success: true, processedAt: new Date().toISOString() };
+});
+
+await worker.start();
+console.log('Worker active and polling for jobs...');
+`;
 }

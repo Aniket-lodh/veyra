@@ -18,6 +18,7 @@ import type { EnqueuedJob } from '@/lib/api/jobs';
 import {
   BACKOFF_PRESETS,
   BODYLESS_METHODS,
+  DEFAULT_CUSTOM_PAYLOAD_EXAMPLE,
   HTTP_METHODS,
   INITIAL_ENQUEUE_FORM,
   STARTER_PRESETS,
@@ -27,6 +28,7 @@ import {
   ensureContentType,
   generateCurlSnippet,
   generateIdempotencyKey,
+  generateWorkerSnippet,
   hasContentType,
   resolveEffectiveHandlerName,
   validateAndParseEnqueueForm,
@@ -53,7 +55,7 @@ import {
 } from '@hugeicons/core-free-icons';
 import { HugeiconsIcon } from '@hugeicons/react';
 import { useCallback, useMemo, useState, type KeyboardEvent } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 
 const selectClass =
   'border-border-subtle bg-surface-base text-text-primary h-8 w-full rounded-md border px-2 text-xs transition-colors outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30';
@@ -63,7 +65,9 @@ export function EnqueuePage() {
   const [form, setForm] = useState<EnqueueFormState>(INITIAL_ENQUEUE_FORM);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [validationField, setValidationField] = useState<string | null>(null);
-  const [previewTab, setPreviewTab] = useState<'payload' | 'curl'>('payload');
+  const [previewTab, setPreviewTab] = useState<'payload' | 'curl' | 'worker'>(
+    'payload',
+  );
   const [submissionSuccess, setSubmissionSuccess] =
     useState<EnqueuedJob | null>(null);
   const [idempotencyConflict, setIdempotencyConflict] = useState<{
@@ -350,6 +354,11 @@ export function EnqueuePage() {
     [parsedForCurl],
   );
 
+  const workerSnippet = useMemo(
+    () => generateWorkerSnippet(effectiveHandler, form.queue),
+    [effectiveHandler, form.queue],
+  );
+
   const isBodylessHttp =
     form.handlerType === 'http_request' &&
     BODYLESS_METHODS.has(form.httpMethod) &&
@@ -476,6 +485,11 @@ export function EnqueuePage() {
                               ...prev,
                               handlerType: h.id,
                               rawMode: h.id === 'custom' ? true : prev.rawMode,
+                              rawPayload:
+                                h.id === 'custom' &&
+                                prev.rawPayload.trim() === ''
+                                  ? DEFAULT_CUSTOM_PAYLOAD_EXAMPLE
+                                  : prev.rawPayload,
                             }));
                             setValidationError(null);
                             setValidationField(null);
@@ -495,23 +509,102 @@ export function EnqueuePage() {
                 </div>
 
                 {form.handlerType === 'custom' && (
-                  <div className="space-y-1">
-                    <Label htmlFor="custom-handler-name">
-                      Custom Handler Name
-                    </Label>
-                    <Input
-                      id="custom-handler-name"
-                      value={form.customHandler}
-                      onChange={(e) => update('customHandler', e.target.value)}
-                      placeholder="e.g. sync_inventory, generate_report, stripe_webhook"
-                      className="bg-surface-base font-mono text-xs"
-                      aria-invalid={validationField === 'customHandler'}
-                      autoFocus
-                    />
-                    <p className="text-text-muted text-[0.6875rem]">
-                      Must match a handler registered by a running worker in
-                      your fleet.
-                    </p>
+                  <div className="space-y-3.5 pt-1">
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between">
+                        <Label htmlFor="custom-handler-name">
+                          Custom Handler Name
+                        </Label>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="xs"
+                          onClick={() =>
+                            update('rawPayload', DEFAULT_CUSTOM_PAYLOAD_EXAMPLE)
+                          }
+                          className="text-text-muted hover:text-text-primary h-6 text-[0.6875rem]"
+                        >
+                          + Insert Sample Payload
+                        </Button>
+                      </div>
+                      <Input
+                        id="custom-handler-name"
+                        value={form.customHandler}
+                        onChange={(e) =>
+                          update('customHandler', e.target.value)
+                        }
+                        placeholder="e.g. sync_inventory, generate_report, stripe_webhook"
+                        className="bg-surface-base font-mono text-xs"
+                        aria-invalid={validationField === 'customHandler'}
+                        autoFocus
+                      />
+                      <p className="text-text-muted text-[0.6875rem]">
+                        Must match a handler registered by a running worker in
+                        your fleet.
+                      </p>
+                    </div>
+
+                    {/* Custom Worker Guidance Card */}
+                    <div className="border-border-subtle bg-surface-elevated/40 space-y-2.5 rounded-md border p-3">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-text-primary text-xs font-semibold">
+                            TypeScript Worker Snippet
+                          </span>
+                          <Badge
+                            tone="info"
+                            className="font-mono text-[0.625rem]"
+                          >
+                            @veyra/sdk
+                          </Badge>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="xs"
+                          onClick={(e) =>
+                            handleCopy(workerSnippet, 'custom-worker-copy', e)
+                          }
+                          className="h-6 gap-1 text-[0.6875rem]"
+                        >
+                          <HugeiconsIcon
+                            icon={
+                              copiedKey === 'custom-worker-copy'
+                                ? Tick01Icon
+                                : Copy01Icon
+                            }
+                            className="h-3 w-3"
+                          />
+                          <span>
+                            {copiedKey === 'custom-worker-copy'
+                              ? 'Copied'
+                              : 'Copy Code'}
+                          </span>
+                        </Button>
+                      </div>
+
+                      <p className="text-text-muted text-[0.6875rem] leading-relaxed">
+                        External workers poll for jobs over HTTP with zero
+                        database driver requirements. Install via{' '}
+                        <code className="text-text-primary font-mono">
+                          pnpm add @veyra/sdk
+                        </code>{' '}
+                        and authenticate with a key from{' '}
+                        <Link
+                          to="/settings/api-keys"
+                          className="text-text-primary hover:text-text-secondary underline"
+                        >
+                          Settings → API Keys
+                        </Link>
+                        .
+                      </p>
+
+                      <div className="border-border-subtle bg-surface-base max-h-56 overflow-y-auto rounded-md border">
+                        <CodeBlock language="text" defaultWrap>
+                          {workerSnippet}
+                        </CodeBlock>
+                      </div>
+                    </div>
                   </div>
                 )}
               </CardContent>
@@ -1343,6 +1436,18 @@ export function EnqueuePage() {
                   >
                     cURL
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => setPreviewTab('worker')}
+                    className={cn(
+                      'rounded-xs border px-2 py-0.5 text-xs font-medium transition-colors',
+                      previewTab === 'worker'
+                        ? 'border-border-strong bg-surface-elevated text-text-primary font-semibold'
+                        : 'border-border-subtle bg-surface-base text-text-muted hover:text-text-primary',
+                    )}
+                  >
+                    Worker SDK
+                  </button>
                 </div>
               </CardHeader>
               <CardContent className="space-y-2 pt-3.5">
@@ -1350,9 +1455,13 @@ export function EnqueuePage() {
                   <CodeBlock language="json" defaultWrap>
                     {JSON.stringify(parsedForCurl.payload ?? {}, null, 2)}
                   </CodeBlock>
-                ) : (
+                ) : previewTab === 'curl' ? (
                   <CodeBlock language="text" defaultWrap>
                     {curlSnippet}
+                  </CodeBlock>
+                ) : (
+                  <CodeBlock language="text" defaultWrap>
+                    {workerSnippet}
                   </CodeBlock>
                 )}
               </CardContent>

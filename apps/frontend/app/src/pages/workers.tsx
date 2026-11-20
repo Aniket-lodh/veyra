@@ -1,6 +1,7 @@
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { CodeBlock } from '@/components/ui/code-block';
 import {
   Dialog,
   DialogClose,
@@ -35,6 +36,7 @@ import {
   useResumeWorker,
   useDeregisterWorker,
 } from '@/hooks/api';
+import { generateWorkerSnippet } from '@/lib/enqueue-helpers';
 import { formatDateTimeUTC, formatRelative } from '@/lib/format';
 import {
   jobDetailPath,
@@ -68,6 +70,7 @@ import {
   MoreHorizontalIcon,
   Refresh01Icon,
   Search01Icon,
+  ServerStack01Icon,
   Tick01Icon,
   ViewIcon,
 } from '@hugeicons/core-free-icons';
@@ -93,6 +96,9 @@ export function WorkersPage() {
   const [selectedQueue, setSelectedQueue] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [sortBy, setSortBy] = useState<WorkerSortOption>('heartbeat_desc');
+
+  // External worker SDK modal state
+  const [showConnectModal, setShowConnectModal] = useState<boolean>(false);
 
   // Copy feedback state
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
@@ -212,6 +218,16 @@ export function WorkersPage() {
         </div>
 
         <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowConnectModal(true)}
+            className="text-xs"
+            title="Connect an external TypeScript / Node.js worker via SDK"
+          >
+            <HugeiconsIcon icon={ServerStack01Icon} className="h-3.5 w-3.5" />
+            <span>Connect External Worker</span>
+          </Button>
           <Button
             variant="outline"
             size="sm"
@@ -1694,6 +1710,82 @@ export function WorkersPage() {
                 ? 'Deregistering…'
                 : 'Confirm Deregister'}
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Connect External Worker SDK Dialog */}
+      <Dialog open={showConnectModal} onOpenChange={setShowConnectModal}>
+        <DialogContent className="border-border-subtle bg-surface-base max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-sm font-semibold">
+              <HugeiconsIcon icon={ServerStack01Icon} className="h-4 w-4" />
+              <span>Connect External Worker via TypeScript SDK</span>
+            </DialogTitle>
+            <DialogDescription className="text-text-muted text-xs">
+              Run distributed workers directly from your Node.js or TypeScript
+              services using{' '}
+              <code className="text-text-primary font-mono">@veyra/sdk</code>{' '}
+              without direct PostgreSQL database credentials.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 pt-2 text-xs">
+            <div className="space-y-1.5">
+              <span className="text-text-primary font-semibold">
+                1. Install the SDK
+              </span>
+              <div className="border-border-subtle bg-surface-elevated rounded-md border p-2 font-mono text-[0.75rem]">
+                pnpm add @veyra/sdk
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <span className="text-text-primary font-semibold">
+                2. Generate an API Key
+              </span>
+              <p className="text-text-muted">
+                Navigate to{' '}
+                <Link
+                  to="/settings/api-keys"
+                  onClick={() => setShowConnectModal(false)}
+                  className="text-text-primary hover:text-text-secondary font-medium underline"
+                >
+                  Settings → API Keys
+                </Link>{' '}
+                and generate a key with{' '}
+                <code className="text-text-primary font-mono">
+                  workers:write
+                </code>{' '}
+                and{' '}
+                <code className="text-text-primary font-mono">jobs:write</code>{' '}
+                scopes.
+              </p>
+            </div>
+
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-text-primary font-semibold">
+                  3. Worker Implementation
+                </span>
+                <Badge tone="info" className="font-mono text-[0.625rem]">
+                  TypeScript / Node.js
+                </Badge>
+              </div>
+              <div className="border-border-subtle bg-surface-base max-h-64 overflow-y-auto rounded-md border">
+                <CodeBlock language="text" defaultWrap>
+                  {generateWorkerSnippet('my_custom_task', 'default')}
+                </CodeBlock>
+              </div>
+            </div>
+          </div>
+
+          <DialogFooter className="pt-2">
+            <DialogClose asChild>
+              <Button variant="outline" size="sm">
+                Close
+              </Button>
+            </DialogClose>
           </DialogFooter>
         </DialogContent>
       </Dialog>
