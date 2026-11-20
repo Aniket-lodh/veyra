@@ -1085,4 +1085,3 @@ func (r *Repository) GetQueueState(ctx context.Context, queueName string) (*Queu
 	}
 	return &qs, nil
 }
-

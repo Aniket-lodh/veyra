@@ -91,7 +91,7 @@ func TestQueuePause_ClaimSkippingAndResume(t *testing.T) {
 	if foundQueue == nil {
 		t.Fatalf("queue %s not found in stats", queueName)
 	}
-	if !foundQueue.Paused || foundQueue.PausedReason == nil || *foundQueue.PausedReason != "Maintenance window" {
+	if !foundQueue.Paused || foundQueue.PausedReason == nil || *foundQueue.PausedReason != "Extended maintenance window" {
 		t.Fatalf("stats did not reflect paused state: %+v", foundQueue)
 	}
 

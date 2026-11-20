@@ -19,8 +19,8 @@ import (
 )
 
 type mockQueueRepo struct {
-	pauseFunc   func(ctx context.Context, p queuecore.PauseQueueParams) (*queuecore.QueueState, error)
-	resumeFunc  func(ctx context.Context, p queuecore.ResumeQueueParams) (*queuecore.QueueState, error)
+	pauseFunc    func(ctx context.Context, p queuecore.PauseQueueParams) (*queuecore.QueueState, error)
+	resumeFunc   func(ctx context.Context, p queuecore.ResumeQueueParams) (*queuecore.QueueState, error)
 	getStateFunc func(ctx context.Context, queueName string) (*queuecore.QueueState, error)
 }
 
