@@ -1,4 +1,3 @@
-// Package logging bootstraps the process slog.Logger.
 package logging
 
 import (
@@ -8,7 +7,6 @@ import (
 	"strings"
 )
 
-// Setup builds the process-wide *slog.Logger and installs it as slog.Default.
 func Setup(env, level string) *slog.Logger {
 	l := slog.New(buildHandler(os.Stderr, env, level))
 	slog.SetDefault(l)

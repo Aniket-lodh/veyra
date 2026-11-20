@@ -10,7 +10,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Sweeper is the long-running goroutine handle.
 type Sweeper struct {
 	pool     *pgxpool.Pool
 	interval time.Duration
@@ -20,7 +19,6 @@ func NewSweeper(pool *pgxpool.Pool, interval time.Duration) *Sweeper {
 	return &Sweeper{pool: pool, interval: interval}
 }
 
-// Run drives one tick per `interval`.
 func (s *Sweeper) Run(ctx context.Context) error {
 	if s.interval <= 0 {
 		return fmt.Errorf("workers.Sweeper: interval must be > 0, got %v", s.interval)
@@ -34,7 +32,6 @@ func (s *Sweeper) Run(ctx context.Context) error {
 	t := time.NewTicker(s.interval)
 	defer t.Stop()
 
-	// One immediate tick so an api restart catches any worker that died while the api was down.
 	if err := s.tick(ctx); err != nil {
 		slog.ErrorContext(ctx, "worker.sweeper.tick_failed",
 			"event", "worker.sweeper.tick_failed",
@@ -52,7 +49,6 @@ func (s *Sweeper) Run(ctx context.Context) error {
 			return nil
 		case <-t.C:
 			if err := s.tick(ctx); err != nil {
-				// Don't propagate — keep ticking.
 				slog.ErrorContext(ctx, "worker.sweeper.tick_failed",
 					"event", "worker.sweeper.tick_failed",
 					"err", err.Error(),
@@ -62,9 +58,7 @@ func (s *Sweeper) Run(ctx context.Context) error {
 	}
 }
 
-// tick runs one sweep: scan and transition any stale worker.
 func (s *Sweeper) tick(ctx context.Context) error {
-	// The threshold is per-row: `last_heartbeat_at < now() - (interval * 3)s`.
 	const sql = `
 		UPDATE workers
 		SET state = 'disconnected'
@@ -76,7 +70,6 @@ func (s *Sweeper) tick(ctx context.Context) error {
 	`
 	rows, err := s.pool.Query(ctx, sql)
 	if err != nil {
-		// Don't log on context cancel — that's a normal shutdown signal, not a query failure.
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return nil
 		}
@@ -94,13 +87,11 @@ func (s *Sweeper) tick(ctx context.Context) error {
 			staleForSecs    int
 		)
 		if scanErr := rows.Scan(&id, &hostname, &lastHeartbeatAt, &intervalSecs, &staleForSecs); scanErr != nil {
-			// Capture the first error but keep draining the result set so already-emitted log lines correspond to actual writes.
 			if firstScanErr == nil {
 				firstScanErr = fmt.Errorf("workers.Sweeper.tick: scan: %w", scanErr)
 			}
 			continue
 		}
-		// The structured event shape is intentional and stable.
 		slog.WarnContext(ctx, "worker.sweeper.disconnected",
 			"event", "worker.sweeper.disconnected",
 			"workerId", id,
@@ -117,7 +108,6 @@ func (s *Sweeper) tick(ctx context.Context) error {
 	return firstScanErr
 }
 
-// ctxErrString returns a stable string for context.Canceled vs Deadline in shutdown logs —.
 func ctxErrString(err error) string {
 	switch {
 	case errors.Is(err, context.Canceled):

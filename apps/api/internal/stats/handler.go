@@ -1,4 +1,3 @@
-// Package stats serves dashboard aggregate queue metrics.
 package stats
 
 import (
@@ -19,12 +18,10 @@ func NewHandler(repo *queuecore.Repository) *Handler {
 	return &Handler{repo: repo}
 }
 
-// Register mounts GET /queue/stats on the fiber app.
 func Register(app *fiber.App, h *Handler, authn *auth.Authenticator) {
 	app.Get("/queue/stats", authn.Require(auth.ScopeQueueRead), h.Get)
 }
 
-// totalsResponse is the global counts surface.
 type totalsResponse struct {
 	Queued       int `json:"queued"`
 	Scheduled    int `json:"scheduled"`
@@ -35,7 +32,6 @@ type totalsResponse struct {
 	Cancelled    int `json:"cancelled"`
 }
 
-// queueResponse is the per-queue surface.
 type queueResponse struct {
 	Name            string     `json:"name"`
 	Depth           int        `json:"depth"`
@@ -53,7 +49,6 @@ type statsResponse struct {
 	Queues []queueResponse `json:"queues"`
 }
 
-// Get returns the dashboard snapshot.
 func (h *Handler) Get(c fiber.Ctx) error {
 	stats, err := h.repo.QueueStats(c.Context())
 	if err != nil {

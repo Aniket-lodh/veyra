@@ -172,7 +172,6 @@ func equalJSON(a, b []byte) bool {
 	return reflect.DeepEqual(v1, v2)
 }
 
-// GetByID returns the job with the given id, or ErrJobNotFound.
 func (r *Repository) GetByID(ctx context.Context, id string) (*Job, error) {
 	const query = `SELECT ` + jobColumns + ` FROM jobs WHERE id = $1`
 	job, err := scanJob(r.pool.QueryRow(ctx, query, id))
@@ -195,7 +194,6 @@ type ListParams struct {
 	WorkerID string
 }
 
-// List returns jobs ordered by enqueue time, newest first, narrowed by p's filters.
 func (r *Repository) List(ctx context.Context, p ListParams) ([]*Job, error) {
 	where, args := buildListFilters(p)
 	query := `SELECT ` + jobColumns + ` FROM jobs` + where +
@@ -223,7 +221,6 @@ func (r *Repository) List(ctx context.Context, p ListParams) ([]*Job, error) {
 	return jobs, nil
 }
 
-// Count returns the total number of jobs matching p's filters (ignoring Limit and Offset).
 func (r *Repository) Count(ctx context.Context, p ListParams) (int, error) {
 	where, args := buildListFilters(p)
 	query := `SELECT count(*) FROM jobs` + where
@@ -849,7 +846,6 @@ func scanJob(row pgx.Row) (*Job, error) {
 	return &j, nil
 }
 
-// ListAttempts returns the full attempt history for a job, oldest attempt first.
 func (r *Repository) ListAttempts(ctx context.Context, jobID string) ([]*Attempt, error) {
 	const query = `
 		SELECT job_id, attempt_number, worker_id,
@@ -890,7 +886,6 @@ func (r *Repository) ListAttempts(ctx context.Context, jobID string) ([]*Attempt
 	return out, nil
 }
 
-// QueueStats returns a single snapshot of queue health used by the operator dashboard.
 func (r *Repository) QueueStats(ctx context.Context) (*QueueStats, error) {
 	const totalsSQL = `
 		SELECT
@@ -961,7 +956,6 @@ func (r *Repository) QueueStats(ctx context.Context) (*QueueStats, error) {
 	return &QueueStats{Totals: totals, PerQueue: perQueue}, nil
 }
 
-// ListRunningLeases returns every job currently held under lease, narrowed to the given worker ids when the slice is non-empty.
 func (r *Repository) ListRunningLeases(ctx context.Context, workerIDs []string) ([]*RunningLease, error) {
 	var (
 		query string
@@ -1088,7 +1082,6 @@ func (r *Repository) ResumeQueue(ctx context.Context, p ResumeQueueParams) (*Que
 	return &qs, nil
 }
 
-// GetQueueState returns the current pause state of a queue, returning paused=false if not found.
 func (r *Repository) GetQueueState(ctx context.Context, queueName string) (*QueueState, error) {
 	queueName = strings.TrimSpace(queueName)
 	if queueName == "" {

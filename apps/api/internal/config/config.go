@@ -1,4 +1,3 @@
-// Package config loads runtime configuration from the environment.
 package config
 
 import (
@@ -21,39 +20,16 @@ type Config struct {
 	DBName     string
 	DBSSLMode  string
 
-	// SweeperInterval is the cadence at which the stale-worker sweeper scans the workers table.
-	SweeperInterval time.Duration
-
-	// RetryInterval is the cadence at which the retry scheduler scans the jobs table for `failed` rows whose `next_retry_at <= now()`.
-	RetryInterval time.Duration
-
-	// RetryBatchLimit caps how many rows the scheduler promotes per tick.
-	RetryBatchLimit int
-
-	// ReclaimInterval is the cadence of the api-side reclaim tick driver.
-	ReclaimInterval time.Duration
-
-	// ReclaimBatchLimit caps how many expired-lease rows the reclaim driver processes per tick.
-	ReclaimBatchLimit int
-
-	// CallbackInterval is the cadence of the background completion webhook dispatcher.
-	CallbackInterval time.Duration
-
-	// CallbackBatchLimit caps how many pending callback jobs the dispatcher claims per tick.
-	CallbackBatchLimit int
-
-	// CallbackTimeout caps the per-request HTTP timeout when delivering a webhook.
-	CallbackTimeout time.Duration
-
-	// CallbackConcurrency caps concurrent outbound webhook deliveries.
-	CallbackConcurrency int
-
-	// CallbackSecret is the optional HMAC-SHA256 signing secret for outbound webhooks.
-	CallbackSecret string
-
-	// EnableDebugEndpoints controls whether /internal/debug/* routes are mounted.
-	// In development, defaults to true unless explicitly disabled.
-	// In production, defaults to false unless explicitly enabled.
+	SweeperInterval      time.Duration
+	RetryInterval        time.Duration
+	RetryBatchLimit      int
+	ReclaimInterval      time.Duration
+	ReclaimBatchLimit    int
+	CallbackInterval     time.Duration
+	CallbackBatchLimit   int
+	CallbackTimeout      time.Duration
+	CallbackConcurrency  int
+	CallbackSecret       string
 	EnableDebugEndpoints bool
 }
 
@@ -89,7 +65,6 @@ func Load() Config {
 	return c
 }
 
-// IsDevelopment reports whether the current AppEnv is one of the recognised dev/local values.
 func (c Config) IsDevelopment() bool {
 	switch strings.ToLower(strings.TrimSpace(c.AppEnv)) {
 	case "", "dev", "development", "local":
@@ -99,7 +74,6 @@ func (c Config) IsDevelopment() bool {
 	}
 }
 
-// DatabaseURL builds a libpq-compatible postgres:// URL from the configured credentials.
 func (c Config) DatabaseURL() string {
 	u := url.URL{
 		Scheme: "postgres",
@@ -123,7 +97,6 @@ func getEnv(key, fallback string) string {
 	return value
 }
 
-// getDurationSeconds parses an env var as a whole-second integer.
 func getDurationSeconds(key string, fallback time.Duration) time.Duration {
 	raw := os.Getenv(key)
 	if raw == "" {
@@ -136,7 +109,6 @@ func getDurationSeconds(key string, fallback time.Duration) time.Duration {
 	return time.Duration(n) * time.Second
 }
 
-// getInt parses an env var as a positive integer.
 func getInt(key string, fallback int) int {
 	raw := os.Getenv(key)
 	if raw == "" {
@@ -149,7 +121,6 @@ func getInt(key string, fallback int) int {
 	return n
 }
 
-// parseBool parses an env var as a boolean (1, t, T, TRUE, true, True, 0, f, F, FALSE, false, False).
 func parseBool(raw string, fallback bool) bool {
 	v, err := strconv.ParseBool(strings.TrimSpace(raw))
 	if err != nil {

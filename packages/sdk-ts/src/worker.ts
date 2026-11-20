@@ -326,8 +326,6 @@ export class VeyraWorker {
     this._inFlight++;
     this.options.onJobStart?.(claimResult);
 
-    // Run job execution asynchronously so claim loop can continue claiming
-    // up to the concurrency limit
     void this.executeJob(claimResult).finally(() => {
       this._inFlight--;
       if (this._state === 'draining' && this._inFlight === 0) {
@@ -337,7 +335,6 @@ export class VeyraWorker {
       }
     });
 
-    // If concurrency has headroom, immediately check if more jobs are waiting
     if (this._inFlight < maxConcurrency && this._state === 'running') {
       this.triggerClaimLoop(0);
     }

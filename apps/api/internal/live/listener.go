@@ -18,7 +18,6 @@ const (
 	listenBackoffMax = 15 * time.Second
 )
 
-// Listener holds a dedicated Postgres connection on LISTEN veyra_ui.
 type Listener struct {
 	databaseURL string
 	hub         *Hub
@@ -28,7 +27,6 @@ func NewListener(databaseURL string, hub *Hub) *Listener {
 	return &Listener{databaseURL: databaseURL, hub: hub}
 }
 
-// Run blocks until ctx is cancelled. Transient errors reconnect with backoff.
 func (l *Listener) Run(ctx context.Context) error {
 	backoff := listenBackoffMin
 	for {

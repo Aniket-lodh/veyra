@@ -1,4 +1,3 @@
-// Package debug exposes internal queue poke routes for curl.
 package debug
 
 import (
@@ -12,7 +11,6 @@ import (
 	queuecore "github.com/Aniket-lodh/veyra/queue-core"
 )
 
-// Handler holds only the queue repository; debug endpoints do not own any other state.
 type Handler struct {
 	repo *queuecore.Repository
 }
@@ -21,7 +19,6 @@ func NewHandler(repo *queuecore.Repository) *Handler {
 	return &Handler{repo: repo}
 }
 
-// Register mounts every debug route under /internal/debug/.
 func Register(app *fiber.App, h *Handler, authn *auth.Authenticator) {
 	app.Post("/internal/debug/claim", authn.Require(auth.ScopeDebug), h.Claim)
 	app.Post("/internal/debug/succeed", authn.Require(auth.ScopeDebug), h.Succeed)
@@ -52,7 +49,6 @@ type renewReq struct {
 	JobID    string `json:"jobId"`
 }
 
-// Claim drives queuecore.ClaimNextJob.
 func (h *Handler) Claim(c fiber.Ctx) error {
 	var req claimReq
 	if err := json.Unmarshal(c.Body(), &req); err != nil {
@@ -78,7 +74,6 @@ func (h *Handler) Claim(c fiber.Ctx) error {
 	return c.JSON(toDebugJob(job))
 }
 
-// Succeed drives queuecore.MarkJobSucceeded.
 func (h *Handler) Succeed(c fiber.Ctx) error {
 	var req succeedReq
 	if err := json.Unmarshal(c.Body(), &req); err != nil {
@@ -101,7 +96,6 @@ func (h *Handler) Succeed(c fiber.Ctx) error {
 	return c.JSON(toDebugJob(job))
 }
 
-// Fail drives queuecore.MarkJobFailed.
 func (h *Handler) Fail(c fiber.Ctx) error {
 	var req failReq
 	if err := json.Unmarshal(c.Body(), &req); err != nil {
@@ -127,7 +121,6 @@ func (h *Handler) Fail(c fiber.Ctx) error {
 	return c.JSON(toDebugJob(job))
 }
 
-// Renew drives queuecore.RenewLease (SPEC §4).
 func (h *Handler) Renew(c fiber.Ctx) error {
 	var req renewReq
 	if err := json.Unmarshal(c.Body(), &req); err != nil {
@@ -149,7 +142,6 @@ func (h *Handler) Renew(c fiber.Ctx) error {
 	return c.JSON(toDebugJob(job))
 }
 
-// toDebugJob serialises a queuecore.Job for debug callers.
 func toDebugJob(j *queuecore.Job) fiber.Map {
 	return fiber.Map{
 		"id":              j.ID,
@@ -164,7 +156,6 @@ func toDebugJob(j *queuecore.Job) fiber.Map {
 	}
 }
 
-// mapCompletionError maps the queuecore sentinels to HTTP codes.
 func mapCompletionError(c fiber.Ctx, err error) error {
 	switch {
 	case errors.Is(err, queuecore.ErrJobNotFound):

@@ -19,7 +19,6 @@ const clientRetry = 3 * time.Second
 // Exported so unit/integration tests can accelerate verification.
 var StreamValidationInterval = 10 * time.Second
 
-// Register mounts GET /events (SSE invalidation stream).
 func Register(app *fiber.App, hub *Hub, authn *auth.Authenticator) {
 	app.Get("/events", authn.Require(auth.ScopeQueueRead), sse.New(sse.Config{
 		Retry:             clientRetry,
@@ -105,8 +104,6 @@ func writeFrame(stream *sse.Stream, name string, ev Event) error {
 	})
 }
 
-// needsResync reports whether the client must receive a full resync frame.
-// Exported for tests via the package-local name.
 func needsResync(lastEventID string, current uint64) bool {
 	if lastEventID == "" {
 		return true

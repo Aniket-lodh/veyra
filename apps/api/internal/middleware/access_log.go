@@ -20,7 +20,6 @@ func AccessLog() fiber.Handler {
 			return err
 		}
 
-		// c.Next has now run the handler chain; status is final.
 		latencyMs := time.Since(start).Milliseconds()
 		status := c.Response().StatusCode()
 		level := slog.LevelInfo

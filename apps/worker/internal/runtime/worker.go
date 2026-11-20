@@ -1,4 +1,3 @@
-// Package runtime is the worker lifecycle loop.
 package runtime
 
 import (
@@ -196,7 +195,6 @@ func (w *Worker) heartbeat(ctx context.Context) (bool, error) {
 	return cmd.RowsAffected() == 1, nil
 }
 
-// pollLoop is the main loop. It acquires a concurrency slot before calling ClaimNextJob.
 func (w *Worker) pollLoop(ctx context.Context, sem chan struct{}, jobsWg *sync.WaitGroup, lifetimeCtx context.Context) {
 	for {
 		if ctx.Err() != nil {
@@ -244,7 +242,6 @@ func (w *Worker) pollLoop(ctx context.Context, sem chan struct{}, jobsWg *sync.W
 	}
 }
 
-// executeJob is the per-job lifecycle: log start, spawn the lease renewer, dispatch to the registered handler.
 func (w *Worker) executeJob(ctx context.Context, job *queuecore.Job) {
 	slog.InfoContext(ctx, "worker.execute.start",
 		"workerId", w.runtimeID,
@@ -302,7 +299,6 @@ func (w *Worker) executeJob(ctx context.Context, job *queuecore.Job) {
 	w.ackJob(ctx, job, start, result)
 }
 
-// runLeaseRenewer is the per-job renewal loop.
 func (w *Worker) runLeaseRenewer(jobCtx context.Context, jobCancel context.CancelFunc, job *queuecore.Job) {
 	t := time.NewTicker(w.cfg.LeaseRenewalInterval)
 	defer t.Stop()
@@ -354,7 +350,6 @@ func (w *Worker) runLeaseRenewer(jobCtx context.Context, jobCancel context.Cance
 	}
 }
 
-// ackJob calls MarkJobSucceeded with the result payload the handler returned (may be nil).
 func (w *Worker) ackJob(ctx context.Context, job *queuecore.Job, start time.Time, result json.RawMessage) {
 	if _, err := w.cfg.Repo.MarkJobSucceeded(ctx, queuecore.SucceedParams{
 		WorkerID: w.runtimeID,
@@ -372,7 +367,6 @@ func (w *Worker) ackJob(ctx context.Context, job *queuecore.Job, start time.Time
 	)
 }
 
-// nackJob calls MarkJobFailed with the handler's failure.
 func (w *Worker) nackJob(ctx context.Context, job *queuecore.Job, start time.Time, cause error) {
 	class := "HandlerError"
 	message := cause.Error()
@@ -411,7 +405,6 @@ func (w *Worker) nackJob(ctx context.Context, job *queuecore.Job, start time.Tim
 	)
 }
 
-// logCompletionError emits the right log level depending on which sentinel the completion call returned.
 func (w *Worker) logCompletionError(ctx context.Context, event string, job *queuecore.Job, err error) {
 	leaseLost := errors.Is(err, queuecore.ErrLeaseLost)
 	leaseExpired := errors.Is(err, queuecore.ErrLeaseExpired)
@@ -429,7 +422,6 @@ func (w *Worker) logCompletionError(ctx context.Context, event string, job *queu
 	)
 }
 
-// ctxErrString renders ctx.Err() as a short string ("<nil>" when alive).
 func ctxErrString(ctx context.Context) string {
 	if err := ctx.Err(); err != nil {
 		return err.Error()
@@ -437,7 +429,6 @@ func ctxErrString(ctx context.Context) string {
 	return "<nil>"
 }
 
-// sleep returns true if the duration elapsed, false if ctx was cancelled first.
 func sleep(ctx context.Context, d time.Duration) bool {
 	if d <= 0 {
 		return ctx.Err() == nil

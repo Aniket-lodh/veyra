@@ -138,7 +138,6 @@ func main() {
 	)
 }
 
-// loadDatabaseURL prefers VEYRA_WORKER_DATABASE_URL when set; otherwise it assembles a URL from the same DB_* env vars the api uses.
 func loadDatabaseURL() string {
 	if u := strings.TrimSpace(os.Getenv("VEYRA_WORKER_DATABASE_URL")); u != "" {
 		return u
@@ -162,7 +161,6 @@ func loadDatabaseURL() string {
 	return u.String()
 }
 
-// loadFailurePercent reads VEYRA_WORKER_FAILURE_PERCENT and clamps it to [0, 100].
 func loadFailurePercent() int {
 	raw := strings.TrimSpace(os.Getenv("VEYRA_WORKER_FAILURE_PERCENT"))
 	if raw == "" {
@@ -186,7 +184,6 @@ func loadFailurePercent() int {
 	}
 }
 
-// loadMaxConcurrency reads VEYRA_WORKER_MAX_CONCURRENCY and clamps it to >= 1.
 func loadMaxConcurrency() int {
 	raw := strings.TrimSpace(os.Getenv("VEYRA_WORKER_MAX_CONCURRENCY"))
 	if raw == "" {
@@ -231,7 +228,6 @@ func envOr(key, def string) string {
 	return def
 }
 
-// loadSMTPConfig reads VEYRA_SMTP_* for the send_email handler.
 func loadSMTPConfig() handler.SMTPConfig {
 	port := 587
 	if raw := strings.TrimSpace(os.Getenv("VEYRA_SMTP_PORT")); raw != "" {
@@ -251,7 +247,6 @@ func loadSMTPConfig() handler.SMTPConfig {
 	}
 }
 
-// exitFatal emits one structured ERROR line and exits 1.
 func exitFatal(event string, err error) {
 	slog.Error(event, "err", err.Error())
 	os.Exit(1)
