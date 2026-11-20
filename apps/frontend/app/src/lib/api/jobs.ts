@@ -49,6 +49,7 @@ export interface EnqueueJobInput {
   backoff?: BackoffStrategy;
   scheduledFor?: string;
   idempotencyKey?: string;
+  callbackUrl?: string;
 }
 
 export interface EnqueuedJob extends Job {

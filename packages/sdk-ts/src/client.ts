@@ -88,6 +88,9 @@ export class VeyraClient {
     if (input.idempotencyKey) {
       body.idempotencyKey = input.idempotencyKey.trim();
     }
+    if (input.callbackUrl) {
+      body.callbackUrl = input.callbackUrl.trim();
+    }
 
     const headers: Record<string, string> = {};
     if (input.idempotencyKey) {

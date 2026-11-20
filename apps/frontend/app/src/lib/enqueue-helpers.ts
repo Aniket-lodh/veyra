@@ -92,6 +92,9 @@ export interface EnqueueFormState {
   // Idempotency
   idempotencyKey: string;
 
+  // Completion Webhook
+  callbackUrl: string;
+
   // http_request fields
   httpUrl: string;
   httpMethod: HttpMethod;
@@ -131,6 +134,7 @@ export const INITIAL_ENQUEUE_FORM: EnqueueFormState = {
 
   scheduledFor: '',
   idempotencyKey: '',
+  callbackUrl: '',
 
   httpUrl: '',
   httpMethod: 'POST',
@@ -574,6 +578,27 @@ export function validateAndParseEnqueueForm(
   const key = form.idempotencyKey.trim();
   if (key) {
     input.idempotencyKey = key;
+  }
+
+  // Completion Webhook (callback_url)
+  const callbackUrl = (form.callbackUrl ?? '').trim();
+  if (callbackUrl) {
+    if (!isValidHttpUrl(callbackUrl)) {
+      return {
+        ok: false,
+        error:
+          'Callback URL must be a valid HTTP or HTTPS URL (e.g. https://api.example.com/webhook).',
+        field: 'callbackUrl',
+      };
+    }
+    if (callbackUrl.length > 2048) {
+      return {
+        ok: false,
+        error: 'Callback URL must be at most 2048 characters.',
+        field: 'callbackUrl',
+      };
+    }
+    input.callbackUrl = callbackUrl;
   }
 
   return { ok: true, value: input };

@@ -1255,3 +1255,114 @@ func TestValidate_AuthScopeEnforcement(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateCallbackURL(t *testing.T) {
+	// Valid HTTP and HTTPS
+	validURLs := []string{
+		"http://example.com/webhook",
+		"https://api.my-service.internal/callbacks/job-finished",
+		"https://example.com:8443/webhook?token=secret#frag",
+	}
+	for _, raw := range validURLs {
+		res, err := validateCallbackURL(raw)
+		if err != nil {
+			t.Errorf("validateCallbackURL(%q): unexpected err: %v", raw, err)
+		}
+		if res != raw {
+			t.Errorf("validateCallbackURL(%q) = %q; want %q", raw, res, raw)
+		}
+	}
+
+	// Empty string
+	res, err := validateCallbackURL("   ")
+	if err != nil || res != "" {
+		t.Errorf("expected empty string and nil error for whitespace URL, got %q, %v", res, err)
+	}
+
+	// Invalid schemes
+	invalidURLs := []string{
+		"ftp://example.com/file",
+		"javascript:alert(1)",
+		"file:///etc/passwd",
+		"example.com/webhook",
+		"http://",
+		"https://",
+	}
+	for _, raw := range invalidURLs {
+		_, err := validateCallbackURL(raw)
+		if err == nil {
+			t.Errorf("validateCallbackURL(%q): expected error, got nil", raw)
+		}
+	}
+
+	// Too long
+	tooLong := "https://example.com/" + strings.Repeat("a", 2050)
+	if _, err := validateCallbackURL(tooLong); err == nil {
+		t.Errorf("expected error for URL exceeding 2048 chars, got nil")
+	}
+}
+
+func TestJobsValidate_CallbackURL(t *testing.T) {
+	t.Parallel()
+
+	h := NewHandler(&mockJobRepo{})
+	app := fiber.New()
+
+	app.Use(func(c fiber.Ctx) error {
+		if header := c.Get("X-Test-Scopes"); header != "" {
+			scopes := strings.Split(header, ",")
+			p := auth.Principal{
+				ID:     "test-principal",
+				Kind:   "api_key",
+				Scopes: scopes,
+			}
+			c.SetContext(auth.ContextWithPrincipal(c.Context(), p))
+		}
+		return c.Next()
+	})
+
+	authn := &auth.Authenticator{Store: auth.NewStore(nil)}
+	Register(app, h, authn)
+
+	// 1. Valid callback URL -> 200 OK
+	{
+		body, _ := json.Marshal(map[string]any{
+			"handler":     "http_request",
+			"queue":       "default",
+			"payload":     map[string]any{"foo": "bar"},
+			"callbackUrl": "https://example.com/webhook",
+		})
+		req := httptest.NewRequest(http.MethodPost, "/jobs/validate", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Test-Scopes", auth.ScopeJobsWrite)
+		resp, err := app.Test(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200 OK for valid callbackUrl, got %d", resp.StatusCode)
+		}
+	}
+
+	// 2. Invalid callback URL -> 400 Bad Request
+	{
+		body, _ := json.Marshal(map[string]any{
+			"handler":     "http_request",
+			"queue":       "default",
+			"payload":     map[string]any{"foo": "bar"},
+			"callbackUrl": "ftp://example.com/webhook",
+		})
+		req := httptest.NewRequest(http.MethodPost, "/jobs/validate", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Test-Scopes", auth.ScopeJobsWrite)
+		resp, err := app.Test(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("expected 400 Bad Request for invalid callbackUrl, got %d", resp.StatusCode)
+		}
+	}
+}

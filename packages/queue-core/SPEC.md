@@ -26,6 +26,8 @@ it verifies. See
 | **Timeout / Reclaim** | [§5 Reclaim](#5-reclaim) — a top-level primitive with multiple invocation sites (dequeue inline + api-side periodic tick) | implemented   |
 | **Failure classification** (retryable vs permanent) | [§7 Failure classification](#7-failure-classification--retryable-vs-permanent) | implemented   |
 | **Manual Retry & Bulk DLQ Replay** | [§8 Manual Retry and DLQ Replay](#8-manual-retry-and-dlq-replay) | implemented   |
+| **Queue Pause and Resume** | [§9 Queue Pause and Resume](#9-queue-pause-and-resume)             | implemented   |
+| **Completion Webhooks**   | [§10 Completion Webhooks](#10-completion-webhooks)                | implemented   |
 
 A "not yet written" section is a hole, not a license to invent semantics. Stop
 and add the section first.
@@ -59,6 +61,7 @@ params.
 | `backoff`        | object      | no       | exponential, base 30s, cap 3600s | Validated by `BackoffStrategy.Validate`. |
 | `scheduledFor`   | timestamp   | no       | `now()`       | Database time. A future value makes the job invisible to dequeue until then. |
 | `idempotencyKey` | `string`    | no       | none          | Trimmed. An empty value is treated as absent. See §0.5. |
+| `callbackUrl`    | `string`    | no       | none          | Trimmed, optional. Must be a valid absolute HTTP or HTTPS URL (max 2048 chars). See §10. |
 
 ### 0.2 Outputs
 
@@ -2142,6 +2145,7 @@ Retry locks the `jobs` row `FOR UPDATE`, then checks `status`:
 
 `attempt` is reset to 0, providing the job with a complete fresh attempt budget (`max_attempts`).
 `error` is cleared. `scheduled_for` is set to `now()` so it becomes immediately runnable by workers.
+If `callback_url` is non-null, callback tracking is re-armed: `callback_status = 'pending'`, `callback_attempts = 0`, `callback_last_error = NULL`, `callback_delivered_at = NULL`, `callback_next_retry_at = NULL` (see §10.3).
 Prior rows in `job_attempts` for this job are cleared (`DELETE FROM job_attempts WHERE job_id = $jobID`)
 so the fresh attempt budget starts with a clean attempt history and future claims do not violate `idx_job_attempts_per_job`.
 All DB constraints (`jobs_lease_consistency`, `jobs_retry_consistency`, `jobs_terminal_exclusivity`, `jobs_attempt_bounds`) are satisfied.
@@ -2189,6 +2193,8 @@ requeues batches of `dead_lettered` jobs matching optional queue and handler fil
   - `scheduled_for = now()`
   - `current_worker_id = NULL`, `lease_expires_at = NULL`, `next_retry_at = NULL`
   - `completed_at = NULL`, `cancelled_at = NULL`, `dead_lettered_at = NULL`
+  - `callback_status = CASE WHEN callback_url IS NOT NULL THEN 'pending' ELSE NULL END`
+  - `callback_attempts = 0`, `callback_last_error = NULL`, `callback_delivered_at = NULL`, `callback_next_retry_at = NULL`
 - Clears prior rows in `job_attempts` for replayed jobs (`DELETE FROM job_attempts WHERE job_id = ANY(...)`).
 - Returns the list of replayed job IDs (`jobIds`) and count (`replayedCount`).
 
@@ -2239,5 +2245,89 @@ Queue pause state is persisted in PostgreSQL table `queue_states`:
 |-------|-------|--------|
 | `queue.pause` | info | `queue`, `reason` |
 | `queue.resume` | info | `queue` |
+
+---
+
+## 10. Completion Webhooks
+
+Completion webhooks (`callback_url`) provide automated, asynchronous HTTP notifications when a job reaches a terminal state (`succeeded`, `dead_lettered`, or `cancelled`).
+
+### 10.1 Inputs & Constraints
+
+| Name | Type | Required | Default | Constraints |
+|------|------|----------|---------|-------------|
+| `callback_url` | `string` | no | none | Trimmed, non-empty. Must begin with `http://` or `https://` with a valid host and length $\le 2048$ bytes. |
+
+### 10.2 State Model & Storage
+
+Callback lifecycle is tracked directly on the `jobs` row:
+- `callback_url TEXT`: Outbound webhook target URL (nullable).
+- `callback_status TEXT`: Status enum: `pending`, `running`, `delivered`, `failed` (NULL when `callback_url` is NULL; defaults to `pending` when `callback_url` is provided).
+- `callback_attempts INT NOT NULL DEFAULT 0`: Number of delivery attempts made.
+- `callback_last_error TEXT`: Last failure message or status code encountered during dispatch.
+- `callback_delivered_at TIMESTAMPTZ`: Timestamp when HTTP 2xx acknowledgement was received.
+- `callback_next_retry_at TIMESTAMPTZ`: Timestamp when the next delivery attempt is scheduled, or lease expiry for in-flight deliveries.
+
+Partial index:
+```sql
+CREATE INDEX idx_jobs_callback_pending
+ON jobs (callback_next_retry_at ASC NULLS FIRST, id ASC)
+WHERE callback_url IS NOT NULL
+  AND callback_status IN ('pending', 'running');
+```
+
+### 10.3 Dispatch Semantics & Invariants
+
+1. **Terminal Trigger**: Webhooks are dispatched only when a job reaches a terminal state: `succeeded`, `dead_lettered`, or `cancelled`. In-flight jobs (`queued`, `running`, `failed` awaiting retry) never trigger webhook delivery.
+2. **Non-Blocking Delivery**: Job completion (`MarkJobSucceeded`, `MarkJobFailed`), cancellation (`Cancel`), and lease reclaims (`Reclaim`) never block on or fail due to webhook HTTP execution. The core queue state commits independently.
+3. **Multi-Instance Safe Claim**: The background dispatcher atomically claims pending terminal jobs using `FOR UPDATE SKIP LOCKED`, increments `callback_attempts`, sets `callback_status = 'running'`, and sets `callback_next_retry_at` as a lease deadline before executing the HTTP request outside the transaction.
+4. **Concurrency Bounded**: Outbound dispatch is bounded by a semaphore pool to prevent connection starvation or excessive resource utilization.
+5. **Outcome Classification**:
+   - `2xx`: Success -> `callback_status = 'delivered'`, `callback_delivered_at = now()`, `callback_last_error = NULL`.
+   - `4xx` (excluding `408 Request Timeout` and `429 Too Many Requests`): Non-retryable client failure -> `callback_status = 'failed'`, `callback_last_error = error_detail`. No further attempts are made.
+   - `5xx`, `408`, `429`, connect/read timeout, DNS failure: Retryable failure -> If `callback_attempts < 5`, schedule retry with exponential backoff (`5s`, `15s`, `45s`, `135s`) by updating `callback_status = 'pending'` and `callback_next_retry_at = now() + delay`. If `callback_attempts >= 5`, transition to `callback_status = 'failed'`.
+6. **Retry / DLQ Replay Reset**: When a terminal job is retried (`Retry`) or replayed from the dead-letter queue (`BulkReplayDLQ`), its callback state is reset (`callback_status = CASE WHEN callback_url IS NOT NULL THEN 'pending' ELSE NULL END`, `callback_attempts = 0`, `callback_last_error = NULL`, `callback_delivered_at = NULL`, `callback_next_retry_at = NULL`) so subsequent terminal outcomes trigger new webhooks.
+
+### 10.4 Webhook Payload & Headers
+
+#### Payload Schema
+```json
+{
+  "event": "job.completed",
+  "jobId": "01J...",
+  "queue": "default",
+  "handler": "custom_worker",
+  "status": "succeeded",
+  "attempt": 1,
+  "maxAttempts": 3,
+  "payload": { ... },
+  "result": { ... },
+  "error": null,
+  "enqueuedAt": "2026-11-20T12:00:00Z",
+  "startedAt": "2026-11-20T12:00:01Z",
+  "completedAt": "2026-11-20T12:00:02Z",
+  "callbackAttempts": 1
+}
+```
+
+#### Headers
+- `Content-Type: application/json`
+- `User-Agent: Veyra-Webhook/1.0`
+- `X-Veyra-Event: job.completed`
+- `X-Veyra-Job-Id: <jobId>`
+- `X-Veyra-Status: <status>`
+- `X-Veyra-Attempt: <attempt>`
+- `X-Veyra-Delivery-Attempt: <callbackAttempts>`
+- `X-Veyra-Timestamp: <RFC3339>`
+- `X-Veyra-Signature: sha256=<hex>` (when `VEYRA_CALLBACK_SECRET` is configured)
+
+### 10.5 Observability Contract
+
+| Event | Level | Fields |
+|-------|-------|--------|
+| `queue.callback.claimed` | debug | `count` |
+| `queue.callback.delivered` | info | `jobId`, `url`, `attempt`, `status`, `durationMs` |
+| `queue.callback.retry_scheduled` | warn | `jobId`, `url`, `attempt`, `nextRetryInSeconds`, `err` |
+| `queue.callback.failed` | error | `jobId`, `url`, `attempt`, `err`, `permanent` |
 
 

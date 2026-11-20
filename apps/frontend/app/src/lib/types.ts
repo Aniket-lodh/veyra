@@ -61,6 +61,12 @@ export interface Job {
   leaseExpiresAt: string | null;
   nextRetryAt: string | null;
 
+  callbackUrl?: string;
+  callbackStatus?: 'pending' | 'running' | 'delivered' | 'failed' | null;
+  callbackAttempts?: number;
+  callbackLastError?: string | null;
+  callbackDeliveredAt?: string | null;
+
   attempts: JobAttempt[];
   isReplay?: boolean;
 }

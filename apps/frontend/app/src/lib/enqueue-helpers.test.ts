@@ -2,6 +2,7 @@ import type { QueueStatsResponse } from './api/stats';
 import {
   BACKOFF_PRESETS,
   DEFAULT_CUSTOM_PAYLOAD_EXAMPLE,
+  INITIAL_ENQUEUE_FORM,
   STARTER_PRESETS,
   buildEmailPayload,
   buildHttpPayload,
@@ -489,6 +490,7 @@ describe('enqueue-helpers', () => {
           priority: 7,
           maxAttempts: 5,
           idempotencyKey: 'test-key-99',
+          callbackUrl: 'https://api.my-service.com/webhook',
           payload: { url: 'https://example.com' },
         },
         'http://localhost:8080',
@@ -499,6 +501,59 @@ describe('enqueue-helpers', () => {
       assert.match(curl, /-H "Idempotency-Key: test-key-99"/);
       assert.match(curl, /"handler": "http_request"/);
       assert.match(curl, /"priority": 7/);
+      assert.match(
+        curl,
+        /"callbackUrl": "https:\/\/api\.my-service\.com\/webhook"/,
+      );
+    });
+  });
+
+  describe('Callback URL Validation', () => {
+    const testForm: EnqueueFormState = {
+      ...INITIAL_ENQUEUE_FORM,
+      httpUrl: 'https://example.com/api',
+    };
+
+    it('accepts valid HTTP and HTTPS callback URLs', () => {
+      const valid1 = validateAndParseEnqueueForm({
+        ...testForm,
+        callbackUrl: 'https://webhook.site/abc',
+      });
+      assert.equal(valid1.ok, true);
+      if (!valid1.ok) return;
+      assert.equal(valid1.value.callbackUrl, 'https://webhook.site/abc');
+
+      const valid2 = validateAndParseEnqueueForm({
+        ...testForm,
+        callbackUrl: 'http://localhost:3000/callback',
+      });
+      assert.equal(valid2.ok, true);
+      if (!valid2.ok) return;
+      assert.equal(valid2.value.callbackUrl, 'http://localhost:3000/callback');
+    });
+
+    it('rejects invalid or non-http callback URLs', () => {
+      const invalidScheme = validateAndParseEnqueueForm({
+        ...testForm,
+        callbackUrl: 'ftp://example.com/webhook',
+      });
+      assert.equal(invalidScheme.ok, false);
+      if (invalidScheme.ok) return;
+      assert.match(
+        invalidScheme.error,
+        /Callback URL must be a valid HTTP or HTTPS URL/,
+      );
+
+      const invalidDomain = validateAndParseEnqueueForm({
+        ...testForm,
+        callbackUrl: 'not-a-valid-url',
+      });
+      assert.equal(invalidDomain.ok, false);
+      if (invalidDomain.ok) return;
+      assert.match(
+        invalidDomain.error,
+        /Callback URL must be a valid HTTP or HTTPS URL/,
+      );
     });
   });
 
