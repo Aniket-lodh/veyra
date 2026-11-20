@@ -1,4 +1,6 @@
-import { Badge, type BadgeTone } from '@/components/ui/badge';
+import { JobCancelDialog } from '@/components/jobs/job-cancel-dialog';
+import { QuickEnqueueDialog } from '@/components/jobs/quick-enqueue-dialog';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { StatusBadge } from '@/components/ui/status-badge';
@@ -11,7 +13,21 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { useJobsList, useQueueStats, useWorkers } from '@/hooks/api';
+import {
+  computePipelineSegments,
+  computeQueueOperationalSummary,
+  computeSystemHealth,
+  filterRecentJobs,
+  type QueueOperationalSummary,
+  type RecentJobsTab,
+} from '@/lib/dashboard-helpers';
 import { formatClockUTC, formatDurationMs, formatRelative } from '@/lib/format';
+import {
+  extractQueueOptions,
+  formatAttemptRatio,
+  isJobCancellable,
+} from '@/lib/jobs-helpers';
+import { useLiveConnection } from '@/lib/live/use-live-connection';
 import {
   ROUTES,
   jobDetailPath,
@@ -19,307 +35,633 @@ import {
   jobsByStatusPath,
   workerDetailPath,
 } from '@/lib/routes';
-import type { WorkerState } from '@/lib/types';
+import type { Job, Worker } from '@/lib/types';
 import { cn } from '@/lib/utils';
+import {
+  computeFleetMetrics,
+  getWorkerLifecycle,
+  getWorkerStatusBadgeProps,
+} from '@/lib/workers-helpers';
 import {
   Activity01Icon,
   Add01Icon,
+  Alert02Icon,
   AlertCircleIcon,
+  ArrowRight01Icon,
   Cancel01Icon,
+  Copy01Icon,
+  Refresh01Icon,
   ServerStack01Icon,
   Task01Icon,
+  Tick01Icon,
   Tick02Icon,
 } from '@hugeicons/core-free-icons';
 import { HugeiconsIcon } from '@hugeicons/react';
 import type { ComponentProps } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
 type IconRef = ComponentProps<typeof HugeiconsIcon>['icon'];
 
-const WORKER_STATE_TONE: Record<WorkerState, BadgeTone> = {
-  active: 'success',
-  idle: 'muted',
-  draining: 'info',
-  disconnected: 'danger',
-};
-
-const WORKER_STATE_LABEL: Record<WorkerState, string> = {
-  active: 'Active',
-  idle: 'Idle',
-  draining: 'Draining',
-  disconnected: 'Disconnected',
-};
-
 export function DashboardPage() {
   const navigate = useNavigate();
 
+  // Primary API queries
   const stats = useQueueStats();
   const workers = useWorkers();
-  const recentJobs = useJobsList({ limit: 8, offset: 0 });
+  const recentJobs = useJobsList({ limit: 12, offset: 0 });
 
+  // Live SSE connection status
+  const { status: liveStatus, connected: liveConnected } = useLiveConnection();
+
+  // Local interactive UI state
+  const [recentTab, setRecentTab] = useState<RecentJobsTab>('all');
+  const [cancellingJob, setCancellingJob] = useState<Job | null>(null);
+  const [isQuickEnqueueOpen, setIsQuickEnqueueOpen] = useState(false);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [isManualRefreshing, setIsManualRefreshing] = useState(false);
+  const [lastRefreshedAt, setLastRefreshedAt] = useState<Date>(
+    () => new Date(),
+  );
+
+  // Copy helper with 2s active state feedback
+  const handleCopyId = useCallback((id: string, e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    navigator.clipboard.writeText(id);
+    setCopiedId(id);
+    setTimeout(() => {
+      setCopiedId((curr) => (curr === id ? null : curr));
+    }, 2000);
+  }, []);
+
+  // Manual refresh trigger
+  const handleRefresh = useCallback(async () => {
+    setIsManualRefreshing(true);
+    try {
+      await Promise.all([
+        stats.refetch(),
+        workers.refetch(),
+        recentJobs.refetch(),
+      ]);
+      setLastRefreshedAt(new Date());
+    } finally {
+      setIsManualRefreshing(false);
+    }
+  }, [stats, workers, recentJobs]);
+
+  const isAnyFetching =
+    stats.isFetching || workers.isFetching || recentJobs.isFetching;
+
+  // Domain aggregations & metrics
   const totals = stats.data?.totals;
   const waiting = totals ? totals.queued + totals.scheduled : null;
-  const needsAttention = totals ? totals.failed + totals.deadLettered : null;
 
-  const liveWorkers = workers.data
-    ? workers.data.workers.filter(
-        (w) => w.state === 'active' || w.state === 'idle',
-      )
-    : [];
-  const activeWorkers = workers.data ? liveWorkers.length : null;
-  const disconnectedWorkers = workers.data
-    ? workers.data.workers.filter((w) => w.state === 'disconnected').length
-    : 0;
+  const fleetMetrics = useMemo(
+    () => computeFleetMetrics(workers.data?.workers ?? []),
+    [workers.data?.workers],
+  );
 
-  const isRefreshing =
-    stats.isFetching || workers.isFetching || recentJobs.isFetching;
-  const hasJobs =
-    totals != null &&
-    totals.queued +
-      totals.scheduled +
-      totals.running +
-      totals.succeeded +
-      totals.failed +
-      totals.deadLettered +
-      totals.cancelled >
-      0;
+  const systemHealth = useMemo(
+    () =>
+      computeSystemHealth({
+        isApiError: stats.isError || workers.isError,
+        apiErrorMessage: (stats.error ?? workers.error)?.message,
+        totals,
+        fleetMetrics,
+      }),
+    [
+      stats.isError,
+      workers.isError,
+      stats.error,
+      workers.error,
+      totals,
+      fleetMetrics,
+    ],
+  );
 
-  const systemOk =
-    needsAttention === 0 &&
-    activeWorkers !== null &&
-    activeWorkers > 0 &&
-    !stats.isError &&
-    !workers.isError;
+  const statsData = stats.data;
+  const workersData = workers.data;
+
+  const queueSummaries = useMemo<QueueOperationalSummary[]>(() => {
+    if (!statsData?.queues) return [];
+    return statsData.queues.map((q) =>
+      computeQueueOperationalSummary(q, workersData?.workers ?? []),
+    );
+  }, [statsData, workersData]);
+
+  const availableQueues = useMemo(
+    () => extractQueueOptions(statsData?.queues ?? []),
+    [statsData],
+  );
+
+  const rawRecentJobs = useMemo(
+    () => recentJobs.data?.jobs ?? [],
+    [recentJobs.data?.jobs],
+  );
+  const filteredJobs = useMemo(
+    () => filterRecentJobs(rawRecentJobs, recentTab),
+    [rawRecentJobs, recentTab],
+  );
+
+  const runningRecentCount = useMemo(
+    () => rawRecentJobs.filter((j) => j.status === 'running').length,
+    [rawRecentJobs],
+  );
+
+  const attentionRecentCount = useMemo(
+    () =>
+      rawRecentJobs.filter(
+        (j) => j.status === 'failed' || j.status === 'dead-lettered',
+      ).length,
+    [rawRecentJobs],
+  );
+
+  const pipeline = useMemo(() => computePipelineSegments(totals), [totals]);
+
+  const initialLoading = stats.isLoading && workers.isLoading;
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-start justify-between gap-3">
+      {/* ==================================================================== */}
+      {/* SCREEN HEADER: High-Density Operational Overview & Live Indicators   */}
+      {/* ==================================================================== */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="space-y-1">
-          <h2 className="text-base font-semibold">Overview</h2>
-          <p className="text-muted-foreground flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+          <div className="flex flex-wrap items-center gap-2.5">
+            <h2 className="text-text-primary text-base font-semibold tracking-tight">
+              Operational Command Center
+            </h2>
+            {/* System Health Pill */}
+            <span
+              className={cn(
+                'inline-flex items-center gap-1.5 rounded-sm border px-2 py-0.5 text-[0.6875rem] font-medium',
+                systemHealth.level === 'healthy' &&
+                  'bg-status-success-bg text-status-success-text border-status-success-border',
+                systemHealth.level === 'degraded' &&
+                  'bg-status-warning-bg text-status-warning-text border-status-warning-border',
+                (systemHealth.level === 'at_risk' ||
+                  systemHealth.level === 'error') &&
+                  'bg-status-danger-bg text-status-danger-text border-status-danger-border',
+              )}
+              title={systemHealth.summary}
+            >
+              <span
+                className={cn('size-1.5 rounded-full', systemHealth.dotClass)}
+                aria-hidden
+              />
+              {systemHealth.label}
+            </span>
+          </div>
+
+          <div className="text-text-muted flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+            {/* SSE Stream State */}
             <span className="inline-flex items-center gap-1.5">
               <span
                 className={cn(
                   'size-1.5 rounded-full',
-                  stats.isError || workers.isError
-                    ? 'bg-status-danger-solid'
-                    : systemOk
-                      ? 'bg-status-success-solid'
-                      : 'bg-status-warning-solid',
+                  liveConnected
+                    ? 'bg-status-success-solid'
+                    : liveStatus === 'connecting'
+                      ? 'bg-status-warning-solid'
+                      : 'bg-status-neutral-solid',
                 )}
                 aria-hidden
               />
-              {stats.isError || workers.isError
-                ? 'API unreachable'
-                : systemOk
-                  ? 'Healthy'
-                  : needsAttention && needsAttention > 0
-                    ? 'Needs attention'
-                    : activeWorkers === 0
-                      ? 'No live workers'
-                      : 'Live'}
+              {liveConnected
+                ? 'Live SSE connected'
+                : liveStatus === 'connecting'
+                  ? 'Connecting to event stream…'
+                  : 'Live updates paused (60s fallback)'}
             </span>
-            <span className="text-muted-foreground/50">·</span>
-            <span>Refreshes every 5s</span>
-            {isRefreshing && (
+            <span className="text-text-muted/40">·</span>
+            <span className="tabular-nums">
+              Refreshed {formatClockUTC(lastRefreshedAt.toISOString())} UTC
+            </span>
+            {isAnyFetching && (
               <>
-                <span className="text-muted-foreground/50">·</span>
-                <span className="text-muted-foreground/70">updating…</span>
+                <span className="text-text-muted/40">·</span>
+                <span className="text-text-muted/70">syncing…</span>
               </>
             )}
-          </p>
+          </div>
         </div>
-        <Button asChild size="sm">
-          <Link to={ROUTES.jobEnqueue}>
-            <HugeiconsIcon icon={Add01Icon} data-icon="inline-start" />
-            Enqueue job
-          </Link>
-        </Button>
+
+        {/* Operational Actions */}
+        <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={handleRefresh}
+            disabled={isManualRefreshing || isAnyFetching}
+            className="gap-1.5"
+            title="Force refresh queue stats and worker roster"
+          >
+            <HugeiconsIcon
+              icon={Refresh01Icon}
+              className={cn(
+                'size-3.5',
+                (isManualRefreshing || isAnyFetching) && 'animate-spin',
+              )}
+            />
+            <span className="hidden sm:inline">Refresh</span>
+          </Button>
+
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setIsQuickEnqueueOpen(true)}
+            className="gap-1.5"
+          >
+            <HugeiconsIcon icon={Add01Icon} className="size-3.5" />
+            <span>Quick Enqueue</span>
+          </Button>
+
+          <Button asChild size="sm">
+            <Link to={ROUTES.jobEnqueue}>
+              <HugeiconsIcon icon={ArrowRight01Icon} data-icon="inline-start" />
+              Guided Enqueue
+            </Link>
+          </Button>
+        </div>
       </div>
 
+      {/* ==================================================================== */}
+      {/* SYSTEM ALERTS & DEGRADATION BANNERS                                  */}
+      {/* ==================================================================== */}
       {(stats.isError || workers.isError) && (
         <div
           role="alert"
-          className="border-destructive/40 bg-destructive/10 text-destructive rounded-md border px-3 py-2 text-xs"
+          className="border-status-danger-border bg-status-danger-bg text-status-danger-text flex flex-col gap-2 rounded-md border p-3 text-xs sm:flex-row sm:items-center sm:justify-between"
         >
-          {stats.isError && (
-            <div>Could not load queue stats: {stats.error?.message}</div>
-          )}
-          {workers.isError && (
-            <div>Could not load workers: {workers.error?.message}</div>
-          )}
-          <p className="text-destructive/80 mt-1">
-            Check that the API is running and the Vite proxy target matches its
-            port.
-          </p>
+          <div className="flex items-start gap-2">
+            <HugeiconsIcon
+              icon={AlertCircleIcon}
+              className="mt-0.5 size-4 shrink-0"
+            />
+            <div>
+              <p className="font-semibold">API Connection Error</p>
+              <p className="opacity-90">
+                {stats.error?.message || workers.error?.message} — Ensure the Go
+                API server is active on the configured origin.
+              </p>
+            </div>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleRefresh}
+            className="bg-surface-base text-text-primary self-start sm:self-auto"
+          >
+            Retry Connection
+          </Button>
         </div>
       )}
 
+      {/* Stale Worker Diagnostic Warning */}
+      {!workers.isLoading && fleetMetrics.staleWorkers > 0 && (
+        <div
+          role="status"
+          className="border-status-warning-border bg-status-warning-bg text-status-warning-text flex items-start gap-2.5 rounded-md border p-3 text-xs"
+        >
+          <HugeiconsIcon
+            icon={Alert02Icon}
+            className="mt-0.5 size-4 shrink-0"
+          />
+          <div className="space-y-0.5">
+            <p className="font-semibold">
+              Fleet Degradation Warning: {fleetMetrics.staleWorkers} Worker
+              Heartbeat{fleetMetrics.staleWorkers === 1 ? '' : 's'} Overdue
+            </p>
+            <p className="opacity-90">
+              One or more worker processes have stopped heartbeating past 3×
+              their expected interval. Their held leases will be automatically
+              reclaimed upon expiration (SPEC §5).
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Fleet Offline Warning */}
       {!stats.isLoading &&
         !workers.isLoading &&
-        activeWorkers === 0 &&
+        fleetMetrics.activeFleetWorkers === 0 &&
         !workers.isError && (
           <div
             role="status"
-            className="border-border bg-muted/40 rounded-md border px-3 py-2 text-xs"
+            className="border-border-subtle bg-surface-elevated/60 text-text-secondary flex items-start gap-2.5 rounded-md border p-3 text-xs"
           >
-            No workers are online. Jobs will sit queued until a worker process
-            starts and heartbeats.
+            <HugeiconsIcon
+              icon={ServerStack01Icon}
+              className="mt-0.5 size-4 shrink-0"
+            />
+            <div className="space-y-0.5">
+              <p className="text-text-primary font-medium">
+                Worker Fleet Offline
+              </p>
+              <p className="text-text-muted">
+                No active workers are online. Enqueued jobs will sit waiting in
+                PostgreSQL until a worker process boots and claims work.
+              </p>
+            </div>
           </div>
         )}
 
+      {/* ==================================================================== */}
+      {/* HIGH-SIGNAL SYSTEM & QUEUE HEALTH KPI CARDS                          */}
+      {/* ==================================================================== */}
       <section
-        aria-label="Job counts"
+        aria-label="System KPI metrics"
         className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5"
       >
-        <MetricLink
+        <MetricCard
           to={jobsByStatusPath('queued', 'scheduled')}
-          label="Waiting"
-          hint="Queued + scheduled"
+          label="Waiting Backlog"
           value={waiting}
+          hint={
+            totals
+              ? `${totals.queued} queued · ${totals.scheduled} scheduled`
+              : 'Queued + scheduled'
+          }
           icon={Task01Icon}
-          loading={stats.isLoading}
+          loading={initialLoading}
+          tone={waiting && waiting > 200 ? 'warn' : 'default'}
         />
-        <MetricLink
+
+        <MetricCard
           to={jobsByStatusPath('running')}
-          label="Running"
-          hint="In flight now"
+          label="In-Flight"
           value={totals?.running ?? null}
+          hint={
+            fleetMetrics.totalCapacity > 0
+              ? `${totals?.running ?? 0} of ${fleetMetrics.totalCapacity} fleet slots`
+              : 'Active execution leases'
+          }
           icon={Activity01Icon}
-          loading={stats.isLoading}
+          loading={initialLoading}
+          tone="default"
         />
-        <MetricLink
+
+        <MetricCard
           to={jobsByStatusPath('failed')}
-          label="Failed"
-          hint="Retrying soon"
+          label="Retrying Soon"
           value={totals?.failed ?? null}
+          hint="Transient backoff"
           icon={AlertCircleIcon}
-          loading={stats.isLoading}
+          loading={initialLoading}
           tone={totals && totals.failed > 0 ? 'warn' : 'default'}
         />
-        <MetricLink
+
+        <MetricCard
           to={jobsByStatusPath('dead-lettered')}
-          label="Dead-lettered"
-          hint="Gave up"
+          label="Dead-Lettered"
           value={totals?.deadLettered ?? null}
+          hint="Exhausted budget"
           icon={Cancel01Icon}
-          loading={stats.isLoading}
+          loading={initialLoading}
           tone={totals && totals.deadLettered > 0 ? 'danger' : 'default'}
         />
-        <MetricLink
+
+        <MetricCard
           to={ROUTES.workers}
-          label="Workers"
+          label="Active Fleet"
+          value={fleetMetrics.activeFleetWorkers}
           hint={
-            disconnectedWorkers > 0
-              ? `${disconnectedWorkers} disconnected`
-              : 'Accepting work'
+            fleetMetrics.staleWorkers > 0
+              ? `${fleetMetrics.staleWorkers} stale · ${fleetMetrics.utilizationPct}% utilized`
+              : fleetMetrics.totalCapacity > 0
+                ? `${fleetMetrics.utilizationPct}% utilization (${fleetMetrics.idleWorkers} idle)`
+                : '0 capacity'
           }
-          value={activeWorkers}
           icon={ServerStack01Icon}
           loading={workers.isLoading}
-          tone={activeWorkers === 0 ? 'warn' : 'default'}
+          tone={
+            fleetMetrics.staleWorkers > 0
+              ? 'warn'
+              : fleetMetrics.activeFleetWorkers === 0
+                ? 'danger'
+                : 'default'
+          }
         />
       </section>
 
-      {totals && hasJobs && (
-        <StatusStrip
-          items={[
-            {
-              label: 'Waiting',
-              count: waiting ?? 0,
-              href: jobsByStatusPath('queued', 'scheduled'),
-            },
-            {
-              label: 'Running',
-              count: totals.running,
-              href: jobsByStatusPath('running'),
-            },
-            {
-              label: 'Succeeded',
-              count: totals.succeeded,
-              href: jobsByStatusPath('succeeded'),
-            },
-            {
-              label: 'Failed',
-              count: totals.failed,
-              href: jobsByStatusPath('failed'),
-            },
-            {
-              label: 'DLQ',
-              count: totals.deadLettered,
-              href: jobsByStatusPath('dead-lettered'),
-            },
-            {
-              label: 'Cancelled',
-              count: totals.cancelled,
-              href: jobsByStatusPath('cancelled'),
-            },
-          ]}
-        />
+      {/* ==================================================================== */}
+      {/* PIPELINE DISTRIBUTION STRIP                                          */}
+      {/* ==================================================================== */}
+      {pipeline.totalJobs > 0 && (
+        <section
+          aria-label="Lifecycle distribution"
+          className="border-border-subtle bg-surface-base space-y-2.5 rounded-lg border p-3.5"
+        >
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-text-primary text-xs font-semibold">
+              Execution Lifecycle Pipeline
+            </span>
+            <span className="text-text-muted inline-flex items-center gap-1.5 font-mono text-[0.6875rem] tabular-nums">
+              <HugeiconsIcon icon={Tick02Icon} className="size-3" />
+              {pipeline.totalJobs.toLocaleString()} jobs tracked
+            </span>
+          </div>
+
+          {/* Segmented Bar */}
+          <div className="bg-surface-elevated flex h-2.5 overflow-hidden rounded-full">
+            {pipeline.segments.map((seg) => (
+              <Link
+                key={seg.id}
+                to={seg.href}
+                title={`${seg.label}: ${seg.count.toLocaleString()} (${seg.pct}%)`}
+                className={cn(
+                  'h-full min-w-[3px] transition-opacity hover:opacity-80',
+                  seg.barColorClass,
+                )}
+                style={{ width: `${seg.pct}%` }}
+              />
+            ))}
+          </div>
+
+          {/* Legend Items */}
+          <div className="flex flex-wrap gap-x-4 gap-y-1.5 pt-0.5">
+            {pipeline.segments.map((seg) => (
+              <Link
+                key={seg.id}
+                to={seg.href}
+                className="text-text-muted hover:text-text-primary flex items-center gap-1.5 text-[0.6875rem] transition-colors"
+              >
+                <span
+                  className={cn('size-1.5 rounded-full', seg.dotColorClass)}
+                  aria-hidden
+                />
+                <span className="text-text-secondary font-medium">
+                  {seg.label}
+                </span>
+                <span className="font-mono tabular-nums">
+                  {seg.count.toLocaleString()}
+                </span>
+                <span className="text-text-muted/60 text-[0.625rem] tabular-nums">
+                  ({seg.pct}%)
+                </span>
+              </Link>
+            ))}
+          </div>
+        </section>
       )}
 
-      <section className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-        <Card>
-          <CardHeader className="flex-row items-center justify-between">
-            <CardTitle>Queues</CardTitle>
+      {/* ==================================================================== */}
+      {/* 2-COLUMN OPERATIONAL SNAPSHOT: Queues & Worker Fleet                 */}
+      {/* ==================================================================== */}
+      <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        {/* COLUMN A: Queue Depth & Diagnostics */}
+        <Card className="border-border-subtle bg-surface-base">
+          <CardHeader className="flex-row items-center justify-between pb-2">
+            <div className="space-y-0.5">
+              <CardTitle className="text-text-primary text-xs font-semibold">
+                Queue Backlog & Depth
+              </CardTitle>
+              <p className="text-text-muted text-[0.6875rem]">
+                Partitioned by <code className="font-mono">jobs.queue</code>{' '}
+                label
+              </p>
+            </div>
             <Link
               to={ROUTES.jobs}
-              className="text-muted-foreground hover:text-foreground text-[0.6875rem]"
+              className="text-text-muted hover:text-text-primary text-[0.6875rem] font-medium"
             >
-              All jobs
+              All jobs →
             </Link>
           </CardHeader>
           <CardContent className="px-0 pb-1">
             {stats.isLoading ? (
-              <p className="text-muted-foreground px-4 py-3 text-xs">
-                Loading…
-              </p>
-            ) : !stats.data || stats.data.queues.length === 0 ? (
+              <TableSkeleton columns={7} rows={3} />
+            ) : queueSummaries.length === 0 ? (
               <EmptyBlock
-                title="No queue activity yet"
-                body="Enqueue a job to create a queue name and see depth here."
+                title="No queue activity recorded"
+                body="Enqueue a job to initialize a queue and monitor backlog depth here."
                 actionHref={ROUTES.jobEnqueue}
-                actionLabel="Enqueue job"
+                actionLabel="Enqueue First Job"
               />
             ) : (
               <Table>
                 <TableHeader>
-                  <TableRow>
-                    <TableHead>Name</TableHead>
-                    <TableHead className="text-right">Waiting</TableHead>
-                    <TableHead className="text-right">Running</TableHead>
-                    <TableHead className="text-right">24h OK</TableHead>
-                    <TableHead className="text-right">24h fail</TableHead>
+                  <TableRow className="border-border-subtle">
+                    <TableHead className="text-[0.6875rem]">Queue</TableHead>
+                    <TableHead className="text-right text-[0.6875rem]">
+                      Waiting
+                    </TableHead>
+                    <TableHead className="text-right text-[0.6875rem]">
+                      In-Flight
+                    </TableHead>
+                    <TableHead className="text-right text-[0.6875rem]">
+                      24h OK
+                    </TableHead>
+                    <TableHead className="text-right text-[0.6875rem]">
+                      24h Fail
+                    </TableHead>
+                    <TableHead className="text-right text-[0.6875rem]">
+                      Fleet Coverage
+                    </TableHead>
+                    <TableHead className="text-right text-[0.6875rem]">
+                      Action
+                    </TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {stats.data.queues.map((q) => (
+                  {queueSummaries.map((q) => (
                     <TableRow
                       key={q.name}
-                      className="hover:bg-muted/40 cursor-pointer"
+                      className="hover:bg-surface-elevated/40 border-border-subtle cursor-pointer transition-colors"
                       onClick={() => navigate(jobsByQueuePath(q.name))}
                     >
-                      <TableCell className="font-mono text-[0.6875rem]">
-                        {q.name}
+                      <TableCell className="py-2.5">
+                        <div className="space-y-0.5">
+                          <span className="text-text-primary font-mono text-[0.6875rem] font-medium">
+                            {q.name}
+                          </span>
+                          {q.health !== 'healthy' && (
+                            <div>
+                              <Badge
+                                tone={
+                                  q.statusTone === 'danger'
+                                    ? 'danger'
+                                    : 'warning'
+                                }
+                                className="text-[0.625rem]"
+                              >
+                                {q.statusLabel}
+                              </Badge>
+                            </div>
+                          )}
+                        </div>
                       </TableCell>
-                      <TableCell className="text-right tabular-nums">
-                        {q.depth}
+                      <TableCell className="text-text-primary text-right font-mono text-[0.6875rem] tabular-nums">
+                        {q.depth.toLocaleString()}
                       </TableCell>
-                      <TableCell className="text-right tabular-nums">
+                      <TableCell className="text-text-secondary text-right font-mono text-[0.6875rem] tabular-nums">
                         {q.inFlight}
                       </TableCell>
-                      <TableCell className="text-muted-foreground text-right tabular-nums">
-                        {q.succeeded24h}
+                      <TableCell className="text-text-muted text-right font-mono text-[0.6875rem] tabular-nums">
+                        {q.succeeded24h.toLocaleString()}
                       </TableCell>
                       <TableCell
                         className={cn(
-                          'text-right tabular-nums',
+                          'text-right font-mono text-[0.6875rem] tabular-nums',
                           q.failed24h + q.deadLettered24h > 0
-                            ? 'text-destructive'
-                            : 'text-muted-foreground',
+                            ? 'text-status-danger-text font-medium'
+                            : 'text-text-muted',
                         )}
                       >
-                        {q.failed24h + q.deadLettered24h}
+                        {(q.failed24h + q.deadLettered24h).toLocaleString()}
+                        {q.failureRatePct24h > 0 && (
+                          <span className="text-text-muted/70 ml-1 text-[0.625rem]">
+                            ({q.failureRatePct24h}%)
+                          </span>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <span
+                          className={cn(
+                            'font-mono text-[0.6875rem] tabular-nums',
+                            q.assignedWorkerCount === 0
+                              ? 'text-status-danger-text font-medium'
+                              : 'text-text-muted',
+                          )}
+                          title={`${q.assignedWorkerCount} active worker(s) subscribed to queue ${q.name}`}
+                        >
+                          {q.assignedWorkerCount} worker
+                          {q.assignedWorkerCount === 1 ? '' : 's'}
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <div
+                          className="flex items-center justify-end gap-1.5"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            disabled
+                            title="Queue pause control (POST /queues/:name/pause) pending backend implementation"
+                            className="text-text-disabled h-6 cursor-not-allowed px-1.5 text-[0.625rem]"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              e.preventDefault();
+                            }}
+                          >
+                            Pause
+                          </Button>
+                          <Button
+                            asChild
+                            variant="ghost"
+                            size="sm"
+                            className="text-text-muted hover:text-text-primary h-6 px-2 text-[0.6875rem]"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                            }}
+                          >
+                            <Link to={jobsByQueuePath(q.name)}>Filter</Link>
+                          </Button>
+                        </div>
                       </TableCell>
                     </TableRow>
                   ))}
@@ -329,141 +671,316 @@ export function DashboardPage() {
           </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader className="flex-row items-center justify-between">
-            <CardTitle>Workers</CardTitle>
+        {/* COLUMN B: Worker Fleet & Leases */}
+        <Card className="border-border-subtle bg-surface-base">
+          <CardHeader className="flex-row items-center justify-between pb-2">
+            <div className="space-y-0.5">
+              <CardTitle className="text-text-primary text-xs font-semibold">
+                Fleet Roster & Utilization
+              </CardTitle>
+              <p className="text-text-muted text-[0.6875rem]">
+                {fleetMetrics.activeFleetWorkers} active ·{' '}
+                {fleetMetrics.totalInFlight}/{fleetMetrics.totalCapacity} leased
+                ({fleetMetrics.utilizationPct}% utilization)
+              </p>
+            </div>
             <Link
               to={ROUTES.workers}
-              className="text-muted-foreground hover:text-foreground text-[0.6875rem]"
+              className="text-text-muted hover:text-text-primary text-[0.6875rem] font-medium"
             >
-              View all
+              All workers →
             </Link>
           </CardHeader>
           <CardContent className="px-0 pb-1">
             {workers.isLoading ? (
-              <p className="text-muted-foreground px-4 py-3 text-xs">
-                Loading…
-              </p>
+              <div className="space-y-2 p-4">
+                <div className="bg-surface-elevated h-10 animate-pulse rounded-md" />
+                <div className="bg-surface-elevated h-10 animate-pulse rounded-md" />
+                <div className="bg-surface-elevated h-10 animate-pulse rounded-md" />
+              </div>
             ) : !workers.data || workers.data.workers.length === 0 ? (
               <EmptyBlock
-                title="No workers registered"
-                body="Start the worker process so jobs can be claimed and executed."
+                title="No workers online"
+                body="Boot the Go worker process so available queue work can be claimed."
               />
             ) : (
-              <ul className="divide-border divide-y">
-                {workers.data.workers.slice(0, 8).map((w) => (
-                  <li key={w.id}>
-                    <Link
-                      to={workerDetailPath(w.id)}
-                      className="hover:bg-muted/40 flex items-center justify-between gap-3 px-4 py-2.5 text-xs transition-colors"
-                    >
-                      <div className="min-w-0 space-y-0.5">
-                        <div className="truncate font-mono text-[0.6875rem]">
-                          {w.hostname}
+              <ul className="divide-border-subtle divide-y">
+                {workers.data.workers.slice(0, 6).map((w: Worker) => {
+                  const lifecycle = getWorkerLifecycle(w);
+                  const badgeProps = getWorkerStatusBadgeProps(lifecycle);
+
+                  return (
+                    <li key={w.id}>
+                      <Link
+                        to={workerDetailPath(w.id)}
+                        className="hover:bg-surface-elevated/40 flex items-center justify-between gap-3 px-4 py-2.5 text-xs transition-colors"
+                      >
+                        <div className="min-w-0 space-y-0.5">
+                          <div className="flex items-center gap-2">
+                            <span className="text-text-primary truncate font-mono text-[0.6875rem] font-medium">
+                              {w.hostname}
+                            </span>
+                            <span className="text-text-muted/60 font-mono text-[0.625rem]">
+                              pid:{w.pid}
+                            </span>
+                          </div>
+                          <div className="text-text-muted truncate text-[0.625rem]">
+                            <span>
+                              {w.queues.length > 0
+                                ? w.queues.join(', ')
+                                : 'no queues'}
+                            </span>
+                            <span className="text-text-muted/50 mx-1">·</span>
+                            <span
+                              className={cn(
+                                lifecycle === 'stale' &&
+                                  'text-status-warning-text font-medium',
+                              )}
+                            >
+                              heartbeat {formatRelative(w.lastHeartbeatAt)}
+                            </span>
+                          </div>
                         </div>
-                        <div className="text-muted-foreground truncate text-[0.625rem]">
-                          {w.handlers.length > 0
-                            ? w.handlers.join(', ')
-                            : 'no handlers'}
-                          {' · '}
-                          heartbeat {formatRelative(w.lastHeartbeatAt)}
+
+                        <div className="flex shrink-0 items-center gap-2">
+                          <span
+                            className="text-text-muted font-mono text-[0.6875rem] tabular-nums"
+                            title="In flight leases / max concurrency"
+                          >
+                            {w.inFlight}/{w.maxConcurrency}
+                          </span>
+                          <Badge tone={badgeProps.tone}>
+                            {badgeProps.label}
+                          </Badge>
                         </div>
-                      </div>
-                      <div className="flex shrink-0 items-center gap-2">
-                        <span
-                          className="text-muted-foreground tabular-nums"
-                          title="In flight / max concurrency"
-                        >
-                          {w.inFlight}/{w.maxConcurrency}
-                        </span>
-                        <Badge tone={WORKER_STATE_TONE[w.state]}>
-                          {WORKER_STATE_LABEL[w.state]}
-                        </Badge>
-                      </div>
-                    </Link>
-                  </li>
-                ))}
+                      </Link>
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </CardContent>
         </Card>
       </section>
 
-      <section className="space-y-2">
-        <div className="flex items-end justify-between gap-2">
-          <h3 className="text-sm font-medium">Recent jobs</h3>
+      {/* ==================================================================== */}
+      {/* RECENT JOBS OPERATIONAL STREAM: Fast Triage & Quick Inspection       */}
+      {/* ==================================================================== */}
+      <section className="space-y-3">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-3">
+            <h3 className="text-text-primary text-sm font-semibold tracking-tight">
+              Recent Job Activity
+            </h3>
+            {/* Triage Filter Tabs */}
+            <div className="border-border-subtle bg-surface-elevated/50 flex items-center rounded-md border p-0.5 text-xs">
+              <button
+                type="button"
+                onClick={() => setRecentTab('all')}
+                className={cn(
+                  'rounded-sm px-2.5 py-0.5 font-medium transition-colors',
+                  recentTab === 'all'
+                    ? 'bg-surface-base text-text-primary shadow-xs'
+                    : 'text-text-muted hover:text-text-primary',
+                )}
+              >
+                All ({rawRecentJobs.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setRecentTab('running')}
+                className={cn(
+                  'rounded-sm px-2.5 py-0.5 font-medium transition-colors',
+                  recentTab === 'running'
+                    ? 'bg-surface-base text-text-primary shadow-xs'
+                    : 'text-text-muted hover:text-text-primary',
+                )}
+              >
+                In-Flight ({runningRecentCount})
+              </button>
+              <button
+                type="button"
+                onClick={() => setRecentTab('attention')}
+                className={cn(
+                  'rounded-sm px-2.5 py-0.5 font-medium transition-colors',
+                  recentTab === 'attention'
+                    ? 'bg-surface-base text-text-primary shadow-xs'
+                    : 'text-text-muted hover:text-text-primary',
+                  attentionRecentCount > 0 && 'text-status-danger-text',
+                )}
+              >
+                Failed / DLQ ({attentionRecentCount})
+              </button>
+            </div>
+          </div>
+
           <Link
             to={ROUTES.jobs}
-            className="text-muted-foreground hover:text-foreground text-[0.6875rem]"
+            className="text-text-muted hover:text-text-primary text-[0.6875rem] font-medium"
           >
-            View all jobs
+            Open full jobs catalog →
           </Link>
         </div>
-        <div className="border-border overflow-hidden rounded-md border">
+
+        <div className="border-border-subtle bg-surface-base overflow-hidden rounded-lg border">
           <Table>
             <TableHeader>
-              <TableRow>
-                <TableHead>Job</TableHead>
-                <TableHead>Handler</TableHead>
-                <TableHead>Queue</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Enqueued</TableHead>
-                <TableHead className="text-right">Duration</TableHead>
+              <TableRow className="border-border-subtle">
+                <TableHead className="text-[0.6875rem]">Job ID</TableHead>
+                <TableHead className="text-[0.6875rem]">Handler</TableHead>
+                <TableHead className="text-[0.6875rem]">Queue</TableHead>
+                <TableHead className="text-[0.6875rem]">Status</TableHead>
+                <TableHead className="text-[0.6875rem]">Enqueued</TableHead>
+                <TableHead className="text-right text-[0.6875rem]">
+                  Duration
+                </TableHead>
+                <TableHead className="text-right text-[0.6875rem]">
+                  Action
+                </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {recentJobs.isLoading ? (
+                <TableSkeleton columns={7} rows={4} />
+              ) : filteredJobs.length === 0 ? (
                 <TableRow>
-                  <TableCell
-                    colSpan={6}
-                    className="text-muted-foreground py-6 text-center text-xs"
-                  >
-                    Loading…
-                  </TableCell>
-                </TableRow>
-              ) : recentJobs.data?.jobs.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={6} className="py-8">
+                  <TableCell colSpan={7} className="py-8">
                     <EmptyBlock
-                      title="No jobs yet"
-                      body="Create an http_request job to see it appear here within a few seconds."
-                      actionHref={ROUTES.jobEnqueue}
-                      actionLabel="Enqueue job"
+                      title={
+                        recentTab === 'running'
+                          ? 'No jobs in flight'
+                          : recentTab === 'attention'
+                            ? 'No failed or dead-lettered jobs'
+                            : 'No recent jobs recorded'
+                      }
+                      body={
+                        recentTab === 'running'
+                          ? 'Workers are currently idle or finished with active leases.'
+                          : recentTab === 'attention'
+                            ? 'All recent job executions succeeded or are nominal.'
+                            : 'Dispatch an execution payload to monitor live progress.'
+                      }
+                      actionHref={
+                        recentTab === 'all' ? ROUTES.jobEnqueue : undefined
+                      }
+                      actionLabel={
+                        recentTab === 'all' ? 'Enqueue Job' : undefined
+                      }
                     />
                   </TableCell>
                 </TableRow>
               ) : (
-                recentJobs.data?.jobs.map((j) => {
+                filteredJobs.map((j) => {
                   const lastAttempt = j.attempts[j.attempts.length - 1];
+                  const cancellable = isJobCancellable(j.status);
+                  const isCopied = copiedId === j.id;
+
                   return (
                     <TableRow
                       key={j.id}
-                      className="hover:bg-muted/40 cursor-pointer"
+                      className="hover:bg-surface-elevated/40 border-border-subtle cursor-pointer transition-colors"
                       onClick={() => navigate(jobDetailPath(j.id))}
                     >
-                      <TableCell
-                        className="font-mono text-[0.6875rem]"
-                        title={j.id}
-                      >
-                        …{j.id.slice(-10)}
+                      {/* Job ID + Copy */}
+                      <TableCell className="py-2.5">
+                        <div className="flex items-center gap-1.5">
+                          <span
+                            className="text-text-primary font-mono text-[0.6875rem]"
+                            title={j.id}
+                          >
+                            …{j.id.slice(-10)}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              e.preventDefault();
+                              handleCopyId(j.id, e);
+                            }}
+                            className="text-text-muted hover:text-text-primary rounded-sm p-0.5 transition-colors"
+                            title="Copy full Job ULID"
+                          >
+                            <HugeiconsIcon
+                              icon={isCopied ? Tick01Icon : Copy01Icon}
+                              className={cn(
+                                'size-3',
+                                isCopied && 'text-status-success-text',
+                              )}
+                            />
+                          </button>
+                        </div>
                       </TableCell>
-                      <TableCell className="font-mono text-[0.6875rem]">
+
+                      {/* Handler */}
+                      <TableCell className="text-text-primary font-mono text-[0.6875rem]">
                         {j.handler}
                       </TableCell>
-                      <TableCell className="text-muted-foreground">
+
+                      {/* Queue */}
+                      <TableCell className="text-text-muted font-mono text-[0.6875rem]">
                         {j.queue}
                       </TableCell>
+
+                      {/* Status Badge */}
                       <TableCell>
                         <StatusBadge status={j.status} />
                       </TableCell>
-                      <TableCell className="text-muted-foreground tabular-nums">
-                        {formatClockUTC(j.enqueuedAt)}
-                        <span className="text-muted-foreground/70 ml-1">
+
+                      {/* Enqueued Timestamp */}
+                      <TableCell className="text-text-muted font-mono text-[0.6875rem] tabular-nums">
+                        <span>{formatClockUTC(j.enqueuedAt)}</span>
+                        <span className="text-text-muted/60 ml-1 text-[0.625rem]">
                           ({formatRelative(j.enqueuedAt)})
                         </span>
                       </TableCell>
-                      <TableCell className="text-right tabular-nums">
-                        {formatDurationMs(lastAttempt?.durationMs ?? null)}
+
+                      {/* Duration / Attempts */}
+                      <TableCell className="text-text-secondary text-right font-mono text-[0.6875rem] tabular-nums">
+                        {lastAttempt?.durationMs != null ? (
+                          formatDurationMs(lastAttempt.durationMs)
+                        ) : (
+                          <span className="text-text-muted">—</span>
+                        )}
+                        <span className="text-text-muted/60 ml-1 text-[0.625rem]">
+                          (att {formatAttemptRatio(j.attempt, j.maxAttempts)})
+                        </span>
+                      </TableCell>
+
+                      {/* Actions */}
+                      <TableCell className="text-right">
+                        <div
+                          className="flex items-center justify-end gap-1.5"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {cancellable ? (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="text-status-danger-text hover:bg-status-danger-bg hover:text-status-danger-text h-6 px-2 text-[0.6875rem]"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                e.preventDefault();
+                                setCancellingJob(j);
+                              }}
+                              title="Cancel job (SPEC §6)"
+                            >
+                              Cancel
+                            </Button>
+                          ) : (
+                            <Button
+                              asChild
+                              variant="ghost"
+                              size="sm"
+                              className="text-text-muted hover:text-text-primary h-6 px-2 text-[0.6875rem]"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                              }}
+                            >
+                              <Link to={jobDetailPath(j.id)}>View</Link>
+                            </Button>
+                          )}
+                        </div>
                       </TableCell>
                     </TableRow>
                   );
@@ -473,128 +990,125 @@ export function DashboardPage() {
           </Table>
         </div>
       </section>
+
+      {/* ==================================================================== */}
+      {/* MODALS & DRAWERS: Quick Enqueue & Cancellation                       */}
+      {/* ==================================================================== */}
+      <QuickEnqueueDialog
+        open={isQuickEnqueueOpen}
+        onOpenChange={setIsQuickEnqueueOpen}
+        availableQueues={availableQueues}
+        onSuccess={() => {
+          handleRefresh();
+        }}
+      />
+
+      <JobCancelDialog
+        job={cancellingJob}
+        open={Boolean(cancellingJob)}
+        onOpenChange={(open) => {
+          if (!open) setCancellingJob(null);
+        }}
+        onSuccess={() => {
+          handleRefresh();
+        }}
+      />
     </div>
   );
 }
 
-function MetricLink({
+/* ========================================================================== */
+/* HELPER COMPONENTS: MetricCard, TableSkeleton, EmptyBlock                   */
+/* ========================================================================== */
+
+function MetricCard({
   to,
   label,
-  hint,
   value,
+  hint,
   icon,
   loading,
   tone = 'default',
 }: {
   to: string;
   label: string;
-  hint: string;
   value: number | null;
+  hint: string;
   icon: IconRef;
   loading: boolean;
   tone?: 'default' | 'warn' | 'danger';
 }) {
-  const hot =
+  const isHot =
     (tone === 'danger' || tone === 'warn') && value != null && value > 0;
 
   return (
     <Link
       to={to}
       className={cn(
-        'border-border bg-card hover:bg-muted/40 focus-visible:ring-ring/30 block rounded-md border p-3 transition-colors outline-none focus-visible:ring-2',
-        hot && tone === 'danger' && 'border-status-danger-border',
-        hot && tone === 'warn' && 'border-status-warning-border',
+        'group bg-surface-base hover:bg-surface-elevated/60 border-border-subtle focus-visible:ring-ring/50 block rounded-lg border p-3.5 outline-hidden transition-colors focus-visible:ring-2',
+        isHot &&
+          tone === 'danger' &&
+          'border-status-danger-border bg-status-danger-bg/20',
+        isHot &&
+          tone === 'warn' &&
+          'border-status-warning-border bg-status-warning-bg/20',
       )}
     >
       <div className="flex items-start justify-between gap-2">
-        <div className="text-muted-foreground text-[0.6875rem] font-medium">
+        <div className="text-text-muted text-[0.6875rem] font-medium tracking-wide uppercase">
           {label}
         </div>
         <HugeiconsIcon
           icon={icon}
-          size={14}
           className={cn(
-            'text-muted-foreground',
-            hot && tone === 'danger' && 'text-status-danger-text',
-            hot && tone === 'warn' && 'text-status-warning-text',
+            'text-text-muted group-hover:text-text-primary size-4 transition-colors',
+            isHot && tone === 'danger' && 'text-status-danger-text',
+            isHot && tone === 'warn' && 'text-status-warning-text',
           )}
         />
       </div>
+
       <div
         className={cn(
-          'mt-1 text-2xl font-semibold tracking-tight tabular-nums',
-          hot && tone === 'danger' && 'text-status-danger-text',
-          hot && tone === 'warn' && 'text-status-warning-text',
+          'text-text-primary mt-1.5 font-mono text-2xl font-semibold tracking-tight tabular-nums',
+          isHot && tone === 'danger' && 'text-status-danger-text',
+          isHot && tone === 'warn' && 'text-status-warning-text',
         )}
       >
         {loading ? (
-          <span className="text-muted-foreground text-base">…</span>
+          <span className="text-text-muted text-base">…</span>
         ) : value === null ? (
-          <span className="text-muted-foreground">—</span>
+          <span className="text-text-muted">—</span>
         ) : (
           value.toLocaleString()
         )}
       </div>
-      <div className="text-muted-foreground mt-0.5 text-[0.625rem]">{hint}</div>
+
+      <div className="text-text-muted mt-1 truncate font-mono text-[0.625rem]">
+        {hint}
+      </div>
     </Link>
   );
 }
 
-function StatusStrip({
-  items,
-}: {
-  items: { label: string; count: number; href: string }[];
-}) {
-  const total = items.reduce((sum, i) => sum + i.count, 0);
-  if (total === 0) return null;
-
+function TableSkeleton({ columns, rows }: { columns: number; rows: number }) {
   return (
-    <div className="border-border space-y-2 rounded-md border p-3">
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-sm font-medium">Pipeline</span>
-        <span className="text-muted-foreground inline-flex items-center gap-1 text-[0.6875rem]">
-          <HugeiconsIcon icon={Tick02Icon} size={12} />
-          {total.toLocaleString()} jobs total
-        </span>
-      </div>
-      <div className="bg-muted flex h-2 overflow-hidden rounded-full">
-        {items.map((item) => {
-          if (item.count === 0) return null;
-          const pct = (item.count / total) * 100;
-          return (
-            <Link
-              key={item.label}
-              to={item.href}
-              title={`${item.label}: ${item.count}`}
-              className={cn(
-                'h-full min-w-[2px] transition-opacity hover:opacity-80',
-                item.label === 'Waiting' && 'bg-status-scheduled-solid',
-                item.label === 'Running' && 'bg-status-info-solid',
-                item.label === 'Succeeded' && 'bg-status-success-solid',
-                item.label === 'Failed' && 'bg-status-danger-solid',
-                item.label === 'DLQ' && 'bg-status-warning-solid',
-                item.label === 'Cancelled' && 'bg-status-neutral-solid',
-              )}
-              style={{ width: `${pct}%` }}
-            />
-          );
-        })}
-      </div>
-      <div className="flex flex-wrap gap-x-3 gap-y-1">
-        {items.map((item) => (
-          <Link
-            key={item.label}
-            to={item.href}
-            className="text-muted-foreground hover:text-foreground text-[0.625rem] tabular-nums"
-          >
-            <span className="text-foreground font-medium">
-              {item.count.toLocaleString()}
-            </span>{' '}
-            {item.label}
-          </Link>
-        ))}
-      </div>
-    </div>
+    <>
+      {Array.from({ length: rows }).map((_, rIdx) => (
+        <TableRow key={rIdx} className="border-border-subtle">
+          {Array.from({ length: columns }).map((_, cIdx) => (
+            <TableCell key={cIdx} className="py-3">
+              <div
+                className={cn(
+                  'bg-surface-elevated h-3.5 animate-pulse rounded',
+                  cIdx === 0 ? 'w-24' : 'ml-auto w-16',
+                )}
+              />
+            </TableCell>
+          ))}
+        </TableRow>
+      ))}
+    </>
   );
 }
 
@@ -611,8 +1125,8 @@ function EmptyBlock({
 }) {
   return (
     <div className="flex flex-col items-start gap-2 px-4 py-6">
-      <p className="text-sm font-medium">{title}</p>
-      <p className="text-muted-foreground max-w-sm text-xs">{body}</p>
+      <p className="text-text-primary text-xs font-semibold">{title}</p>
+      <p className="text-text-muted max-w-sm text-xs leading-relaxed">{body}</p>
       {actionHref && actionLabel && (
         <Button asChild size="sm" variant="outline" className="mt-1">
           <Link to={actionHref}>{actionLabel}</Link>
