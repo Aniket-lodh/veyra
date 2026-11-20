@@ -20,6 +20,7 @@ it verifies. See
 | **Nack / Fail**   | [§3 Nack](#3-nack-failure-completion)                              | implemented   |
 | **Retry scheduling** | [§3.5 Retry scheduling](#35-retry-scheduling)                   | implemented   |
 | **Lease Renewal** (a.k.a. ExtendLease) | [§4 Lease Renewal](#4-lease-renewal)          | implemented   |
+| **Force-Release Lease** | [§4.10 Force-Release Orphan Lease](#410-force-release-orphan-lease) | implemented   |
 | Worker heartbeat  | out of scope — proves the *runtime process* is alive, not a specific job execution. Lives in the `workers` table; see `apps/worker/CLAUDE.md`. Do **not** conflate with Lease Renewal. | n/a |
 | **Cancel**        | [§6 Cancel](#6-cancel)                                             | implemented   |
 | **Timeout / Reclaim** | [§5 Reclaim](#5-reclaim) — a top-level primitive with multiple invocation sites (dequeue inline + api-side periodic tick) | implemented   |
@@ -137,6 +138,7 @@ debug route `POST /internal/debug/claim` calls the same method.
 
 *Verified by:*
 
+- `TestClaim_ImmediateJob`: an immediate job (`scheduledFor = nil` / DB `now()`) is claimed immediately by an idle worker, while future-scheduled jobs are ignored.
 - `TestClaim_FiltersByHandler`: a worker claims only jobs whose handler is in its list.
 - `TestClaim_RequiresQueuesAndHandlers`: empty `queues` or `handlers` is rejected before SQL.
 - `TestClaim_InlineReclaimRespectsHandler`: an expired lease for a handler the caller does not run is not reclaimed inline. The tick driver still reclaims it (§5.5.2).
@@ -289,10 +291,8 @@ After the claim UPDATE returns, a new row is inserted into `job_attempts`:
 | `ended_at`, `outcome`, `error_class`, `error_message` | NULL — the attempt is in-flight |
 
 The `(job_id, attempt_number)` UNIQUE index guarantees we cannot accidentally
-insert two rows for the same attempt. If a second Dequeue races to the same
-(impossibly, because of `FOR UPDATE`) job and tries to write the same
-attempt_number, the second INSERT fails and the whole transaction rolls back.
-The lock makes this a tautological safeguard, not a primary defense.
+insert two rows for the same attempt. `ClaimNextJob` uses `ON CONFLICT (job_id, attempt_number) DO UPDATE`
+to defensively reset attempt fields if a retried job re-uses an attempt slot.
 
 ### 1.8 Lease duration
 
@@ -1008,6 +1008,60 @@ which the operator wants to see.
 
 Names are camelCase to match the frontend contract. The implementation uses
 `log/slog`. Extra fields are permitted.
+
+### 4.10 Force-Release Orphan Lease
+
+Force-Release Lease is an operator-initiated administrative action (`POST /workers/:id/leases/:jobId/release`) that immediately revokes an active lease from a designated worker and transitions the running job back to `queued` for immediate redispatch. It is used when an operator determines that a worker execution is hung, stranded, or orphaned, without waiting for lease timeout or worker eviction.
+
+#### 4.10.1 Inputs
+
+| Name       | Type     | Required | Meaning |
+|------------|----------|----------|---------|
+| `workerID` | `string` | yes      | The worker claiming current ownership (`jobs.current_worker_id`). |
+| `jobID`    | `string` | yes      | The job id whose lease is to be force-released. |
+
+#### 4.10.2 Preconditions
+
+All of the following must hold inside an atomic `FOR UPDATE` transaction:
+1. The specified worker exists in `workers` table (verified by the API layer; otherwise `ErrWorkerNotFound` → `404 Not Found`).
+2. A row exists in `jobs` with `id = $jobID` (otherwise `ErrJobNotFound` → `404 Not Found`).
+3. That row's `status = 'running'` **and** `current_worker_id = $workerID`. Otherwise → `ErrLeaseConflict` (mapped by API to `409 Conflict`). This guard prevents operators from accidentally releasing a lease held by a different worker or a job that has already completed/cancelled.
+
+#### 4.10.3 Effects
+
+In one transaction:
+1. The active attempt in `job_attempts` (`WHERE job_id = $jobID AND ended_at IS NULL`) is closed:
+   - `outcome = 'lease_lost'`
+   - `ended_at = now()`
+   - `error_class = 'OperatorAction'`
+   - `error_message = 'lease force-released by operator'`
+2. The `jobs` row is updated:
+   - `status = 'queued'`
+   - `current_worker_id = NULL`
+   - `lease_expires_at = NULL`
+   - `scheduled_for = now()` (immediately visible for dequeue)
+   - `error = '{"class":"OperatorAction","message":"lease force-released by operator",...}'`
+3. Worker in-flight count: Since `workers.inFlight` is derived dynamically from running leases (`len(leases)`), transitioning the job out of `running` decrements the worker's in-flight count safely.
+4. Attempt counter `jobs.attempt` is **preserved** (not incremented, not reset), recording that the execution attempt occurred.
+
+#### 4.10.4 Invariants & Constraints
+
+- `jobs_lease_consistency`: `status = 'queued'` with `current_worker_id = NULL` and `lease_expires_at = NULL` satisfies the CHECK constraint.
+- `jobs_retry_consistency`: `next_retry_at` remains NULL.
+- `jobs_terminal_exclusivity`: terminal timestamps remain NULL.
+- `job_attempts_outcome_matches_end`: `ended_at` and `outcome` are non-null simultaneously.
+
+#### 4.10.5 Errors
+
+| Sentinel           | HTTP Mapping | Meaning |
+|--------------------|--------------|---------|
+| `ErrJobNotFound`   | 404          | Job does not exist. |
+| `ErrLeaseConflict` | 409          | Job is not in status `'running'` or `current_worker_id` does not match the worker ID. |
+
+#### 4.10.6 Observability
+
+- Log `queue.lease.force_released` at `info` level with `workerId` and `jobId`.
+- API layer broadcasts SSE invalidation on `["workers", "jobs", "stats"]`.
 
 ---
 
@@ -1995,7 +2049,7 @@ Retry locks the `jobs` row `FOR UPDATE`, then checks `status`:
 
 | Prior status | Result | Field writes |
 |--------------|--------|--------------|
-| `failed` | **transition** | `status='queued'`, `attempt=0`, `error=NULL`, `scheduled_for=now()`, `next_retry_at=NULL`, `current_worker_id=NULL`, `lease_expires_at=NULL`, `completed_at=NULL`, `cancelled_at=NULL`, `dead_lettered_at=NULL` |
+| `failed` | **transition** | `status='queued'`, `attempt=0`, `error=NULL`, `started_at=NULL`, `result=NULL`, `scheduled_for=now()`, `next_retry_at=NULL`, `current_worker_id=NULL`, `lease_expires_at=NULL`, `completed_at=NULL`, `cancelled_at=NULL`, `dead_lettered_at=NULL` |
 | `dead_lettered` | **transition** | same as failed |
 | `cancelled` | **transition** | same as failed |
 | `queued` | **reject** `ErrNotRetryable` | unchanged (already queued/scheduled) |
@@ -2005,6 +2059,8 @@ Retry locks the `jobs` row `FOR UPDATE`, then checks `status`:
 
 `attempt` is reset to 0, providing the job with a complete fresh attempt budget (`max_attempts`).
 `error` is cleared. `scheduled_for` is set to `now()` so it becomes immediately runnable by workers.
+Prior rows in `job_attempts` for this job are cleared (`DELETE FROM job_attempts WHERE job_id = $jobID`)
+so the fresh attempt budget starts with a clean attempt history and future claims do not violate `idx_job_attempts_per_job`.
 All DB constraints (`jobs_lease_consistency`, `jobs_retry_consistency`, `jobs_terminal_exclusivity`, `jobs_attempt_bounds`) are satisfied.
 
 #### 8.1.3 Errors
@@ -2046,9 +2102,11 @@ requeues batches of `dead_lettered` jobs matching optional queue and handler fil
   - `status = 'queued'`
   - `attempt = 0`
   - `error = NULL`
+  - `started_at = NULL`, `result = NULL`
   - `scheduled_for = now()`
   - `current_worker_id = NULL`, `lease_expires_at = NULL`, `next_retry_at = NULL`
   - `completed_at = NULL`, `cancelled_at = NULL`, `dead_lettered_at = NULL`
+- Clears prior rows in `job_attempts` for replayed jobs (`DELETE FROM job_attempts WHERE job_id = ANY(...)`).
 - Returns the list of replayed job IDs (`jobIds`) and count (`replayedCount`).
 
 #### 8.2.3 Observability

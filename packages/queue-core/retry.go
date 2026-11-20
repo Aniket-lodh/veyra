@@ -61,11 +61,21 @@ func (r *Repository) Retry(ctx context.Context, p RetryParams) (*Job, error) {
 		return nil, fmt.Errorf("queuecore.Repository.Retry: unexpected status %q", priorStatus)
 	}
 
+	const deleteAttemptsSQL = `
+		DELETE FROM job_attempts
+		WHERE job_id = $1
+	`
+	if _, err := tx.Exec(ctx, deleteAttemptsSQL, p.JobID); err != nil {
+		return nil, fmt.Errorf("queuecore.Repository.Retry: delete attempts: %w", err)
+	}
+
 	const updateSQL = `
 		UPDATE jobs
 		SET status            = 'queued',
 		    attempt           = 0,
 		    error             = NULL,
+		    started_at        = NULL,
+		    result            = NULL,
 		    scheduled_for     = now(),
 		    current_worker_id = NULL,
 		    lease_expires_at  = NULL,
@@ -123,6 +133,12 @@ func (r *Repository) ReplayDLQ(ctx context.Context, p ReplayDLQParams) ([]string
 		handlerParam = &p.Handler
 	}
 
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("queuecore.Repository.ReplayDLQ: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
 	const replaySQL = `
 		WITH candidates AS (
 			SELECT id
@@ -138,6 +154,8 @@ func (r *Repository) ReplayDLQ(ctx context.Context, p ReplayDLQParams) ([]string
 		SET status            = 'queued',
 		    attempt           = 0,
 		    error             = NULL,
+		    started_at        = NULL,
+		    result            = NULL,
 		    scheduled_for     = now(),
 		    current_worker_id = NULL,
 		    lease_expires_at  = NULL,
@@ -150,7 +168,7 @@ func (r *Repository) ReplayDLQ(ctx context.Context, p ReplayDLQParams) ([]string
 		RETURNING j.id
 	`
 
-	rows, err := r.pool.Query(ctx, replaySQL, queueParam, handlerParam, limit)
+	rows, err := tx.Query(ctx, replaySQL, queueParam, handlerParam, limit)
 	if err != nil {
 		return nil, fmt.Errorf("queuecore.Repository.ReplayDLQ: query: %w", err)
 	}
@@ -166,6 +184,21 @@ func (r *Repository) ReplayDLQ(ctx context.Context, p ReplayDLQParams) ([]string
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("queuecore.Repository.ReplayDLQ: rows: %w", err)
+	}
+	rows.Close()
+
+	if len(jobIDs) > 0 {
+		const deleteAttemptsSQL = `
+			DELETE FROM job_attempts
+			WHERE job_id = ANY($1)
+		`
+		if _, err := tx.Exec(ctx, deleteAttemptsSQL, jobIDs); err != nil {
+			return nil, fmt.Errorf("queuecore.Repository.ReplayDLQ: delete attempts: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("queuecore.Repository.ReplayDLQ: commit: %w", err)
 	}
 
 	slog.InfoContext(ctx, "queue.dlq.replay",

@@ -121,3 +121,84 @@ func TestClaim_InlineReclaimRespectsHandler(t *testing.T) {
 		t.Fatalf("handler-a worker reclaimed %v; want %s", reclaimed, jobID)
 	}
 }
+
+// TestClaim_ImmediateJob covers immediate job claiming: when a job is enqueued without a schedule offset
+// (or with scheduled_for in the past), an idle worker subscribed to that queue and handler claims it immediately.
+func TestClaim_ImmediateJob(t *testing.T) {
+	pool := testsupport.StartPostgres(t)
+	repo := queuecore.NewRepository(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	const q = "immediate-claim-queue"
+	const h = "immediate.handler"
+	const workerID = "01TESTWORKERIMMEDIATE0001"
+
+	// 1. Create job with nil ScheduledFor (immediate execution)
+	job, err := repo.Create(ctx, queuecore.CreateParams{
+		ID:          "01TESTJOBIMMEDIATE00000001",
+		Handler:     h,
+		Queue:       q,
+		Priority:    5,
+		MaxAttempts: 3,
+		Backoff:     queuecore.DefaultBackoff(),
+		Payload:     json.RawMessage(`{"immediate": true}`),
+	})
+	if err != nil {
+		t.Fatalf("Create immediate job: %v", err)
+	}
+	if job.Status != queuecore.StatusQueued {
+		t.Fatalf("expected status 'queued', got %q", job.Status)
+	}
+	if job.ScheduledFor.After(time.Now().UTC().Add(1 * time.Second)) {
+		t.Fatalf("immediate job scheduled_for is in the future: %v", job.ScheduledFor)
+	}
+
+	// 2. An idle worker claims the job immediately
+	claimed, err := repo.ClaimNextJob(ctx, workerID, []string{q}, []string{h})
+	if err != nil {
+		t.Fatalf("ClaimNextJob: %v", err)
+	}
+	if claimed == nil {
+		t.Fatal("expected claimed job to be non-nil, got nil (immediate job was not claimable)")
+	}
+	if claimed.ID != job.ID {
+		t.Fatalf("claimed ID = %s, want %s", claimed.ID, job.ID)
+	}
+	if claimed.Status != queuecore.StatusRunning {
+		t.Fatalf("claimed Status = %s, want running", claimed.Status)
+	}
+	if claimed.Attempt != 1 {
+		t.Fatalf("claimed Attempt = %d, want 1", claimed.Attempt)
+	}
+	if claimed.CurrentWorkerID == nil || *claimed.CurrentWorkerID != workerID {
+		t.Fatalf("claimed CurrentWorkerID = %v, want %s", claimed.CurrentWorkerID, workerID)
+	}
+	if claimed.LeaseExpiresAt == nil || !claimed.LeaseExpiresAt.After(time.Now().UTC()) {
+		t.Fatalf("claimed LeaseExpiresAt = %v, want future", claimed.LeaseExpiresAt)
+	}
+
+	// 3. Verify future-scheduled job is NOT claimable immediately
+	futureTime := time.Now().UTC().Add(10 * time.Minute)
+	_, err = repo.Create(ctx, queuecore.CreateParams{
+		ID:           "01TESTJOBFUTURE000000000001",
+		Handler:      h,
+		Queue:        q,
+		Priority:     5,
+		MaxAttempts:  3,
+		Backoff:      queuecore.DefaultBackoff(),
+		Payload:      json.RawMessage(`{"immediate": false}`),
+		ScheduledFor: &futureTime,
+	})
+	if err != nil {
+		t.Fatalf("Create future job: %v", err)
+	}
+
+	secondClaim, err := repo.ClaimNextJob(ctx, workerID, []string{q}, []string{h})
+	if err != nil {
+		t.Fatalf("ClaimNextJob for future job: %v", err)
+	}
+	if secondClaim != nil {
+		t.Fatalf("expected nil for future job claim, got %s", secondClaim.ID)
+	}
+}

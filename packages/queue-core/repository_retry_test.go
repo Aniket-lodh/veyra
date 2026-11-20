@@ -284,3 +284,83 @@ func TestReplayDLQ(t *testing.T) {
 		t.Fatalf("replayed remaining count = %d; want 1", len(replayedRemaining))
 	}
 }
+
+// TestRetry_ClaimRetriedJob is a regression test: verifies that a retried job can be claimed
+// by an idle worker without constraint violations on job_attempts (idx_job_attempts_per_job)
+// or filtering issues on scheduled_for / next_retry_at / error.
+func TestRetry_ClaimRetriedJob(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	pool := testsupport.StartPostgres(t)
+	repo := queuecore.NewRepository(pool)
+
+	jobID := "01TESTRETRYCLAIM000000000001"
+	mustCreateRetryJob(t, ctx, repo, jobID, 1)
+
+	// First claim: attempt 1
+	claimed1 := mustClaimRetry(t, ctx, repo, jobID)
+	if claimed1.Attempt != 1 {
+		t.Fatalf("first attempt = %d; want 1", claimed1.Attempt)
+	}
+
+	// Fail the job: with maxAttempts=1, this moves to dead_lettered
+	dlq, err := repo.MarkJobFailed(ctx, queuecore.FailParams{
+		WorkerID: retryTestWorker,
+		JobID:    jobID,
+		Error: queuecore.JobError{
+			Class:   "http_500",
+			Message: "internal server error",
+		},
+	})
+	if err != nil {
+		t.Fatalf("MarkJobFailed: %v", err)
+	}
+	if dlq.Status != queuecore.StatusDeadLettered {
+		t.Fatalf("status after fail = %s; want dead_lettered", dlq.Status)
+	}
+
+	// Manual retry: resets to status='queued', attempt=0, cleans job_attempts
+	retried, err := repo.Retry(ctx, queuecore.RetryParams{JobID: jobID})
+	if err != nil {
+		t.Fatalf("Retry: %v", err)
+	}
+	if retried.Status != queuecore.StatusQueued {
+		t.Fatalf("retried status = %s; want queued", retried.Status)
+	}
+	if retried.Attempt != 0 {
+		t.Fatalf("retried attempt = %d; want 0", retried.Attempt)
+	}
+
+	// Crucial step: worker claims the retried job!
+	// Before our fix, this failed with duplicate key violation on idx_job_attempts_per_job.
+	claimed2, err := repo.ClaimNextJob(ctx, retryTestWorker, []string{retryTestQueue}, []string{retryTestHandler})
+	if err != nil {
+		t.Fatalf("ClaimNextJob on retried job failed: %v", err)
+	}
+	if claimed2 == nil {
+		t.Fatalf("ClaimNextJob returned nil for retried job %s", jobID)
+	}
+	if claimed2.ID != jobID {
+		t.Fatalf("claimed ID = %s; want %s", claimed2.ID, jobID)
+	}
+	if claimed2.Status != queuecore.StatusRunning {
+		t.Fatalf("claimed status = %s; want running", claimed2.Status)
+	}
+	if claimed2.Attempt != 1 {
+		t.Fatalf("claimed attempt = %d; want 1", claimed2.Attempt)
+	}
+
+	// Succeeded on second run
+	succeeded, err := repo.MarkJobSucceeded(ctx, queuecore.SucceedParams{
+		WorkerID: retryTestWorker,
+		JobID:    jobID,
+		Result:   json.RawMessage(`{"recovered": true}`),
+	})
+	if err != nil {
+		t.Fatalf("MarkJobSucceeded on retried job: %v", err)
+	}
+	if succeeded.Status != queuecore.StatusSucceeded {
+		t.Fatalf("final status = %s; want succeeded", succeeded.Status)
+	}
+}

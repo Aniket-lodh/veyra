@@ -274,3 +274,81 @@ func assertPermanent(t *testing.T, err error, want bool) {
 		t.Fatalf("Permanent = %v; want %v (class=%s)", herr.Permanent, want, herr.Class)
 	}
 }
+
+func TestHTTPRequest_JsonObjectBody(t *testing.T) {
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	h := NewHTTPRequest()
+	_, err := h.Handle(context.Background(), jobWith(t, map[string]any{
+		"url": srv.URL,
+		"body": map[string]any{
+			"event":  "user.signup",
+			"userId": "usr_98124",
+		},
+	}))
+	if err != nil {
+		t.Fatalf("Handle returned error: %v", err)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(gotBody), &obj); err != nil {
+		t.Fatalf("body received by server was not JSON object: %v (raw: %s)", err, gotBody)
+	}
+	if obj["event"] != "user.signup" || obj["userId"] != "usr_98124" {
+		t.Errorf("unexpected body received: %s", gotBody)
+	}
+}
+
+func TestHTTPRequest_JsonArrayBody(t *testing.T) {
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	h := NewHTTPRequest()
+	_, err := h.Handle(context.Background(), jobWith(t, map[string]any{
+		"url":  srv.URL,
+		"body": []any{1, "two", true},
+	}))
+	if err != nil {
+		t.Fatalf("Handle returned error: %v", err)
+	}
+	var arr []any
+	if err := json.Unmarshal([]byte(gotBody), &arr); err != nil {
+		t.Fatalf("body received by server was not JSON array: %v (raw: %s)", err, gotBody)
+	}
+	if len(arr) != 3 {
+		t.Errorf("unexpected body array length: %d", len(arr))
+	}
+}
+
+func TestHTTPRequest_NullAndEmptyBody(t *testing.T) {
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	h := NewHTTPRequest()
+	// null body
+	_, err := h.Handle(context.Background(), jobWith(t, map[string]any{
+		"url":  srv.URL,
+		"body": nil,
+	}))
+	if err != nil {
+		t.Fatalf("Handle returned error: %v", err)
+	}
+	if gotBody != "" {
+		t.Errorf("expected empty body for null, got %q", gotBody)
+	}
+}

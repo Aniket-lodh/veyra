@@ -170,6 +170,14 @@ func reclaimInlineClaim(ctx context.Context, tx pgx.Tx, p ReclaimParams) (*Recla
 	const insertAttemptSQL = `
 		INSERT INTO job_attempts (job_id, attempt_number, worker_id, started_at)
 		VALUES ($1, $2, $3, now())
+		ON CONFLICT (job_id, attempt_number)
+		DO UPDATE SET
+			worker_id     = EXCLUDED.worker_id,
+			started_at    = EXCLUDED.started_at,
+			ended_at      = NULL,
+			outcome       = NULL,
+			error_class   = NULL,
+			error_message = NULL
 	`
 	if _, err := tx.Exec(ctx, insertAttemptSQL, claimed.ID, claimed.Attempt, p.ClaimingWorkerID); err != nil {
 		return nil, fmt.Errorf("queuecore.Reclaim: insert attempt: %w", err)
