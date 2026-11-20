@@ -25,6 +25,10 @@
     "test": "tsc && node --experimental-strip-types --test test/*.test.ts",
     "prepublishOnly": "tsc"
   },
+  "devDependencies": {
+    "@types/node": "^24.12.3",
+    "typescript": "^5.8.0"
+  },
   "keywords": [
     "veyra",
     "queue",
