@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	maxCallbackAttempts = 5
+	maxCallbackAttempts  = 5
 	maxErrorSnippetBytes = 256
 )
 
@@ -174,7 +174,7 @@ func (d *Dispatcher) tick(ctx context.Context) error {
 		UPDATE jobs j
 		SET callback_status = 'running',
 		    callback_attempts = j.callback_attempts + 1,
-		    callback_next_retry_at = now() + make_interval(secs => $2)
+		    callback_next_retry_at = now() + make_interval(secs => $2::int)
 		FROM due
 		WHERE j.id = due.id
 		RETURNING j.id, j.callback_url, j.callback_attempts, j.status,

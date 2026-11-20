@@ -71,6 +71,12 @@ func (r *Repository) Create(ctx context.Context, p CreateParams) (*Job, error) {
 		return nil, fmt.Errorf("queuecore.Repository.Create: marshal backoff: %w", err)
 	}
 
+	var callbackStatus *string
+	if p.CallbackURL != nil {
+		s := string(CallbackStatusPending)
+		callbackStatus = &s
+	}
+
 	const insertSQL = `
 		INSERT INTO jobs (
 			id, handler, queue, priority, idempotency_key,
@@ -79,7 +85,7 @@ func (r *Repository) Create(ctx context.Context, p CreateParams) (*Job, error) {
 		) VALUES (
 			$1, $2, $3, $4, $5,
 			$6, $7, $8, COALESCE($9, now()),
-			$10, CASE WHEN $10 IS NOT NULL THEN 'pending' ELSE NULL END
+			$10::text, $11::text
 		)
 		ON CONFLICT (queue, idempotency_key)
 			WHERE idempotency_key IS NOT NULL
@@ -89,7 +95,7 @@ func (r *Repository) Create(ctx context.Context, p CreateParams) (*Job, error) {
 	row := r.pool.QueryRow(ctx, insertSQL,
 		p.ID, p.Handler, p.Queue, p.Priority, p.IdempotencyKey,
 		[]byte(p.Payload), p.MaxAttempts, backoffJSON, p.ScheduledFor,
-		p.CallbackURL,
+		p.CallbackURL, callbackStatus,
 	)
 
 	job, err := scanJob(row)
