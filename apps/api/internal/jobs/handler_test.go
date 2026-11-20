@@ -23,6 +23,8 @@ type mockJobRepo struct {
 	retryFunc        func(ctx context.Context, p queuecore.RetryParams) (*queuecore.Job, error)
 	replayDLQFunc    func(ctx context.Context, p queuecore.ReplayDLQParams) ([]string, error)
 	listAttemptsFunc func(ctx context.Context, jobID string) ([]*queuecore.Attempt, error)
+	listFunc         func(ctx context.Context, p queuecore.ListParams) ([]*queuecore.Job, error)
+	countFunc        func(ctx context.Context, p queuecore.ListParams) (int, error)
 }
 
 type mockBroadcaster struct {
@@ -63,10 +65,16 @@ func (m *mockJobRepo) GetByID(ctx context.Context, id string) (*queuecore.Job, e
 }
 
 func (m *mockJobRepo) List(ctx context.Context, p queuecore.ListParams) ([]*queuecore.Job, error) {
+	if m.listFunc != nil {
+		return m.listFunc(ctx, p)
+	}
 	return nil, errors.New("not implemented")
 }
 
 func (m *mockJobRepo) Count(ctx context.Context, p queuecore.ListParams) (int, error) {
+	if m.countFunc != nil {
+		return m.countFunc(ctx, p)
+	}
 	return 0, errors.New("not implemented")
 }
 
@@ -744,8 +752,12 @@ func TestJobRoutes_ScopeEnforcement(t *testing.T) {
 	Register(app, h, authn)
 
 	// 1. Unauthenticated requests should be 401
-	for _, path := range []string{"/jobs/01JOB/retry", "/jobs/dlq/replay"} {
-		req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader([]byte("{}")))
+	for _, path := range []string{"/jobs", "/jobs/01JOB/retry", "/jobs/dlq/replay"} {
+		method := http.MethodPost
+		if path == "/jobs" {
+			method = http.MethodGet
+		}
+		req := httptest.NewRequest(method, path, bytes.NewReader([]byte("{}")))
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := app.Test(req)
 		if err != nil {
@@ -755,5 +767,202 @@ func TestJobRoutes_ScopeEnforcement(t *testing.T) {
 		if resp.StatusCode != http.StatusUnauthorized {
 			t.Fatalf("%s unauthenticated: expected 401, got %d", path, resp.StatusCode)
 		}
+	}
+}
+
+func TestList_WorkerIDFilter_Success(t *testing.T) {
+	t.Parallel()
+
+	var capturedParams queuecore.ListParams
+	repo := &mockJobRepo{
+		listFunc: func(ctx context.Context, p queuecore.ListParams) ([]*queuecore.Job, error) {
+			capturedParams = p
+			return []*queuecore.Job{
+				{
+					ID:           "01JOBWORKER0000000000000001",
+					Handler:      "http_request",
+					Queue:        "default",
+					Priority:     5,
+					MaxAttempts:  3,
+					Status:       queuecore.StatusRunning,
+					ScheduledFor: time.Now().UTC(),
+					EnqueuedAt:   time.Now().UTC(),
+					Payload:      json.RawMessage(`{}`),
+				},
+			}, nil
+		},
+		countFunc: func(ctx context.Context, p queuecore.ListParams) (int, error) {
+			return 1, nil
+		},
+	}
+
+	h := NewHandler(repo)
+	app := fiber.New()
+	app.Get("/jobs", h.List)
+
+	// 1. Using snake_case worker_id
+	req1 := httptest.NewRequest(http.MethodGet, "/jobs?worker_id=01TESTWORKER0000000000001", nil)
+	resp1, err := app.Test(req1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp1.Body.Close() }()
+
+	if resp1.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", resp1.StatusCode)
+	}
+	if capturedParams.WorkerID != "01TESTWORKER0000000000001" {
+		t.Fatalf("expected captured worker_id '01TESTWORKER0000000000001', got %q", capturedParams.WorkerID)
+	}
+
+	var body1 struct {
+		Jobs       []map[string]any `json:"jobs"`
+		TotalCount int              `json:"totalCount"`
+		Limit      int              `json:"limit"`
+		Offset     int              `json:"offset"`
+	}
+	if err := json.NewDecoder(resp1.Body).Decode(&body1); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if len(body1.Jobs) != 1 || body1.TotalCount != 1 {
+		t.Fatalf("expected 1 job and totalCount=1, got jobs=%d totalCount=%d", len(body1.Jobs), body1.TotalCount)
+	}
+
+	// 2. Using camelCase workerId alias
+	req2 := httptest.NewRequest(http.MethodGet, "/jobs?workerId=01TESTWORKER0000000000001", nil)
+	resp2, err := app.Test(req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK for workerId, got %d", resp2.StatusCode)
+	}
+	if capturedParams.WorkerID != "01TESTWORKER0000000000001" {
+		t.Fatalf("expected captured worker_id '01TESTWORKER0000000000001', got %q", capturedParams.WorkerID)
+	}
+}
+
+func TestList_WorkerIDFilter_Conflict_400(t *testing.T) {
+	t.Parallel()
+
+	h := NewHandler(&mockJobRepo{})
+	app := fiber.New()
+	app.Get("/jobs", h.List)
+
+	// Both worker_id and workerId provided, but with differing values
+	req := httptest.NewRequest(http.MethodGet, "/jobs?worker_id=worker-alpha&workerId=worker-beta", nil)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request for conflicting params, got %d", resp.StatusCode)
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "do not match") {
+		t.Fatalf("expected mismatch error message, got: %s", string(body))
+	}
+}
+
+func TestList_WorkerIDFilter_MatchingBoth_200(t *testing.T) {
+	t.Parallel()
+
+	var captured string
+	repo := &mockJobRepo{
+		listFunc: func(ctx context.Context, p queuecore.ListParams) ([]*queuecore.Job, error) {
+			captured = p.WorkerID
+			return []*queuecore.Job{}, nil
+		},
+		countFunc: func(ctx context.Context, p queuecore.ListParams) (int, error) {
+			return 0, nil
+		},
+	}
+
+	h := NewHandler(repo)
+	app := fiber.New()
+	app.Get("/jobs", h.List)
+
+	// Both worker_id and workerId provided with identical values
+	req := httptest.NewRequest(http.MethodGet, "/jobs?worker_id=worker-same&workerId=worker-same", nil)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK when both match, got %d", resp.StatusCode)
+	}
+	if captured != "worker-same" {
+		t.Fatalf("expected worker-same, got %q", captured)
+	}
+}
+
+func TestList_WorkerIDFilter_ValidationErrors_400(t *testing.T) {
+	t.Parallel()
+
+	h := NewHandler(&mockJobRepo{})
+	app := fiber.New()
+	app.Get("/jobs", h.List)
+
+	// Overly long worker ID (> 128 characters)
+	tooLong := strings.Repeat("w", 129)
+	req1 := httptest.NewRequest(http.MethodGet, "/jobs?worker_id="+tooLong, nil)
+	resp1, err := app.Test(req1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp1.Body.Close()
+	if resp1.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for overly long worker_id, got %d", resp1.StatusCode)
+	}
+
+	// Invalid characters (spaces / control chars)
+	req2 := httptest.NewRequest(http.MethodGet, "/jobs?worker_id=bad%20worker%20id", nil)
+	resp2, err := app.Test(req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp2.Body.Close()
+	if resp2.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for spaces in worker_id, got %d", resp2.StatusCode)
+	}
+}
+
+func TestList_InternalErrorSanitization(t *testing.T) {
+	t.Parallel()
+
+	repo := &mockJobRepo{
+		listFunc: func(ctx context.Context, p queuecore.ListParams) ([]*queuecore.Job, error) {
+			return nil, errors.New("pgx: fatal connection pool exhaust at internal-db.cluster:5432")
+		},
+	}
+
+	h := NewHandler(repo)
+	app := fiber.New()
+	app.Get("/jobs", h.List)
+
+	req := httptest.NewRequest(http.MethodGet, "/jobs?worker_id=worker-test", nil)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected 500 Internal Server Error, got %d", resp.StatusCode)
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	bodyStr := string(body)
+	if !strings.Contains(bodyStr, `"error":"internal server error"`) {
+		t.Fatalf("expected sanitized error, got %s", bodyStr)
+	}
+	if strings.Contains(bodyStr, "pgx") || strings.Contains(bodyStr, "internal-db.cluster") {
+		t.Fatalf("database details leaked in 500 response: %s", bodyStr)
 	}
 }

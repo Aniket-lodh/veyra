@@ -116,3 +116,177 @@ func TestList_HandlerFilter(t *testing.T) {
 		}
 	})
 }
+
+func TestList_WorkerFilter(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	pool := testsupport.StartPostgres(t)
+	repo := queuecore.NewRepository(pool)
+
+	const workerA = "01TESTWORKERA00000000000001"
+	const workerB = "01TESTWORKERB00000000000001"
+	const q = "worker-filter-q"
+	const h = "worker-filter-h"
+
+	// 1. Job 1: Running on workerA
+	j1, err := repo.Create(ctx, queuecore.CreateParams{
+		ID:          "01TESTWORKERJOB000000000001",
+		Handler:     h,
+		Queue:       q,
+		MaxAttempts: 3,
+		Backoff:     queuecore.DefaultBackoff(),
+		Payload:     json.RawMessage(`{}`),
+	})
+	if err != nil {
+		t.Fatalf("Create j1: %v", err)
+	}
+	claimed1, err := repo.ClaimNextJob(ctx, workerA, []string{q}, []string{h})
+	if err != nil || claimed1 == nil || claimed1.ID != j1.ID {
+		t.Fatalf("claim j1: %v", err)
+	}
+
+	// 2. Job 2: Claimed by workerA, then succeeded
+	j2, err := repo.Create(ctx, queuecore.CreateParams{
+		ID:          "01TESTWORKERJOB000000000002",
+		Handler:     h,
+		Queue:       q,
+		MaxAttempts: 3,
+		Backoff:     queuecore.DefaultBackoff(),
+		Payload:     json.RawMessage(`{}`),
+	})
+	if err != nil {
+		t.Fatalf("Create j2: %v", err)
+	}
+	claimed2, err := repo.ClaimNextJob(ctx, workerA, []string{q}, []string{h})
+	if err != nil || claimed2 == nil || claimed2.ID != j2.ID {
+		t.Fatalf("claim j2: %v", err)
+	}
+	_, err = repo.MarkJobSucceeded(ctx, queuecore.SucceedParams{
+		WorkerID: workerA,
+		JobID:    j2.ID,
+		Result:   json.RawMessage(`{"done":true}`),
+	})
+	if err != nil {
+		t.Fatalf("succeed j2: %v", err)
+	}
+
+	// 3. Job 3: Claimed by workerB, then succeeded
+	j3, err := repo.Create(ctx, queuecore.CreateParams{
+		ID:          "01TESTWORKERJOB000000000003",
+		Handler:     h,
+		Queue:       q,
+		MaxAttempts: 3,
+		Backoff:     queuecore.DefaultBackoff(),
+		Payload:     json.RawMessage(`{}`),
+	})
+	if err != nil {
+		t.Fatalf("Create j3: %v", err)
+	}
+	claimed3, err := repo.ClaimNextJob(ctx, workerB, []string{q}, []string{h})
+	if err != nil || claimed3 == nil || claimed3.ID != j3.ID {
+		t.Fatalf("claim j3: %v", err)
+	}
+	_, err = repo.MarkJobSucceeded(ctx, queuecore.SucceedParams{
+		WorkerID: workerB,
+		JobID:    j3.ID,
+		Result:   json.RawMessage(`{"done":true}`),
+	})
+	if err != nil {
+		t.Fatalf("succeed j3: %v", err)
+	}
+
+	// 4. Job 4: Fresh queued, never claimed
+	_, err = repo.Create(ctx, queuecore.CreateParams{
+		ID:          "01TESTWORKERJOB000000000004",
+		Handler:     h,
+		Queue:       q,
+		MaxAttempts: 3,
+		Backoff:     queuecore.DefaultBackoff(),
+		Payload:     json.RawMessage(`{}`),
+	})
+	if err != nil {
+		t.Fatalf("Create j4: %v", err)
+	}
+
+	// Subtest A: Filter by workerA (matches running Job 1 and completed Job 2)
+	t.Run("matches active and historical attempts for workerA", func(t *testing.T) {
+		p := queuecore.ListParams{WorkerID: workerA, Limit: 50}
+		jobs, err := repo.List(ctx, p)
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		count, err := repo.Count(ctx, p)
+		if err != nil {
+			t.Fatalf("Count: %v", err)
+		}
+		if count != 2 || len(jobs) != 2 {
+			t.Fatalf("want 2 jobs for workerA, got count=%d len=%d", count, len(jobs))
+		}
+		ids := map[string]bool{jobs[0].ID: true, jobs[1].ID: true}
+		if !ids[j1.ID] || !ids[j2.ID] {
+			t.Fatalf("expected jobs %s and %s, got: %v, %v", j1.ID, j2.ID, jobs[0].ID, jobs[1].ID)
+		}
+	})
+
+	// Subtest B: Filter by workerB (matches historical completed Job 3)
+	t.Run("matches historical attempt for workerB", func(t *testing.T) {
+		p := queuecore.ListParams{WorkerID: workerB, Limit: 50}
+		jobs, err := repo.List(ctx, p)
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		count, err := repo.Count(ctx, p)
+		if err != nil {
+			t.Fatalf("Count: %v", err)
+		}
+		if count != 1 || len(jobs) != 1 || jobs[0].ID != j3.ID {
+			t.Fatalf("want 1 job (%s) for workerB, got count=%d jobs=%v", j3.ID, count, jobs)
+		}
+	})
+
+	// Subtest C: Unknown worker ID returns empty cleanly
+	t.Run("non-matching worker returns empty cleanly", func(t *testing.T) {
+		p := queuecore.ListParams{WorkerID: "01TESTWORKERUNKNOWN00000001", Limit: 50}
+		jobs, err := repo.List(ctx, p)
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		count, err := repo.Count(ctx, p)
+		if err != nil {
+			t.Fatalf("Count: %v", err)
+		}
+		if count != 0 || len(jobs) != 0 {
+			t.Fatalf("want 0 jobs for unknown worker, got count=%d len=%d", count, len(jobs))
+		}
+	})
+
+	// Subtest D: Composed with status filter
+	t.Run("AND-composed with status filter", func(t *testing.T) {
+		runningP := queuecore.ListParams{
+			WorkerID: workerA,
+			Statuses: []queuecore.JobStatus{queuecore.StatusRunning},
+			Limit:    50,
+		}
+		runningJobs, err := repo.List(ctx, runningP)
+		if err != nil {
+			t.Fatalf("List running: %v", err)
+		}
+		if len(runningJobs) != 1 || runningJobs[0].ID != j1.ID {
+			t.Fatalf("want running job %s for workerA, got %v", j1.ID, runningJobs)
+		}
+
+		succeededP := queuecore.ListParams{
+			WorkerID: workerA,
+			Statuses: []queuecore.JobStatus{queuecore.StatusSucceeded},
+			Limit:    50,
+		}
+		succeededJobs, err := repo.List(ctx, succeededP)
+		if err != nil {
+			t.Fatalf("List succeeded: %v", err)
+		}
+		if len(succeededJobs) != 1 || succeededJobs[0].ID != j2.ID {
+			t.Fatalf("want succeeded job %s for workerA, got %v", j2.ID, succeededJobs)
+		}
+	})
+}

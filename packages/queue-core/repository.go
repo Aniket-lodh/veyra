@@ -177,6 +177,7 @@ type ListParams struct {
 	Queues   []string    // empty = any queue
 	Handlers []string    // empty = any handler; exact match, multiple OR'd
 	Search   string      // empty = no search; case-insensitive prefix on id and handler
+	WorkerID string      // empty = no worker filter; matches current_worker_id or job_attempts.worker_id
 }
 
 // List returns jobs ordered by enqueue time, newest first, narrowed by p's filters.
@@ -245,6 +246,11 @@ func buildListFilters(p ListParams) (string, []any) {
 		args = append(args, p.Search+"%")
 		ph := "$" + strconv.Itoa(len(args))
 		clauses = append(clauses, "(id ILIKE "+ph+" OR handler ILIKE "+ph+")")
+	}
+	if p.WorkerID != "" {
+		args = append(args, p.WorkerID)
+		ph := "$" + strconv.Itoa(len(args))
+		clauses = append(clauses, "(current_worker_id = "+ph+" OR EXISTS (SELECT 1 FROM job_attempts WHERE job_attempts.job_id = jobs.id AND job_attempts.worker_id = "+ph+"))")
 	}
 	if len(clauses) == 0 {
 		return "", nil

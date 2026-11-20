@@ -250,6 +250,15 @@
               "type": "string"
             },
             "description": "Case-insensitive prefix match on job id and handler."
+          },
+          {
+            "name": "worker_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Filter jobs associated with a specific worker ID (currently running on or attempted by this worker)."
           }
         ],
         "responses": {

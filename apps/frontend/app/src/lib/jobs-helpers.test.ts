@@ -13,6 +13,7 @@ import {
   RETRYABLE_STATUS_SET,
   validateJsonString,
 } from './jobs-helpers.ts';
+import { jobsByWorkerPath } from './routes.ts';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
@@ -229,6 +230,19 @@ describe('jobs-helpers', () => {
 
       const res3 = validateJsonString('123'); // primitive number, not object/array
       assert.equal(res3.valid, false);
+    });
+  });
+
+  describe('jobsByWorkerPath route helper', () => {
+    it('constructs correct query url with worker_id', () => {
+      assert.equal(
+        jobsByWorkerPath('01TESTWORKER12345'),
+        '/jobs?worker_id=01TESTWORKER12345',
+      );
+      assert.equal(
+        jobsByWorkerPath('worker-special:id/1'),
+        '/jobs?worker_id=worker-special%3Aid%2F1',
+      );
     });
   });
 });

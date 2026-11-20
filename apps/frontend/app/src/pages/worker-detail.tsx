@@ -33,6 +33,7 @@ import {
   jobDetailPath,
   jobsByHandlerPath,
   jobsByQueuePath,
+  jobsByWorkerPath,
 } from '@/lib/routes';
 import type { WorkerLease } from '@/lib/types';
 import { cn } from '@/lib/utils';
@@ -52,6 +53,7 @@ import {
   Copy01Icon,
   MoreHorizontalIcon,
   Refresh01Icon,
+  Task01Icon,
   Tick01Icon,
 } from '@hugeicons/core-free-icons';
 import { HugeiconsIcon } from '@hugeicons/react';
@@ -296,6 +298,17 @@ export function WorkerDetailPage() {
             Refresh
           </Button>
 
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => navigate(jobsByWorkerPath(worker.id))}
+            className="text-xs"
+            title="View jobs associated with this worker"
+          >
+            <HugeiconsIcon icon={Task01Icon} className="mr-1.5 h-3.5 w-3.5" />
+            View Jobs
+          </Button>
+
           {/* Operational Dropdown Menu (Gated controls disabled with pending-backend badges) */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -375,6 +388,16 @@ export function WorkerDetailPage() {
               )}
 
               <DropdownMenuSeparator />
+
+              <DropdownMenuItem
+                onClick={() => navigate(jobsByWorkerPath(worker.id))}
+                className="text-text-primary justify-between"
+              >
+                <span>View Worker Jobs</span>
+                <span className="border-border-subtle bg-surface-elevated text-text-muted rounded px-1 py-0.5 text-[0.5625rem]">
+                  GET /jobs
+                </span>
+              </DropdownMenuItem>
 
               <DropdownMenuItem
                 disabled
@@ -568,6 +591,13 @@ export function WorkerDetailPage() {
               runtime
             </p>
           </div>
+          <Link
+            to={jobsByWorkerPath(worker.id)}
+            className="text-text-muted hover:text-text-primary inline-flex items-center gap-1 text-xs transition-colors"
+          >
+            <span>View All Worker Jobs</span>
+            <span aria-hidden="true">&rarr;</span>
+          </Link>
         </div>
 
         <div className="border-border-subtle bg-surface-base overflow-hidden rounded-md border">

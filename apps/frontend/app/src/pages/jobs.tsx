@@ -111,6 +111,13 @@ export function JobsPage() {
     [searchParams],
   );
   const search = searchParams.get('search')?.trim() ?? '';
+  const workerId = useMemo(
+    () =>
+      searchParams.get('worker_id')?.trim() ||
+      searchParams.get('workerId')?.trim() ||
+      '',
+    [searchParams],
+  );
   const page = Math.max(0, Number(searchParams.get('page') ?? 0) | 0);
   const offset = page * PAGE_SIZE;
 
@@ -122,6 +129,7 @@ export function JobsPage() {
     queues: queues.length > 0 ? queues : undefined,
     handlers: handlers.length > 0 ? handlers : undefined,
     search: search || undefined,
+    workerId: workerId || undefined,
   });
 
   const jobs = data?.jobs ?? [];
@@ -203,7 +211,8 @@ export function JobsPage() {
     statuses.length > 0 ||
     queues.length > 0 ||
     handlers.length > 0 ||
-    search.length > 0;
+    search.length > 0 ||
+    workerId.length > 0;
 
   const goToPage = (p: number) =>
     setSearchParams((prev) => {
@@ -575,6 +584,34 @@ export function JobsPage() {
             })}
           </div>
         </div>
+
+        {/* Active Worker Filter Pill */}
+        {workerId && (
+          <div className="border-border-subtle bg-surface-canvas flex items-center justify-between gap-2 rounded-md border px-3 py-1.5 text-xs">
+            <div className="flex items-center gap-1.5 overflow-hidden">
+              <span className="text-text-muted text-[0.6875rem] font-medium tracking-wider uppercase">
+                Worker Filter:
+              </span>
+              <span className="text-text-primary font-mono text-xs font-semibold tabular-nums">
+                {workerId}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() =>
+                updateFilter((sp) => {
+                  sp.delete('worker_id');
+                  sp.delete('workerId');
+                })
+              }
+              className="text-text-muted hover:text-text-primary hover:bg-surface-elevated inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[0.6875rem] transition-colors"
+              title="Remove worker filter"
+            >
+              <HugeiconsIcon icon={Cancel01Icon} className="h-3 w-3" />
+              <span>Clear Worker</span>
+            </button>
+          </div>
+        )}
 
         {/* Queue, Handler & Search Filters */}
         <div className="grid gap-3 pt-1 sm:grid-cols-3">
