@@ -34,6 +34,9 @@ var ErrNotRetryable = errors.New("job is not retryable: status must be failed, d
 // ErrIdempotencyConflict is returned by Create when an idempotency key matches an existing job with different parameters.
 var ErrIdempotencyConflict = errors.New("idempotency key conflict: parameters do not match existing job")
 
+// ErrLeaseConflict is returned when attempting to force-release a lease that is not running or not owned by the specified worker.
+var ErrLeaseConflict = errors.New("lease conflict: job is not running or not leased by the specified worker")
+
 // leaseDurationSeconds is the queue's hardcoded lease length.
 const leaseDurationSeconds = 30
 
@@ -370,6 +373,14 @@ func (r *Repository) ClaimNextJob(ctx context.Context, workerID string, queues, 
 	const insertAttemptSQL = `
 		INSERT INTO job_attempts (job_id, attempt_number, worker_id, started_at)
 		VALUES ($1, $2, $3, now())
+		ON CONFLICT (job_id, attempt_number)
+		DO UPDATE SET
+			worker_id     = EXCLUDED.worker_id,
+			started_at    = EXCLUDED.started_at,
+			ended_at      = NULL,
+			outcome       = NULL,
+			error_class   = NULL,
+			error_message = NULL
 	`
 	_, err = tx.Exec(ctx, insertAttemptSQL, claimed.ID, claimed.Attempt, workerID)
 	if err != nil {

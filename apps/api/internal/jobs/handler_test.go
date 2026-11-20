@@ -322,6 +322,87 @@ func TestCreate_InternalErrorSanitization(t *testing.T) {
 	}
 }
 
+func TestCreate_BroadcasterNotification(t *testing.T) {
+	t.Parallel()
+
+	broadcaster := &mockBroadcaster{}
+	repo := &mockJobRepo{
+		createFunc: func(ctx context.Context, p queuecore.CreateParams) (*queuecore.Job, error) {
+			return &queuecore.Job{
+				ID:           "01JOBNEW000000000000000001",
+				Queue:        p.Queue,
+				Handler:      p.Handler,
+				Priority:     p.Priority,
+				MaxAttempts:  p.MaxAttempts,
+				Status:       queuecore.StatusQueued,
+				ScheduledFor: time.Now().UTC(),
+				EnqueuedAt:   time.Now().UTC(),
+				Payload:      p.Payload,
+			}, nil
+		},
+	}
+
+	h := NewHandler(repo, broadcaster)
+	app := fiber.New()
+	app.Post("/jobs", h.Create)
+
+	body := map[string]any{
+		"handler": "http_request",
+		"queue":   "default",
+		"payload": map[string]string{"url": "https://example.com"},
+	}
+	payloadBytes, _ := json.Marshal(body)
+
+	req := httptest.NewRequest(http.MethodPost, "/jobs", bytes.NewReader(payloadBytes))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201 Created, got %d", resp.StatusCode)
+	}
+
+	// Verify broadcaster MarkDirty was called with "jobs" and "stats"
+	if len(broadcaster.dirty) != 2 || broadcaster.dirty[0] != "jobs" || broadcaster.dirty[1] != "stats" {
+		t.Fatalf("expected broadcaster dirty ['jobs', 'stats'], got %v", broadcaster.dirty)
+	}
+}
+
+func TestDeriveAPIStatus_ClockSkewTolerance(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+
+	// 1. Immediate job where scheduledFor is slightly ahead due to clock skew (+100ms)
+	skewAhead := now.Add(100 * time.Millisecond)
+	if status := deriveAPIStatus(queuecore.StatusQueued, skewAhead, now); status != "queued" {
+		t.Fatalf("expected 'queued' for 100ms clock skew ahead, got %q", status)
+	}
+
+	// 2. Immediate job where scheduledFor is at or in the past
+	if status := deriveAPIStatus(queuecore.StatusQueued, now, now); status != "queued" {
+		t.Fatalf("expected 'queued' for scheduledFor == now, got %q", status)
+	}
+	if status := deriveAPIStatus(queuecore.StatusQueued, now.Add(-10*time.Second), now); status != "queued" {
+		t.Fatalf("expected 'queued' for past scheduledFor, got %q", status)
+	}
+
+	// 3. Truly future scheduled job (e.g. +1 minute)
+	future := now.Add(1 * time.Minute)
+	if status := deriveAPIStatus(queuecore.StatusQueued, future, now); status != "scheduled" {
+		t.Fatalf("expected 'scheduled' for +1m future scheduled job, got %q", status)
+	}
+
+	// 4. Dead lettered status renamed
+	if status := deriveAPIStatus(queuecore.StatusDeadLettered, now, now); status != "dead-lettered" {
+		t.Fatalf("expected 'dead-lettered', got %q", status)
+	}
+}
+
 func TestRetry_Success(t *testing.T) {
 	t.Parallel()
 

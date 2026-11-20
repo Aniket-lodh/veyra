@@ -188,8 +188,10 @@ func toResponse(j *queuecore.Job) jobResponse {
 }
 
 // deriveAPIStatus converts the 6-value storage enum to the 7-value API vocabulary.
+// A 1-second clock skew tolerance prevents jobs enqueued at DB now() from falsely
+// being reported as "scheduled" due to subsecond clock drift between the DB and API hosts.
 func deriveAPIStatus(status queuecore.JobStatus, scheduledFor time.Time, now time.Time) string {
-	if status == queuecore.StatusQueued && scheduledFor.After(now) {
+	if status == queuecore.StatusQueued && scheduledFor.After(now.Add(1*time.Second)) {
 		return "scheduled"
 	}
 	if status == queuecore.StatusDeadLettered {
@@ -238,6 +240,9 @@ func (h *Handler) Create(c fiber.Ctx) error {
 		"maxAttempts", job.MaxAttempts,
 		"isReplay", job.IsReplay,
 	)
+	if h.broadcaster != nil {
+		h.broadcaster.MarkDirty("jobs", "stats")
+	}
 	if job.IsReplay {
 		c.Set("Idempotent-Replay", "true")
 	}
@@ -516,6 +521,16 @@ func buildCreateParams(req createRequest) (queuecore.CreateParams, error) {
 		}
 	}
 
+	scheduledFor := req.ScheduledFor
+	if scheduledFor != nil {
+		now := time.Now().UTC()
+		// If scheduledFor is only slightly ahead of now (within 1s clock skew), treat as immediate
+		// (nil) so Postgres defaults to its own now() transaction timestamp.
+		if scheduledFor.After(now) && !scheduledFor.After(now.Add(1*time.Second)) {
+			scheduledFor = nil
+		}
+	}
+
 	return queuecore.CreateParams{
 		ID:             ulid.Make().String(),
 		Handler:        handler,
@@ -524,7 +539,7 @@ func buildCreateParams(req createRequest) (queuecore.CreateParams, error) {
 		MaxAttempts:    maxAttempts,
 		Backoff:        backoff,
 		Payload:        req.Payload,
-		ScheduledFor:   req.ScheduledFor,
+		ScheduledFor:   scheduledFor,
 		IdempotencyKey: idempotencyKey,
 	}, nil
 }

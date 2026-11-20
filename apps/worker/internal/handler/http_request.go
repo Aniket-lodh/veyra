@@ -32,8 +32,23 @@ type httpRequestPayload struct {
 	URL            string            `json:"url"`
 	Method         string            `json:"method"`         // default POST
 	Headers        map[string]string `json:"headers"`        // applied verbatim
-	Body           string            `json:"body"`           // literal request body
+	Body           json.RawMessage   `json:"body"`           // literal string, JSON object, array, or primitive
 	TimeoutSeconds *int              `json:"timeoutSeconds"` // per-request; default 30, capped at 300
+}
+
+// decodeBody returns the string representation of the request body.
+// If raw is empty or null, returns "".
+// If raw is a JSON string (e.g. "hello"), unmarshals to the string value ("hello").
+// If raw is a JSON object, array, or other JSON literal, returns the raw JSON string verbatim.
+func decodeBody(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	return string(raw)
 }
 
 // HTTPRequest performs one outbound HTTP request described by the job payload.
@@ -74,8 +89,9 @@ func (h *HTTPRequest) Handle(ctx context.Context, job *queuecore.Job) (json.RawM
 	defer cancel()
 
 	var body io.Reader
-	if p.Body != "" {
-		body = strings.NewReader(p.Body)
+	bodyStr := decodeBody(p.Body)
+	if bodyStr != "" {
+		body = strings.NewReader(bodyStr)
 	}
 	req, err := http.NewRequestWithContext(reqCtx, method, p.URL, body)
 	if err != nil {

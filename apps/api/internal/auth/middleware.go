@@ -22,6 +22,10 @@ func PrincipalFromContext(ctx context.Context) (Principal, bool) {
 	return v, ok
 }
 
+func ContextWithPrincipal(ctx context.Context, p Principal) context.Context {
+	return context.WithValue(ctx, principalKey, p)
+}
+
 func (a *Authenticator) Require(scopes ...string) fiber.Handler {
 	return func(c fiber.Ctx) error {
 		if c.Query("api_key") != "" || c.Query("token") != "" || c.Query("access_token") != "" {
@@ -31,13 +35,17 @@ func (a *Authenticator) Require(scopes ...string) fiber.Handler {
 			return unauthorized(c, "credentials must use cookie or Authorization header")
 		}
 
-		principal, err := a.resolve(c)
-		if err != nil {
-			slog.InfoContext(c.Context(), "auth.rejected",
-				"path", c.Path(),
-				"reason", "unauthenticated",
-			)
-			return unauthorized(c, "authentication required")
+		principal, ok := PrincipalFromContext(c.Context())
+		if !ok {
+			var err error
+			principal, err = a.resolve(c)
+			if err != nil {
+				slog.InfoContext(c.Context(), "auth.rejected",
+					"path", c.Path(),
+					"reason", "unauthenticated",
+				)
+				return unauthorized(c, "authentication required")
+			}
 		}
 
 		if len(scopes) > 0 && !principal.HasAllScopes(scopes...) {
@@ -52,7 +60,7 @@ func (a *Authenticator) Require(scopes ...string) fiber.Handler {
 			})
 		}
 
-		ctx := context.WithValue(c.Context(), principalKey, principal)
+		ctx := ContextWithPrincipal(c.Context(), principal)
 		c.SetContext(ctx)
 		return c.Next()
 	}

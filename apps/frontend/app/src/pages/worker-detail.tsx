@@ -2,6 +2,14 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -17,7 +25,8 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { useWorkers } from '@/hooks/api';
+import { useWorker, useReleaseWorkerLease } from '@/hooks/api';
+import { ApiError } from '@/lib/api/client';
 import { formatDateTimeUTC, formatRelative } from '@/lib/format';
 import {
   ROUTES,
@@ -25,6 +34,7 @@ import {
   jobsByHandlerPath,
   jobsByQueuePath,
 } from '@/lib/routes';
+import type { WorkerLease } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import {
   formatDurationMs,
@@ -45,22 +55,40 @@ import {
   Tick01Icon,
 } from '@hugeicons/core-free-icons';
 import { HugeiconsIcon } from '@hugeicons/react';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
 export function WorkerDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { data, isLoading, isFetching, isError, error, refetch } = useWorkers();
-
-  // Find worker in current fleet query
-  const worker = useMemo(
-    () => data?.workers.find((w) => w.id === id),
-    [data?.workers, id],
-  );
+  const {
+    data: worker,
+    isLoading,
+    isFetching,
+    isError,
+    error,
+    refetch,
+  } = useWorker(id);
 
   // Copy feedback state
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+
+  // Lease force-release mutation & dialog target state
+  const [releaseTargetLease, setReleaseTargetLease] =
+    useState<WorkerLease | null>(null);
+  const releaseLeaseMutation = useReleaseWorkerLease({
+    onSuccess: () => {
+      setReleaseTargetLease(null);
+    },
+  });
+
+  const handleConfirmRelease = () => {
+    if (!worker || !releaseTargetLease) return;
+    releaseLeaseMutation.mutate({
+      workerId: worker.id,
+      jobId: releaseTargetLease.jobId,
+    });
+  };
 
   const handleCopy = useCallback((text: string, key: string) => {
     navigator.clipboard.writeText(text);
@@ -70,8 +98,10 @@ export function WorkerDetailPage() {
     }, 2000);
   }, []);
 
-  // Worker Not Found State
-  if (!id || (data && !worker)) {
+  // Worker Not Found State (either missing ID param or explicit 404 from backend)
+  const isNotFound =
+    !id || (isError && error instanceof ApiError && error.status === 404);
+  if (isNotFound) {
     return (
       <div className="space-y-4">
         <Breadcrumb id={id} hostname={undefined} />
@@ -308,16 +338,41 @@ export function WorkerDetailPage() {
                 </span>
               </DropdownMenuItem>
 
-              <DropdownMenuItem
-                disabled
-                title="Backend capability pending: POST /workers/:id/leases/:jobId/release"
-                className="text-text-disabled cursor-not-allowed justify-between"
-              >
-                <span>Force Release Leases</span>
-                <span className="border-border-subtle bg-surface-elevated text-text-muted rounded px-1 py-0.5 text-[0.5625rem]">
-                  API Pending
-                </span>
-              </DropdownMenuItem>
+              {worker.leases.length === 0 ? (
+                <DropdownMenuItem
+                  disabled
+                  title="No active leases held by this worker"
+                  className="text-text-disabled cursor-not-allowed justify-between"
+                >
+                  <span>Force Release Leases</span>
+                  <span className="border-border-subtle bg-surface-elevated text-text-muted rounded px-1 py-0.5 text-[0.5625rem]">
+                    0 Leases
+                  </span>
+                </DropdownMenuItem>
+              ) : worker.leases.length === 1 ? (
+                <DropdownMenuItem
+                  onClick={() => setReleaseTargetLease(worker.leases[0])}
+                  className="text-status-warning-text hover:text-status-warning-text justify-between"
+                >
+                  <span>Force Release Lease</span>
+                  <span className="border-border-subtle bg-surface-elevated text-text-muted rounded px-1 py-0.5 text-[0.5625rem]">
+                    1 Active
+                  </span>
+                </DropdownMenuItem>
+              ) : (
+                <DropdownMenuItem
+                  onClick={() => {
+                    const el = document.getElementById('active-leases-section');
+                    el?.scrollIntoView({ behavior: 'smooth' });
+                  }}
+                  className="text-text-primary justify-between"
+                >
+                  <span>Release Leases ({worker.leases.length})</span>
+                  <span className="border-border-subtle bg-surface-elevated text-text-muted rounded px-1 py-0.5 text-[0.5625rem]">
+                    View Leases
+                  </span>
+                </DropdownMenuItem>
+              )}
 
               <DropdownMenuSeparator />
 
@@ -501,7 +556,7 @@ export function WorkerDetailPage() {
       </div>
 
       {/* Active Running Leases Section */}
-      <div className="space-y-3">
+      <div id="active-leases-section" className="space-y-3">
         <div className="flex items-center justify-between">
           <div>
             <h3 className="text-text-primary text-sm font-semibold tracking-tight">
@@ -537,13 +592,16 @@ export function WorkerDetailPage() {
                 <TableHead className="text-text-muted text-right text-[0.6875rem] font-medium tracking-wider uppercase">
                   Lease TTL Remaining
                 </TableHead>
+                <TableHead className="text-text-muted text-right text-[0.6875rem] font-medium tracking-wider uppercase">
+                  Actions
+                </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {worker.leases.length === 0 ? (
                 <TableRow>
                   <TableCell
-                    colSpan={6}
+                    colSpan={7}
                     className="text-text-muted py-8 text-center text-xs"
                   >
                     No active leases. Worker is idle and ready for work.
@@ -642,6 +700,23 @@ export function WorkerDetailPage() {
                           {ttl.label}
                         </span>
                       </TableCell>
+
+                      {/* Actions */}
+                      <TableCell className="py-2.5 text-right">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setReleaseTargetLease(l);
+                          }}
+                          className="border-status-danger-border/60 text-status-danger-text hover:bg-status-danger-bg hover:border-status-danger-border h-6 px-2 text-xs transition-colors"
+                          title={`Force-release lease for job ${l.jobId}`}
+                        >
+                          Release
+                        </Button>
+                      </TableCell>
                     </TableRow>
                   );
                 })
@@ -677,6 +752,110 @@ export function WorkerDetailPage() {
           </p>
         </div>
       </div>
+
+      {/* Force-Release Lease Confirmation Dialog */}
+      <Dialog
+        open={!!releaseTargetLease}
+        onOpenChange={(open) => {
+          if (!open && !releaseLeaseMutation.isPending) {
+            setReleaseTargetLease(null);
+          }
+        }}
+      >
+        <DialogContent className="border-border-strong bg-surface-base sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Force-Release Active Lease</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to force-release this active lease from
+              worker{' '}
+              <span className="text-text-primary font-mono font-medium">
+                {worker.hostname}
+              </span>
+              ?
+            </DialogDescription>
+          </DialogHeader>
+
+          {releaseTargetLease && (
+            <div className="space-y-3">
+              <div className="border-border-subtle bg-surface-canvas/50 space-y-2 rounded-md border p-3 text-xs">
+                <div className="flex justify-between">
+                  <span className="text-text-muted">Job ID:</span>
+                  <span className="text-text-primary font-mono font-medium">
+                    {releaseTargetLease.jobId}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-text-muted">Handler:</span>
+                  <span className="text-text-primary font-mono">
+                    {releaseTargetLease.handler}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-text-muted">Queue:</span>
+                  <span className="text-text-primary font-mono">
+                    {releaseTargetLease.queue}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-text-muted">Attempt:</span>
+                  <span className="text-text-primary font-mono">
+                    #{releaseTargetLease.attempt}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-text-muted">Worker ID:</span>
+                  <span
+                    className="text-text-muted max-w-[200px] truncate font-mono"
+                    title={worker.id}
+                  >
+                    {worker.id}
+                  </span>
+                </div>
+              </div>
+
+              <div className="border-status-warning-border/60 bg-status-warning-bg/40 text-status-warning-text rounded-md border p-2.5 text-xs">
+                The job will immediately return to{' '}
+                <code className="font-mono font-semibold">queued</code> status
+                with its worker assignment cleared, allowing another worker to
+                dequeue it.
+              </div>
+
+              {releaseLeaseMutation.isError && (
+                <div
+                  role="alert"
+                  className="border-status-danger-border bg-status-danger-bg text-status-danger-text rounded-md border p-2.5 text-xs"
+                >
+                  {releaseLeaseMutation.error?.message ??
+                    'Failed to release lease'}
+                </div>
+              )}
+            </div>
+          )}
+
+          <DialogFooter className="gap-2 sm:justify-end">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setReleaseTargetLease(null)}
+              disabled={releaseLeaseMutation.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              size="sm"
+              onClick={handleConfirmRelease}
+              disabled={releaseLeaseMutation.isPending}
+            >
+              {releaseLeaseMutation.isPending
+                ? 'Releasing…'
+                : 'Confirm Release'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

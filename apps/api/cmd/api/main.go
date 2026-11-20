@@ -108,7 +108,7 @@ func main() {
 	auth.RegisterAuth(app, auth.NewSessionHandler(authStore, authn))
 	jobs.Register(app, jobs.NewHandler(jobRepo, liveHub), authn)
 	stats.Register(app, stats.NewHandler(jobRepo), authn)
-	workers.Register(app, workers.NewHandler(dbPool, jobRepo), authn)
+	workers.Register(app, workers.NewHandler(dbPool, jobRepo, liveHub), authn)
 	if cfg.EnableDebugEndpoints {
 		debug.Register(app, debug.NewHandler(jobRepo), authn)
 		slog.Info("service.debug_routes.mounted", "path", "/internal/debug/*")

@@ -321,6 +321,17 @@ describe('enqueue-helpers', () => {
       assert.equal(typeof res.value.scheduledFor, 'string');
       assert.match(res.value.scheduledFor as string, /2026-12-01T/);
     });
+
+    it('omits scheduledFor for immediate jobs when scheduledFor is empty', () => {
+      const formImmediate = {
+        ...baseForm,
+        scheduledFor: '',
+      };
+      const res = validateAndParseEnqueueForm(formImmediate);
+      assert.equal(res.ok, true);
+      if (!res.ok) return;
+      assert.equal(res.value.scheduledFor, undefined);
+    });
   });
 
   describe('Idempotency Key Generators', () => {

@@ -8,6 +8,7 @@ export const queryKeys = {
   },
   workers: {
     all: ['workers'] as const,
+    detail: (id: string) => ['workers', 'detail', id] as const,
   },
   stats: {
     all: ['queue-stats'] as const,
