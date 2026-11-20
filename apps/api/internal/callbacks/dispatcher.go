@@ -346,7 +346,7 @@ func (d *Dispatcher) deliver(ctx context.Context, j claimedJob) {
 		d.handleRetryOrFailure(ctx, j, errDetail)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// 2xx Success.
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
