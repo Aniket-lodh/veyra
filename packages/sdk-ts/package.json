@@ -1,6 +1,6 @@
 {
-  "name": "@veyra/sdk",
-  "version": "0.1.0",
+  "name": "@aniket-lodh/veyra-sdk",
+  "version": "0.1.1",
   "description": "Lightweight TypeScript and Node.js SDK for Veyra Distributed Execution Platform",
   "type": "module",
   "main": "./dist/index.js",
