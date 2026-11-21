@@ -1657,7 +1657,9 @@ export function WorkersPage() {
             <DialogDescription className="text-text-muted text-xs">
               Run distributed workers directly from your Node.js or TypeScript
               services using{' '}
-              <code className="text-text-primary font-mono">@aniket-lodh/veyra-sdk</code>{' '}
+              <code className="text-text-primary font-mono">
+                @aniket-lodh/veyra-sdk
+              </code>{' '}
               without direct PostgreSQL database credentials.
             </DialogDescription>
           </DialogHeader>
