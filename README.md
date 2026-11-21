@@ -13,15 +13,21 @@
   <a href="LICENSE"><img alt="License: AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-blue" /></a>
   <a href="https://github.com/Aniket-lodh/veyra/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Aniket-lodh/veyra/actions/workflows/ci.yml/badge.svg" /></a>
   <a href="https://www.npmjs.com/package/@aniket-lodh/veyra-sdk"><img alt="npm: @aniket-lodh/veyra-sdk" src="https://img.shields.io/npm/v/@aniket-lodh/veyra-sdk?color=blue&label=npm%3A%20%40aniket-lodh%2Fveyra-sdk" /></a>
+  <a href="https://www.npmjs.com/package/@aniket-lodh/veyra-sdk"><img alt="npm downloads" src="https://img.shields.io/npm/dm/%40aniket-lodh%2Fveyra-sdk?color=blue&label=downloads" /></a>
   <a href="https://www.postgresql.org/"><img alt="PostgreSQL: 16+" src="https://img.shields.io/badge/PostgreSQL-16%2B-4169E1?logo=postgresql&logoColor=white" /></a>
   <a href="https://go.dev/"><img alt="Go: 1.24+" src="https://img.shields.io/badge/Go-1.24%2B-00ADD8?logo=go&logoColor=white" /></a>
+  <a href="https://www.typescriptlang.org/"><img alt="TypeScript: 5.8+" src="https://img.shields.io/badge/TypeScript-5.8%2B-3178C6?logo=typescript&logoColor=white" /></a>
+  <a href="https://github.com/Aniket-lodh/veyra/actions/workflows/gitleaks.yml"><img alt="Security: Gitleaks" src="https://img.shields.io/badge/security-gitleaks-blueviolet" /></a>
+  <a href="https://github.com/Aniket-lodh/veyra/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/Aniket-lodh/veyra?style=social" /></a>
 </p>
 
 ---
 
 Veyra coordinates jobs, leases, retries, dead letters, and completion callbacks in a single PostgreSQL database. Workers claim jobs using `SELECT ... FOR UPDATE SKIP LOCKED`, renew their leases through heartbeats, and report execution results. An operator console streams live system state over SSE. There is no separate message broker or orchestrator to deploy or maintain.
 
-Every queue state transition is formally specified in [`packages/queue-core/SPEC.md`](packages/queue-core/SPEC.md).
+> [!IMPORTANT]
+> **Spec-First Queue Semantics**
+> Unlike ad-hoc queue implementations, every queue state transition, lease heartbeat, retry backoff calculation, and dead-letter routing rule in Veyra is formally specified and verified in [`packages/queue-core/SPEC.md`](packages/queue-core/SPEC.md).
 
 ## Features
 
@@ -33,6 +39,19 @@ Every queue state transition is formally specified in [`packages/queue-core/SPEC
 - **First-Class TypeScript SDK (`@aniket-lodh/veyra-sdk`):** Zero-dependency TypeScript and Node.js client and worker engine with concurrency control, automatic lease renewals, and abort signals.
 - **Built-in Go Worker Handlers:** `http_request` for outbound webhooks with response captures, `send_email` for SMTP delivery, and `noop` for load testing.
 - **Live Operator Console:** React dashboard with zero-polling live updates powered by Postgres `NOTIFY` and Server-Sent Events (SSE) invalidation.
+
+---
+
+## Why Veyra?
+
+| Dimension | Veyra | Redis Queues (BullMQ / Celery) | Dedicated Brokers (Kafka / RabbitMQ) |
+|---|---|---|---|
+| **Primary Datastore** | **Pure PostgreSQL** (Zero extra brokers) | In-memory Redis (risk of dual-state desync) | Complex multi-node clusters |
+| **Transactional Enqueue** | ✅ Atomic with your business DB transaction | ❌ Dual-write problem (requires Outbox) | ❌ Distributed transactions required |
+| **Lease & Heartbeat Model** | ✅ `SKIP LOCKED` + Active periodic renewal | ⚠️ Visibility timeouts / complex Lua scripts | ⚠️ Consumer group rebalances |
+| **Dead-Letter & Webhooks** | ✅ Built-in HMAC-SHA256 webhooks + DLQ | ⚠️ Manual DLQ routing & custom webhooks | ⚠️ External webhook service needed |
+| **Fleet Observability** | ✅ Live SSE Operator Console + Cordoning | ⚠️ Third-party / basic dashboard | ⚠️ Enterprise monitoring tooling |
+| **Worker Ecosystem** | ✅ Go workers + TypeScript SDK | Language-locked (Node or Python) | Language-dependent clients |
 
 ---
 

@@ -567,7 +567,7 @@ describe('enqueue-helpers', () => {
 
       assert.match(
         snippet,
-        /import \{ VeyraClient, NonRetryableError \} from '@veyra\/sdk'/,
+        /import \{ VeyraClient, NonRetryableError \} from '@aniket-lodh\/veyra-sdk'/,
       );
       assert.match(
         snippet,

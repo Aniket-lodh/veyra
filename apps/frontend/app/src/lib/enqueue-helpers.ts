@@ -803,7 +803,7 @@ export function generateWorkerSnippet(
   const handler = handlerName.trim() || 'my_custom_task';
   const queue = queueName.trim() || 'default';
 
-  return `import { VeyraClient, NonRetryableError } from '@veyra/sdk';
+  return `import { VeyraClient, NonRetryableError } from '@aniket-lodh/veyra-sdk';
 
 const client = new VeyraClient({
   baseUrl: process.env.VEYRA_API_URL || '${apiOrigin}',

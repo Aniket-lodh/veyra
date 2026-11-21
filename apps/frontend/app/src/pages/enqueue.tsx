@@ -546,7 +546,7 @@ export function EnqueuePage() {
                             tone="info"
                             className="font-mono text-[0.625rem]"
                           >
-                            @veyra/sdk
+                            @aniket-lodh/veyra-sdk
                           </Badge>
                         </div>
                         <Button
@@ -578,7 +578,7 @@ export function EnqueuePage() {
                         External workers poll for jobs over HTTP with zero
                         database driver requirements. Install via{' '}
                         <code className="text-text-primary font-mono">
-                          pnpm add @veyra/sdk
+                          pnpm add @aniket-lodh/veyra-sdk
                         </code>{' '}
                         and authenticate with a key from{' '}
                         <Link
