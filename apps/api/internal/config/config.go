@@ -36,7 +36,7 @@ type Config struct {
 func Load() Config {
 	c := Config{
 		AppEnv: getEnv("APP_ENV", "development"),
-		Port:   getEnv("PORT", "8080"),
+		Port:   getEnv("PORT", "8008"),
 
 		DBHost:     getEnv("DB_HOST", "localhost"),
 		DBPort:     getEnv("DB_PORT", "5432"),
