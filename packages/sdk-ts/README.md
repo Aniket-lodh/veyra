@@ -1,4 +1,4 @@
-# @veyra/sdk
+# @aniket-lodh/veyra-sdk
 
 Lightweight, zero-dependency TypeScript & Node.js SDK for the [Veyra](https://github.com/Aniket-lodh/veyra) Distributed Execution Platform.
 
@@ -20,11 +20,11 @@ Built directly on top of Veyra's REST API and HTTP Worker Protocol. Uses native 
 ## Installation
 
 ```bash
-npm install @veyra/sdk
+npm install @aniket-lodh/veyra-sdk
 # or
-pnpm add @veyra/sdk
+pnpm add @aniket-lodh/veyra-sdk
 # or
-yarn add @veyra/sdk
+yarn add @aniket-lodh/veyra-sdk
 ```
 
 ---
@@ -34,7 +34,7 @@ yarn add @veyra/sdk
 ### 1. Initialize Client & Enqueue a Job
 
 ```typescript
-import { VeyraClient } from '@veyra/sdk';
+import { VeyraClient } from '@aniket-lodh/veyra-sdk';
 
 const client = new VeyraClient({
   baseUrl: process.env.VEYRA_API_URL || 'http://localhost:8080',
@@ -85,7 +85,7 @@ await client.retryJob('job_01JC...XYZ');
 ### Running Custom Handlers with Concurrency & Leases
 
 ```typescript
-import { VeyraClient, NonRetryableError } from '@veyra/sdk';
+import { VeyraClient, NonRetryableError } from '@aniket-lodh/veyra-sdk';
 
 const client = new VeyraClient({
   baseUrl: process.env.VEYRA_API_URL || 'http://localhost:8080',

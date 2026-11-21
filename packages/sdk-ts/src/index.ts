@@ -1,5 +1,5 @@
 /**
- * @veyra/sdk - Lightweight TypeScript & Node SDK for Veyra Distributed Execution Platform
+ * @aniket-lodh/veyra-sdk - Lightweight TypeScript & Node SDK for Veyra Distributed Execution Platform
  */
 
 export * from './client.js';
