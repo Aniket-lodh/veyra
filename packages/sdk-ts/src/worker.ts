@@ -9,6 +9,7 @@ import {
   VeyraConflictError,
   VeyraError,
   VeyraNotFoundError,
+  VeyraValidationError,
 } from './errors.js';
 import type {
   BuiltInHandlers,
@@ -28,16 +29,8 @@ import type {
   WorkerRecord,
 } from './types.js';
 
-/**
- * A timer handle. Browsers return `number`; Node returns a `Timeout` object
- * with `unref()`. Kept opaque so one build serves both runtimes.
- */
 type TimerHandle = ReturnType<typeof setTimeout>;
 
-/**
- * Detaches a timer so it cannot keep a Node process alive. No-op in browsers
- * and in other runtimes whose timer handles have no `unref`.
- */
 function unrefTimer(timer: TimerHandle | undefined): void {
   const maybe = timer as unknown as { unref?: () => void } | undefined;
   if (typeof maybe?.unref === 'function') {
@@ -59,61 +52,126 @@ function unrefTimer(timer: TimerHandle | undefined): void {
  * ```
  */
 export class VeyraWorker<THandlers extends object = BuiltInHandlers> {
-  /** Client used for every API call. */
-  readonly client: VeyraClient<THandlers>;
-  /** Resolved worker options, including defaults. */
-  readonly options: VeyraWorkerOptions;
-  /** Registered handler callbacks, keyed by handler name. */
-  readonly handlers: Map<string, HandlerFn<any, any>> = new Map();
+  readonly #client: VeyraClient<THandlers>;
+  readonly #options: VeyraWorkerOptions;
+  readonly #handlers: Map<string, HandlerFn<any, any>> = new Map();
 
-  private _workerId: string;
-  private _state: 'stopped' | 'running' | 'draining' = 'stopped';
-  private _inFlight = 0;
-  private readonly _activeLeaseTimers = new Map<string, TimerHandle>();
-  private readonly _activeAbortControllers = new Map<string, AbortController>();
+  #workerId: string;
+  #state: 'stopped' | 'running' | 'draining' = 'stopped';
+  #inFlight = 0;
+  readonly #activeLeaseTimers = new Map<string, TimerHandle>();
+  readonly #activeAbortControllers = new Map<string, AbortController>();
 
-  private _heartbeatTimer?: TimerHandle;
-  private _pollTimeout?: TimerHandle;
-  private _drainResolver?: () => void;
-  private _isRegistering = false;
+  #heartbeatTimer?: TimerHandle;
+  #pollTimeout?: TimerHandle;
+  #drainResolver?: () => void;
+  #isRegistering = false;
+  #consecutivePollErrors = 0;
 
   /**
    * @param client - Client used for API calls.
    * @param options - Queues, concurrency, timings, and lifecycle callbacks.
-   * @throws {VeyraError} When no queue is supplied.
+   * @throws {VeyraValidationError} When options fail validation.
    */
   constructor(client: VeyraClient<THandlers>, options: VeyraWorkerOptions) {
-    this.client = client;
-    this.options = {
-      concurrency: 5,
-      pollIntervalMs: 1_000,
-      heartbeatIntervalMs: 10_000,
-      leaseHeartbeatIntervalMs: 10_000,
-      ...options,
-    };
-
-    if (!this.options.queues || this.options.queues.length === 0) {
-      throw new VeyraError('VeyraWorker: at least one queue must be specified');
+    if (!options || typeof options !== 'object') {
+      throw new VeyraValidationError('options', [{ message: 'VeyraWorkerOptions must be an object' }]);
     }
 
-    this._workerId =
-      this.options.workerId ||
+    if (!Array.isArray(options.queues) || options.queues.length === 0) {
+      throw new VeyraValidationError('queues', [{ message: 'queues must be a non-empty array of queue names' }]);
+    }
+    const queues = options.queues.map((q, idx) => {
+      if (typeof q !== 'string' || !q.trim()) {
+        throw new VeyraValidationError(`queues[${idx}]`, [{ message: 'queue name must be a non-empty string' }]);
+      }
+      return q.trim();
+    });
+
+    const concurrency = options.concurrency ?? 5;
+    if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 1000) {
+      throw new VeyraValidationError('concurrency', [{ message: 'concurrency must be an integer between 1 and 1000' }]);
+    }
+
+    const pollIntervalMs = options.pollIntervalMs ?? 1_000;
+    if (!Number.isFinite(pollIntervalMs) || pollIntervalMs <= 0) {
+      throw new VeyraValidationError('pollIntervalMs', [{ message: 'pollIntervalMs must be a positive finite number' }]);
+    }
+
+    const heartbeatIntervalMs = options.heartbeatIntervalMs ?? 10_000;
+    if (!Number.isFinite(heartbeatIntervalMs) || heartbeatIntervalMs <= 0) {
+      throw new VeyraValidationError('heartbeatIntervalMs', [{ message: 'heartbeatIntervalMs must be a positive finite number' }]);
+    }
+
+    const leaseHeartbeatIntervalMs = options.leaseHeartbeatIntervalMs ?? 10_000;
+    if (!Number.isFinite(leaseHeartbeatIntervalMs) || leaseHeartbeatIntervalMs <= 0) {
+      throw new VeyraValidationError('leaseHeartbeatIntervalMs', [{ message: 'leaseHeartbeatIntervalMs must be a positive finite number' }]);
+    }
+
+    this.#client = client;
+    this.#options = {
+      ...options,
+      queues,
+      concurrency,
+      pollIntervalMs,
+      heartbeatIntervalMs,
+      leaseHeartbeatIntervalMs,
+    };
+
+    this.#workerId =
+      this.#options.workerId?.trim() ||
       `worker-${Math.random().toString(36).substring(2, 10)}`;
   }
 
   /** Worker id used on every worker-protocol call. */
   get workerId(): string {
-    return this._workerId;
+    return this.#workerId;
   }
 
   /** Current lifecycle state. */
   get state(): 'stopped' | 'running' | 'draining' {
-    return this._state;
+    return this.#state;
   }
 
   /** Number of jobs currently executing. */
   get inFlight(): number {
-    return this._inFlight;
+    return this.#inFlight;
+  }
+
+  /** Bound client. */
+  get client(): VeyraClient<THandlers> {
+    return this.#client;
+  }
+
+  /** Resolved worker options. */
+  get options(): VeyraWorkerOptions {
+    return { ...this.#options };
+  }
+
+  /** Registered handlers map view. */
+  get handlers(): Map<string, HandlerFn<any, any>> {
+    return new Map(this.#handlers);
+  }
+
+  /**
+   * Safe JSON representation redacting all sensitive credentials.
+   */
+  toJSON(): Record<string, unknown> {
+    return {
+      workerId: this.#workerId,
+      state: this.#state,
+      inFlight: this.#inFlight,
+      queues: [...this.#options.queues],
+      concurrency: this.#options.concurrency,
+      handlers: Array.from(this.#handlers.keys()),
+    };
+  }
+
+  /**
+   * Node.js custom inspection hook redacting all sensitive credentials from console output.
+   */
+  [Symbol.for('nodejs.util.inspect.custom')](): Record<string, unknown> {
+    return this.toJSON();
   }
 
   /**
@@ -125,6 +183,7 @@ export class VeyraWorker<THandlers extends object = BuiltInHandlers> {
    *
    * @param definition - Definition created with `defineHandler`.
    * @param handler - Callback receiving a typed payload and returning the result.
+   * @throws {VeyraError} When a handler with the same name is already registered.
    *
    * @example
    * ```ts
@@ -144,11 +203,12 @@ export class VeyraWorker<THandlers extends object = BuiltInHandlers> {
   /**
    * Registers a handler by name.
    *
-   * Built-in and `THandlers` names get typed payload/result; arbitrary string
-   * names fall back to the supplied generics.
+   * Built-in and `THandlers` names get autocomplete and typed payload/result;
+   * arbitrary string names fall back to the supplied generics.
    *
    * @param name - Handler name matched against claimed jobs.
    * @param handler - Callback receiving the claimed job and context.
+   * @throws {VeyraError} When a handler with the same name is already registered.
    */
   register<
     TPayload = unknown,
@@ -169,7 +229,7 @@ export class VeyraWorker<THandlers extends object = BuiltInHandlers> {
     handler: HandlerFn<any, any>
   ): this {
     if (typeof nameOrDefinition === 'string') {
-      return this.setHandler(nameOrDefinition, handler);
+      return this.#setHandler(nameOrDefinition, handler);
     }
 
     const definition = nameOrDefinition;
@@ -186,7 +246,7 @@ export class VeyraWorker<THandlers extends object = BuiltInHandlers> {
         `handler '${definition.name}' result`
       );
     };
-    return this.setHandler(definition.name, wrapped);
+    return this.#setHandler(definition.name, wrapped);
   }
 
   /**
@@ -195,12 +255,13 @@ export class VeyraWorker<THandlers extends object = BuiltInHandlers> {
    *
    * @param name - Handler name matched against claimed jobs.
    * @param handler - Callback receiving the claimed job and context.
+   * @throws {VeyraError} When a handler with the same name is already registered.
    */
   registerHandler<TPayload = unknown, TResult = unknown>(
     name: string,
     handler: HandlerFn<TPayload, TResult>
   ): this {
-    return this.setHandler(name, handler);
+    return this.#setHandler(name, handler);
   }
 
   /**
@@ -208,10 +269,10 @@ export class VeyraWorker<THandlers extends object = BuiltInHandlers> {
    * Defaults to every registered handler when `options.handlers` is empty.
    */
   getEffectiveHandlers(): string[] {
-    if (this.options.handlers && this.options.handlers.length > 0) {
-      return [...this.options.handlers];
+    if (this.#options.handlers && this.#options.handlers.length > 0) {
+      return [...this.#options.handlers];
     }
-    return Array.from(this.handlers.keys());
+    return Array.from(this.#handlers.keys());
   }
 
   /**
@@ -221,8 +282,8 @@ export class VeyraWorker<THandlers extends object = BuiltInHandlers> {
    * @throws {VeyraError} When already running or no handlers are registered.
    */
   async start(): Promise<WorkerRecord> {
-    if (this._state === 'running') {
-      throw new VeyraError('VeyraWorker is already running');
+    if (this.#state === 'running') {
+      throw new VeyraError('VeyraWorker is already running', { code: 'ALREADY_RUNNING' });
     }
 
     const effectiveHandlers = this.getEffectiveHandlers();
@@ -232,11 +293,11 @@ export class VeyraWorker<THandlers extends object = BuiltInHandlers> {
       );
     }
 
-    this._state = 'running';
+    this.#state = 'running';
 
-    const record = await this.registerWorkerRecord();
-    this.startWorkerHeartbeatLoop();
-    this.triggerClaimLoop();
+    const record = await this.#registerWorkerRecord();
+    this.#startWorkerHeartbeatLoop();
+    this.#triggerClaimLoop();
 
     return record;
   }
@@ -247,162 +308,180 @@ export class VeyraWorker<THandlers extends object = BuiltInHandlers> {
    * @param options.timeoutMs - Maximum drain wait. Defaults to `30000`.
    */
   async stop(options?: { timeoutMs?: number }): Promise<void> {
-    if (this._state === 'stopped') {
+    if (this.#state === 'stopped') {
       return;
     }
 
-    this._state = 'draining';
+    this.#state = 'draining';
 
-    if (this._pollTimeout) {
-      clearTimeout(this._pollTimeout);
-      this._pollTimeout = undefined;
+    if (this.#pollTimeout) {
+      clearTimeout(this.#pollTimeout);
+      this.#pollTimeout = undefined;
     }
 
     try {
-      await this.client.drainWorker(this._workerId);
+      await this.#client.drainWorker(this.#workerId);
     } catch (err) {
-      this.options.onError?.(err);
+      this.#options.onError?.(err);
+      this.#options.logger?.warn?.(`Worker drain failed for ${this.#workerId}`, {
+        error: (err as Error).message,
+      });
     }
 
     const timeoutMs = options?.timeoutMs ?? 30_000;
-    if (this._inFlight > 0) {
+    if (this.#inFlight > 0) {
       await Promise.race([
         new Promise<void>((resolve) => {
-          this._drainResolver = resolve;
+          this.#drainResolver = resolve;
         }),
         new Promise<void>((_, reject) =>
           setTimeout(
             () =>
               reject(
                 new VeyraError(
-                  `Worker drain timed out after ${timeoutMs}ms with ${this._inFlight} jobs remaining`
+                  `Worker drain timed out after ${timeoutMs}ms with ${this.#inFlight} jobs remaining`
                 )
               ),
             timeoutMs
           )
         ),
       ]).catch((err) => {
-        this.options.onError?.(err);
+        this.#options.onError?.(err);
       });
     }
 
-    if (this._heartbeatTimer) {
-      clearInterval(this._heartbeatTimer);
-      this._heartbeatTimer = undefined;
+    if (this.#heartbeatTimer) {
+      clearInterval(this.#heartbeatTimer);
+      this.#heartbeatTimer = undefined;
     }
 
-    for (const [, timer] of this._activeLeaseTimers) {
+    for (const [, timer] of this.#activeLeaseTimers) {
       clearInterval(timer);
     }
-    this._activeLeaseTimers.clear();
-    this._activeAbortControllers.clear();
+    this.#activeLeaseTimers.clear();
+    this.#activeAbortControllers.clear();
 
     try {
-      await this.client.deregisterWorker(this._workerId);
+      await this.#client.deregisterWorker(this.#workerId);
     } catch (err) {
-      this.options.onError?.(err);
+      this.#options.onError?.(err);
+      this.#options.logger?.warn?.(`Worker deregister failed for ${this.#workerId}`, {
+        error: (err as Error).message,
+      });
     }
 
-    this._state = 'stopped';
-    this._drainResolver = undefined;
+    this.#state = 'stopped';
+    this.#drainResolver = undefined;
   }
 
-  private setHandler(name: string, handler: HandlerFn<any, any>): this {
+  #setHandler(name: string, handler: HandlerFn<any, any>): this {
     const trimmed = name.trim();
     if (!trimmed) {
-      throw new VeyraError('register: name must not be empty');
+      throw new VeyraValidationError('name', [{ message: 'Handler name must not be empty' }]);
     }
-    this.handlers.set(trimmed, handler);
+    if (this.#handlers.has(trimmed)) {
+      throw new VeyraError(
+        `Handler '${trimmed}' is already registered on this worker. Registering multiple handlers with the same name is not allowed.`,
+        { code: 'DUPLICATE_HANDLER' }
+      );
+    }
+    this.#handlers.set(trimmed, handler);
     return this;
   }
 
-  private async registerWorkerRecord(): Promise<WorkerRecord> {
-    if (this._isRegistering) {
+  async #registerWorkerRecord(): Promise<WorkerRecord> {
+    if (this.#isRegistering) {
       return {} as WorkerRecord;
     }
-    this._isRegistering = true;
+    this.#isRegistering = true;
     try {
       const proc =
         typeof globalThis !== 'undefined'
           ? (globalThis as unknown as { process?: { env?: Record<string, string>; pid?: number } }).process
           : undefined;
       const effectiveHandlers = this.getEffectiveHandlers();
-      const record = await this.client.registerWorker({
-        id: this._workerId,
-        hostname: this.options.hostname || proc?.env?.HOSTNAME || 'external-sdk',
-        pid: this.options.pid || proc?.pid || 0,
-        version: this.options.version || '0.1.0',
-        queues: this.options.queues,
+      const record = await this.#client.registerWorker({
+        id: this.#workerId,
+        hostname: this.#options.hostname || proc?.env?.HOSTNAME || 'external-sdk',
+        pid: this.#options.pid || proc?.pid || 0,
+        version: this.#options.version || '0.1.0',
+        queues: this.#options.queues,
         handlers: effectiveHandlers,
-        maxConcurrency: this.options.concurrency ?? 5,
+        maxConcurrency: this.#options.concurrency ?? 5,
         heartbeatIntervalSeconds: Math.max(
           1,
-          Math.floor((this.options.heartbeatIntervalMs ?? 10_000) / 1000)
+          Math.floor((this.#options.heartbeatIntervalMs ?? 10_000) / 1000)
         ),
       });
 
       if (record?.id) {
-        this._workerId = record.id;
+        this.#workerId = record.id;
       }
       return record;
     } finally {
-      this._isRegistering = false;
+      this.#isRegistering = false;
     }
   }
 
-  private startWorkerHeartbeatLoop(): void {
-    if (this._heartbeatTimer) {
-      clearInterval(this._heartbeatTimer);
+  #startWorkerHeartbeatLoop(): void {
+    if (this.#heartbeatTimer) {
+      clearInterval(this.#heartbeatTimer);
     }
 
-    const interval = this.options.heartbeatIntervalMs ?? 10_000;
-    this._heartbeatTimer = setInterval(async () => {
-      if (this._state === 'stopped') {
+    const interval = this.#options.heartbeatIntervalMs ?? 10_000;
+    this.#heartbeatTimer = setInterval(async () => {
+      if (this.#state === 'stopped') {
         return;
       }
 
       try {
-        await this.client.heartbeatWorker(this._workerId);
+        await this.#client.heartbeatWorker(this.#workerId);
       } catch (err) {
         if (err instanceof VeyraNotFoundError) {
           try {
-            await this.registerWorkerRecord();
+            await this.#registerWorkerRecord();
           } catch (regErr) {
-            this.options.onError?.(regErr);
+            this.#options.onError?.(regErr);
+            this.#options.logger?.error?.('Worker re-registration failed', {
+              error: (regErr as Error).message,
+            });
           }
         } else {
-          this.options.onError?.(err);
+          this.#options.onError?.(err);
+          this.#options.logger?.warn?.('Worker heartbeat failed', {
+            error: (err as Error).message,
+          });
         }
       }
     }, interval);
 
-    unrefTimer(this._heartbeatTimer);
+    unrefTimer(this.#heartbeatTimer);
   }
 
-  private triggerClaimLoop(delayMs = 0): void {
-    if (this._state !== 'running') {
+  #triggerClaimLoop(delayMs = 0): void {
+    if (this.#state !== 'running') {
       return;
     }
 
-    if (this._pollTimeout) {
-      clearTimeout(this._pollTimeout);
+    if (this.#pollTimeout) {
+      clearTimeout(this.#pollTimeout);
     }
 
-    this._pollTimeout = setTimeout(() => {
-      this._pollTimeout = undefined;
-      void this.claimAndDispatch();
+    this.#pollTimeout = setTimeout(() => {
+      this.#pollTimeout = undefined;
+      void this.#claimAndDispatch();
     }, delayMs);
 
-    unrefTimer(this._pollTimeout);
+    unrefTimer(this.#pollTimeout);
   }
 
-  private async claimAndDispatch(): Promise<void> {
-    if (this._state !== 'running') {
+  async #claimAndDispatch(): Promise<void> {
+    if (this.#state !== 'running') {
       return;
     }
 
-    const maxConcurrency = this.options.concurrency ?? 5;
-    if (this._inFlight >= maxConcurrency) {
+    const maxConcurrency = this.#options.concurrency ?? 5;
+    if (this.#inFlight >= maxConcurrency) {
       return;
     }
 
@@ -410,54 +489,69 @@ export class VeyraWorker<THandlers extends object = BuiltInHandlers> {
     let claimResult: JobClaim | null = null;
 
     try {
-      claimResult = await this.client.claimJob(this._workerId, {
-        queues: this.options.queues,
+      claimResult = await this.#client.claimJob(this.#workerId, {
+        queues: this.#options.queues,
         handlers: effectiveHandlers,
       });
+      this.#consecutivePollErrors = 0;
     } catch (err) {
+      this.#consecutivePollErrors++;
+      const baseDelay = this.#options.pollIntervalMs ?? 1_000;
+      const backoffDelay = Math.min(
+        30_000,
+        baseDelay * Math.pow(1.5, Math.min(this.#consecutivePollErrors, 10))
+      );
+
       if (err instanceof VeyraNotFoundError) {
         try {
-          await this.registerWorkerRecord();
-          this.triggerClaimLoop(100);
+          await this.#registerWorkerRecord();
+          this.#triggerClaimLoop(100);
           return;
         } catch (regErr) {
-          this.options.onError?.(regErr);
+          this.#options.onError?.(regErr);
+          this.#options.logger?.error?.('Worker re-registration failed', {
+            error: (regErr as Error).message,
+          });
         }
       } else {
-        this.options.onError?.(err);
+        this.#options.onError?.(err);
+        this.#options.logger?.warn?.(
+          `Worker claim failed, backing off for ${Math.round(backoffDelay)}ms`,
+          { error: (err as Error).message, consecutiveErrors: this.#consecutivePollErrors }
+        );
       }
 
-      this.triggerClaimLoop(this.options.pollIntervalMs ?? 1_000);
+      this.#triggerClaimLoop(backoffDelay);
       return;
     }
 
     if (!claimResult) {
-      this.triggerClaimLoop(this.options.pollIntervalMs ?? 1_000);
+      this.#triggerClaimLoop(this.#options.pollIntervalMs ?? 1_000);
       return;
     }
 
-    this._inFlight++;
-    this.options.onJobStart?.(claimResult);
+    this.#inFlight++;
+    this.#options.onJobStart?.(claimResult);
 
-    void this.executeJob(claimResult).finally(() => {
-      this._inFlight--;
-      if (this._state === 'draining' && this._inFlight === 0) {
-        this._drainResolver?.();
-      } else if (this._state === 'running') {
-        this.triggerClaimLoop(0);
+    void this.#executeJob(claimResult).finally(() => {
+      this.#inFlight--;
+      if (this.#state === 'draining' && this.#inFlight === 0) {
+        this.#drainResolver?.();
+      } else if (this.#state === 'running') {
+        this.#triggerClaimLoop(0);
       }
     });
 
-    if (this._inFlight < maxConcurrency && this._state === 'running') {
-      this.triggerClaimLoop(0);
+    if (this.#inFlight < maxConcurrency && this.#state === 'running') {
+      this.#triggerClaimLoop(0);
     }
   }
 
-  private async executeJob(job: JobClaim): Promise<void> {
+  async #executeJob(job: JobClaim): Promise<void> {
     const abortController = new AbortController();
-    this._activeAbortControllers.set(job.id, abortController);
+    this.#activeAbortControllers.set(job.id, abortController);
 
-    this.startJobLeaseRenewal(job.id, abortController);
+    this.#startJobLeaseRenewal(job.id, abortController);
 
     const ctx: JobContext = {
       jobId: job.id,
@@ -466,11 +560,11 @@ export class VeyraWorker<THandlers extends object = BuiltInHandlers> {
       handler: job.handler,
       signal: abortController.signal,
       extendLease: async (): Promise<RenewLeaseResponse> => {
-        return this.client.renewJobLease(this._workerId, job.id);
+        return this.#client.renewJobLease(this.#workerId, job.id);
       },
     };
 
-    const handlerFn = this.handlers.get(job.handler);
+    const handlerFn = this.#handlers.get(job.handler);
 
     try {
       if (!handlerFn) {
@@ -481,57 +575,77 @@ export class VeyraWorker<THandlers extends object = BuiltInHandlers> {
 
       const result = await handlerFn(job, ctx);
 
-      this.stopJobLeaseRenewal(job.id);
+      this.#stopJobLeaseRenewal(job.id);
 
-      await this.client.completeJob(this._workerId, job.id, result);
-      this.options.onJobComplete?.(job, result);
+      await this.#client.completeJob(this.#workerId, job.id, result);
+      this.#options.onJobComplete?.(job, result);
     } catch (err) {
-      this.stopJobLeaseRenewal(job.id);
+      this.#stopJobLeaseRenewal(job.id);
+
+      // SPEC §1.2 / §4: If the job lease was lost/expired, the worker context was aborted.
+      // Do not ack or nack: leave the lease to expire cleanly so the queue supervisor reclaims it.
+      if (
+        abortController.signal.aborted &&
+        abortController.signal.reason instanceof LeaseLostError
+      ) {
+        this.#options.onJobError?.(job, abortController.signal.reason);
+        return;
+      }
 
       const permanent = isNonRetryable(err);
       const errorClass =
         (err as { name?: string })?.name ||
         (err as { errorClass?: string })?.errorClass ||
         'HandlerError';
-      const message =
-        (err as Error)?.message ||
-        (typeof err === 'string' ? err : 'Job execution failed');
-      const stackTrace = (err as Error)?.stack;
+
+      const rawMessage =
+        err instanceof Error
+          ? err.message
+          : typeof err === 'string'
+            ? err
+            : 'Job execution failed';
+      const message = rawMessage.length > 1000 ? `${rawMessage.slice(0, 1000)}...` : rawMessage;
+
+      const rawStack = err instanceof Error ? err.stack : undefined;
+      const stackTrace = rawStack && rawStack.length > 4000 ? `${rawStack.slice(0, 4000)}...` : rawStack;
 
       try {
-        await this.client.failJob(this._workerId, job.id, {
+        await this.#client.failJob(this.#workerId, job.id, {
           errorClass,
           message,
           stackTrace,
           permanent,
         });
       } catch (reportErr) {
-        this.options.onError?.(reportErr);
+        this.#options.onError?.(reportErr);
+        this.#options.logger?.error?.(`Failed reporting job ${job.id} failure to API`, {
+          error: (reportErr as Error).message,
+        });
       }
 
-      this.options.onJobError?.(job, err);
+      this.#options.onJobError?.(job, err);
     } finally {
-      this.stopJobLeaseRenewal(job.id);
-      this._activeAbortControllers.delete(job.id);
+      this.#stopJobLeaseRenewal(job.id);
+      this.#activeAbortControllers.delete(job.id);
     }
   }
 
-  private startJobLeaseRenewal(
+  #startJobLeaseRenewal(
     jobId: string,
     abortController: AbortController
   ): void {
-    const interval = this.options.leaseHeartbeatIntervalMs ?? 10_000;
+    const interval = this.#options.leaseHeartbeatIntervalMs ?? 10_000;
 
     const timer = setInterval(async () => {
       try {
-        await this.client.renewJobLease(this._workerId, jobId);
+        await this.#client.renewJobLease(this.#workerId, jobId);
       } catch (err) {
         if (
           err instanceof LeaseLostError ||
           err instanceof VeyraConflictError ||
           (err as { status?: number })?.status === 409
         ) {
-          this.stopJobLeaseRenewal(jobId);
+          this.#stopJobLeaseRenewal(jobId);
           abortController.abort(
             new LeaseLostError(
               `Lease lost for job ${jobId}; stopping execution.`
@@ -542,26 +656,32 @@ export class VeyraWorker<THandlers extends object = BuiltInHandlers> {
 
         if (err instanceof VeyraNotFoundError) {
           try {
-            await this.registerWorkerRecord();
+            await this.#registerWorkerRecord();
           } catch (regErr) {
-            this.options.onError?.(regErr);
+            this.#options.onError?.(regErr);
+            this.#options.logger?.error?.('Worker re-registration failed', {
+              error: (regErr as Error).message,
+            });
           }
         } else {
-          this.options.onError?.(err);
+          this.#options.onError?.(err);
+          this.#options.logger?.warn?.(`Job ${jobId} lease renewal failed`, {
+            error: (err as Error).message,
+          });
         }
       }
     }, interval);
 
     unrefTimer(timer);
 
-    this._activeLeaseTimers.set(jobId, timer);
+    this.#activeLeaseTimers.set(jobId, timer);
   }
 
-  private stopJobLeaseRenewal(jobId: string): void {
-    const timer = this._activeLeaseTimers.get(jobId);
+  #stopJobLeaseRenewal(jobId: string): void {
+    const timer = this.#activeLeaseTimers.get(jobId);
     if (timer) {
       clearInterval(timer);
-      this._activeLeaseTimers.delete(jobId);
+      this.#activeLeaseTimers.delete(jobId);
     }
   }
 }

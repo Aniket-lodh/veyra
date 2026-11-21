@@ -181,6 +181,18 @@ export interface EnqueueOptions {
   idempotencyKey?: string;
   /** Completion webhook URL (absolute `http`/`https`, max 2048 chars). */
   callbackUrl?: string;
+  /** Optional cancellation signal to abort the in-flight enqueue request. */
+  signal?: AbortSignal;
+  /** Override retry attempts for this request. Only retried if `idempotencyKey` is set. */
+  retries?: number;
+}
+
+/** Optional parameters accepted by retrieval, cancel, and retry requests. */
+export interface RequestOptions {
+  /** Optional cancellation signal to abort the in-flight HTTP request. */
+  signal?: AbortSignal;
+  /** Override retry attempts for this request. */
+  retries?: number;
 }
 
 /**
@@ -435,11 +447,19 @@ export type HandlerFn<TPayload = unknown, TResult = unknown> = (
   ctx: JobContext
 ) => Promise<TResult> | TResult;
 
+/** Structured logger interface. Compatible with `console`, `pino`, `winston`, etc. */
+export interface VeyraLogger {
+  debug?(message: string, meta?: Record<string, unknown>): void;
+  info?(message: string, meta?: Record<string, unknown>): void;
+  warn?(message: string, meta?: Record<string, unknown>): void;
+  error?(message: string, meta?: Record<string, unknown>): void;
+}
+
 /** Configuration for {@link VeyraClient}. */
 export interface VeyraClientConfig {
-  /** API origin, e.g. `https://veyra.example.com`. Trailing slashes are trimmed. */
+  /** API origin, e.g. `https://veyra.example.com`. Must be a valid http: or https: URL. */
   baseUrl: string;
-  /** Bearer API key with the scopes the calls require. */
+  /** Bearer API key with the scopes the calls require. Must not contain whitespace or control characters. */
   apiKey: string;
   /** Queue used when `enqueue` omits `queue`. Defaults to `default`. */
   defaultQueue?: string;
@@ -447,6 +467,10 @@ export interface VeyraClientConfig {
   fetch?: typeof fetch;
   /** Per-request timeout in milliseconds. Defaults to `30000`. */
   timeoutMs?: number;
+  /** Maximum automatic retry attempts for idempotent requests (GET, heartbeats, POST with idempotencyKey). Defaults to `2`. */
+  maxRetries?: number;
+  /** Optional structured logger for transport debugging. */
+  logger?: VeyraLogger;
 }
 
 /** Options for {@link VeyraWorker}. */
@@ -471,6 +495,8 @@ export interface VeyraWorkerOptions {
   version?: string;
   /** Explicit worker id. Defaults to a random `worker-*` id. */
   workerId?: string;
+  /** Optional structured logger for worker event debugging. */
+  logger?: VeyraLogger;
   /** Called when a job is claimed, before execution. */
   onJobStart?: (job: JobClaim) => void;
   /** Called after the API acknowledges completion. */

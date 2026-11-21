@@ -1,6 +1,6 @@
 {
   "name": "@aniket-lodh/veyra-sdk",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Lightweight, zero-dependency TypeScript and Node.js SDK for the Veyra Distributed Execution Platform",
   "type": "module",
   "sideEffects": false,
@@ -22,7 +22,6 @@
   },
   "files": [
     "dist",
-    "src",
     "README.md"
   ],
   "publishConfig": {

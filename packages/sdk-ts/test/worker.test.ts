@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import util from 'node:util';
 import {
   LeaseLostError,
   NonRetryableError,
@@ -373,5 +374,105 @@ describe('VeyraWorker', () => {
     assert.ok(registerCount >= 2, `Expected registerCount >= 2, got ${registerCount}`);
 
     await worker.stop({ timeoutMs: 500 });
+  });
+
+  it('throws when attempting to register a duplicate handler', () => {
+    const client = new VeyraClient({ baseUrl: 'http://localhost:8080', apiKey: 'test' });
+    const worker = new VeyraWorker(client, { queues: ['default'] });
+    worker.registerHandler('my_handler', () => {});
+    assert.throws(
+      () => worker.registerHandler('my_handler', () => {}),
+      (err: any) => err instanceof VeyraError && err.code === 'DUPLICATE_HANDLER'
+    );
+  });
+
+  it('throws when starting an already active worker', async () => {
+    const mockFetch = (async () => {
+      return new Response(JSON.stringify({ id: 'worker_double_start' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    const client = new VeyraClient({ baseUrl: 'http://localhost:8080', apiKey: 'test', fetch: mockFetch });
+    const worker = new VeyraWorker(client, { queues: ['default'] });
+    worker.registerHandler('test', () => {});
+
+    await worker.start();
+    await assert.rejects(
+      async () => worker.start(),
+      (err: any) => err instanceof VeyraError && err.code === 'ALREADY_RUNNING'
+    );
+    await worker.stop({ timeoutMs: 500 });
+  });
+
+  it('redacts sensitive internal state in toJSON and util.inspect', () => {
+    const client = new VeyraClient({ baseUrl: 'http://localhost:8080', apiKey: 'secret_worker_key' });
+    const worker = new VeyraWorker(client, { queues: ['q1', 'q2'], concurrency: 5 });
+
+    const json = JSON.stringify(worker);
+    assert.equal(json.includes('secret_worker_key'), false);
+    const parsed = JSON.parse(json);
+    assert.deepEqual(parsed.queues, ['q1', 'q2']);
+    assert.equal(parsed.concurrency, 5);
+
+    const inspected = util.inspect(worker);
+    assert.equal(inspected.includes('secret_worker_key'), false);
+  });
+
+  it('safely handles non-Error throws in handler (strings, objects)', async () => {
+    let failPayload: { errorClass?: string; message?: string } | undefined;
+    let claimCount = 0;
+
+    const mockFetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const path = String(url).replace('http://localhost:8080', '');
+      if (path === '/workers/register') {
+        return new Response(JSON.stringify({ id: 'worker_throw_test' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (path.endsWith('/claim')) {
+        claimCount++;
+        if (claimCount === 1) {
+          return new Response(
+            JSON.stringify({
+              id: 'job_throw_1',
+              queue: 'default',
+              handler: 'string_thrower',
+              status: 'running',
+              attempt: 1,
+              maxAttempts: 3,
+              priority: 5,
+              payload: {},
+              enqueuedAt: '2026-11-20T12:00:00Z',
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        return new Response(null, { status: 204 });
+      }
+      if (path.includes('/fail')) {
+        failPayload = init?.body ? JSON.parse(init.body as string) : undefined;
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(null, { status: 204 });
+    }) as typeof fetch;
+
+    const client = new VeyraClient({ baseUrl: 'http://localhost:8080', apiKey: 'test', fetch: mockFetch });
+    const worker = new VeyraWorker(client, { queues: ['default'], pollIntervalMs: 50 });
+    worker.registerHandler('string_thrower', () => {
+      throw 'unexpected raw string error';
+    });
+
+    await worker.start();
+    await new Promise((r) => setTimeout(r, 60));
+    await worker.stop({ timeoutMs: 500 });
+
+    assert.ok(failPayload);
+    assert.equal(failPayload.message, 'unexpected raw string error');
   });
 });
