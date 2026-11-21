@@ -37,7 +37,7 @@ yarn add @aniket-lodh/veyra-sdk
 import { VeyraClient } from '@aniket-lodh/veyra-sdk';
 
 const client = new VeyraClient({
-  baseUrl: process.env.VEYRA_API_URL || 'http://localhost:8080',
+  baseUrl: process.env.VEYRA_API_URL || 'http://localhost:8008',
   apiKey: process.env.VEYRA_API_KEY || 'veyra_...',
   defaultQueue: 'default',
 });
@@ -88,7 +88,7 @@ await client.retryJob('job_01JC...XYZ');
 import { VeyraClient, NonRetryableError } from '@aniket-lodh/veyra-sdk';
 
 const client = new VeyraClient({
-  baseUrl: process.env.VEYRA_API_URL || 'http://localhost:8080',
+  baseUrl: process.env.VEYRA_API_URL || 'http://localhost:8008',
   apiKey: process.env.VEYRA_API_KEY || 'veyra_...',
 });
 

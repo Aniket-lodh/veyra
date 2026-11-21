@@ -4,9 +4,9 @@ import path from 'path';
 import { defineConfig } from 'vite';
 import { sseProxyPlugin } from './vite/sse-proxy';
 
-// Override with VITE_API_PROXY_TARGET when the API is not on :8080.
+// Override with VITE_API_PROXY_TARGET when the API is not on :8008.
 const API_PROXY_TARGET =
-  process.env.VITE_API_PROXY_TARGET ?? 'http://localhost:8080';
+  process.env.VITE_API_PROXY_TARGET ?? 'http://localhost:8008';
 
 // API prefixes that overlap SPA routes (/jobs, …). Bypass proxies
 // text/html navigations so refresh still serves the app shell.

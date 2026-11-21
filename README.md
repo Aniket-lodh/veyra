@@ -153,15 +153,202 @@ Migrations run automatically on API startup. They are stored in `apps/api/migrat
 - `000008_add_worker_cordoned_state`
 - `000009_add_job_completion_webhooks`
 
-### 3. Launch the Operator Console
+### 3. Launch the Operator Console (Dev Mode)
 
 ```bash
 cd apps/frontend/app
 pnpm install
-VITE_API_PROXY_TARGET=http://localhost:8008 pnpm dev
+pnpm dev
 ```
 
 Navigate to <http://localhost:5173>. On initial visit, create the admin credentials. Afterwards, generate API keys under **API Keys** in the sidebar.
+
+---
+
+## Production Deployment
+
+### Option A: Production with Docker Compose (Recommended Container Stack)
+
+Production deployments use the base compose file layered with `docker-compose.prod.yml`:
+
+```bash
+# 1. Prepare production compose environment
+cp deployments/compose/.env.example deployments/compose/.env
+
+# 2. Review and update production values in deployments/compose/.env (see Checklist below)
+
+# 3. Launch the production stack
+docker compose \
+  -f deployments/compose/docker-compose.yml \
+  -f deployments/compose/docker-compose.prod.yml \
+  up -d --build
+```
+
+**What the production compose overlay enforces:**
+* **Nginx Reverse Proxy:** Fronts the API on port `8088` (or mapped host port `80`/`443`), blocking internal debug routes (`/internal/*`) and configuring streaming for Server-Sent Events (`/events`).
+* **API Port Isolation:** Removes direct host port exposure on the API container (`ports: !reset []`); API traffic only flows through Nginx.
+* **Database Isolation:** Rebinds PostgreSQL to `127.0.0.1:5433` (loopback only) so administrative tools or SSH tunnels can access the database without ever publishing `5432` to the public internet (`0.0.0.0`).
+* **Fleet Scaling:** Launches 3 worker replicas by default.
+* **Log Rotation:** Enforces Docker `json-file` log limits (`10m`/`20m`, max 3–5 rotated files) preventing disk exhaustion.
+
+---
+
+### Option B: Bare-Metal / Native Production (Without Docker)
+
+You can run Veyra directly on Linux host instances using systemd services and a standalone PostgreSQL 16+ database.
+
+#### 1. Compile Release Binaries
+
+```bash
+# Build API binary
+cd apps/api
+CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /usr/local/bin/veyra-api ./cmd/api
+
+# Build Worker binary
+cd ../../apps/worker
+CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /usr/local/bin/veyra-worker ./cmd/worker
+```
+
+#### 2. Build the Static Operator Console
+
+```bash
+cd apps/frontend/app
+pnpm install
+pnpm build
+# Generates production static assets in apps/frontend/app/dist/
+```
+
+#### 3. Database Migrations
+
+Ensure your PostgreSQL 16+ database exists. Migrations execute automatically every time `veyra-api` starts up against `apps/api/migrations`. Ensure the database user has schema modification permissions (`CREATE TABLE`, `CREATE INDEX`, `TRIGGER`, etc.).
+
+#### 4. Configure Production Services (systemd)
+
+Create service environment files (e.g. `/etc/veyra/api.env` and `/etc/veyra/worker.env`, with permissions `0600`).
+
+**`/etc/systemd/system/veyra-api.service`**:
+```ini
+[Unit]
+Description=Veyra Distributed Execution API
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=veyra
+Group=veyra
+EnvironmentFile=/etc/veyra/api.env
+ExecStart=/usr/local/bin/veyra-api
+Restart=always
+RestartSec=5s
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+```
+
+**`/etc/systemd/system/veyra-worker@.service`** (Template for multi-worker scaling):
+```ini
+[Unit]
+Description=Veyra Go Worker Instance %i
+After=network.target veyra-api.service
+
+[Service]
+Type=simple
+User=veyra
+Group=veyra
+EnvironmentFile=/etc/veyra/worker.env
+ExecStart=/usr/local/bin/veyra-worker
+Restart=always
+RestartSec=5s
+TimeoutStopSec=35s
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and scale workers:
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now veyra-api
+# Start 4 concurrent worker instances
+sudo systemctl enable --now veyra-worker@{1..4}
+```
+
+#### 5. Production Nginx Reverse Proxy & Ingress
+
+Configure Nginx (or Caddy / Cloudflare) to front the API and serve the static frontend console. Crucial requirements:
+1. Block `/internal/*` endpoints from external access.
+2. Disable buffering on `/events` for the real-time SSE bus (`proxy_buffering off; chunked_transfer_encoding off;`).
+3. Serve `dist/` with SPA fallback to `index.html`.
+
+```nginx
+upstream veyra_backend {
+    server 127.0.0.1:8008;
+    keepalive 32;
+}
+
+server {
+    listen 80;
+    server_name veyra.example.com;
+
+    # Operator Console SPA
+    root /var/www/veyra-console/dist;
+    index index.html;
+
+    # 1. NEVER expose internal debug routes
+    location /internal/ {
+        return 404;
+    }
+
+    # 2. SSE Invalidation Bus (Unbuffered streaming)
+    location /events {
+        proxy_pass http://veyra_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+        chunked_transfer_encoding off;
+    }
+
+    # 3. REST API routes
+    location ~ ^/(jobs|queue|workers|health|api-keys|auth) {
+        proxy_pass http://veyra_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # 4. SPA Frontend Routing
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
+```
+
+---
+
+## Production Configuration Checklist
+
+Before booting in production, review and update the following settings:
+
+| Variable | Default (Dev) | Production Target | Why It Must Change |
+|---|---|---|---|
+| `APP_ENV` | `development` | `production` | **Disables Swagger UI (`/docs`)**, disables debug endpoints, and enables JSON structured logs. |
+| `PORT` | `8008` | `8008` (or custom) | HTTP port for the API daemon (defaults to `8008`). |
+| `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_NAME` | `localhost` / `veyra` | Cloud / Dedicated host | Point to hardened, backed-up PostgreSQL 16+ instance. |
+| `DB_PASSWORD` | `veyra` | Strong secret | Replace default credentials. |
+| `DB_SSLMODE` | `disable` | `require` or `verify-full` | Enforces encrypted TLS connections to PostgreSQL over networks. |
+| `ENABLE_DEBUG_ENDPOINTS` | `false` (in prod) | `false` | Explicitly guards `/internal/debug/*` routes against accidental invocation. |
+| `VEYRA_CALLBACK_SECRET` | *(empty)* | Random 32+ byte hex | Enables HMAC-SHA256 signature verification (`X-Veyra-Signature`) on outbound completion webhooks. |
+| `LOG_LEVEL` | `info` | `info` or `warn` | Reduce log verbosity for high-throughput job pipelines. |
+| `VEYRA_WORKER_FAILURE_PERCENT` | `20` | **`0`** | **CRITICAL:** Dev stack injects 20% artificial errors into `noop` tasks for chaos simulation. Set to `0` in production! |
+| `VEYRA_WORKER_QUEUES` | `default` | e.g. `critical,default,reports` | Comma-delimited list of queue names this worker fleet should poll and process. |
+| `VEYRA_WORKER_MAX_CONCURRENCY` | `1` | e.g. `4`–`20` | Tune based on host CPU/memory and job workload characteristics. |
+| `VEYRA_SMTP_*` | *(empty)* | Real SMTP credentials | Required if running the built-in `send_email` handler. Never put credentials in job payloads. |
 
 ---
 
@@ -175,9 +362,6 @@ Configuration is loaded from environment variables. Refer to the corresponding `
 | **API** | `apps/api/.env.example` | `PORT`, `DB_*`, `ENABLE_DEBUG_ENDPOINTS`, `VEYRA_CALLBACK_*` |
 | **Worker** | `apps/worker/.env.example` | `VEYRA_WORKER_QUEUES`, `VEYRA_WORKER_MAX_CONCURRENCY`, `VEYRA_SMTP_*` |
 | **Frontend** | `apps/frontend/app/.env.example` | `VITE_API_PROXY_TARGET`, `VITE_STATUS_PAGE_URL` |
-
-> [!IMPORTANT]
-> Never commit `.env` files to source control. Always update `.env.example` when introducing configuration settings.
 
 ---
 
@@ -201,7 +385,7 @@ yarn add @aniket-lodh/veyra-sdk
 import { VeyraClient } from '@aniket-lodh/veyra-sdk';
 
 const client = new VeyraClient({
-  baseUrl: process.env.VEYRA_API_URL || 'http://localhost:8080',
+  baseUrl: process.env.VEYRA_API_URL || 'http://localhost:8008',
   apiKey: process.env.VEYRA_API_KEY || 'veyra_...',
   defaultQueue: 'default',
 });
@@ -226,7 +410,7 @@ console.log('Enqueued job ID:', job.id);
 import { VeyraClient, NonRetryableError } from '@aniket-lodh/veyra-sdk';
 
 const client = new VeyraClient({
-  baseUrl: process.env.VEYRA_API_URL || 'http://localhost:8080',
+  baseUrl: process.env.VEYRA_API_URL || 'http://localhost:8008',
   apiKey: process.env.VEYRA_API_KEY || 'veyra_...',
 });
 
