@@ -12,14 +12,22 @@
 <p align="center">
   <a href="LICENSE"><img alt="License: AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-blue" /></a>
   <a href="https://github.com/Aniket-lodh/veyra/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Aniket-lodh/veyra/actions/workflows/ci.yml/badge.svg" /></a>
-  <a href="https://www.npmjs.com/package/@veyra/sdk"><img alt="npm: @veyra/sdk" src="https://img.shields.io/badge/npm-%40veyra%2Fsdk-informational" /></a>
+  <a href="https://www.npmjs.com/package/@aniket-lodh/veyra-sdk"><img alt="npm: @aniket-lodh/veyra-sdk" src="https://img.shields.io/npm/v/@aniket-lodh/veyra-sdk?color=blue&label=npm%3A%20%40aniket-lodh%2Fveyra-sdk" /></a>
+  <a href="https://www.npmjs.com/package/@aniket-lodh/veyra-sdk"><img alt="npm downloads" src="https://img.shields.io/npm/dm/%40aniket-lodh%2Fveyra-sdk?color=blue&label=downloads" /></a>
+  <a href="https://www.postgresql.org/"><img alt="PostgreSQL: 16+" src="https://img.shields.io/badge/PostgreSQL-16%2B-4169E1?logo=postgresql&logoColor=white" /></a>
+  <a href="https://go.dev/"><img alt="Go: 1.24+" src="https://img.shields.io/badge/Go-1.24%2B-00ADD8?logo=go&logoColor=white" /></a>
+  <a href="https://www.typescriptlang.org/"><img alt="TypeScript: 5.8+" src="https://img.shields.io/badge/TypeScript-5.8%2B-3178C6?logo=typescript&logoColor=white" /></a>
+  <a href="https://github.com/Aniket-lodh/veyra/actions/workflows/gitleaks.yml"><img alt="Security: Gitleaks" src="https://img.shields.io/badge/security-gitleaks-blueviolet" /></a>
+  <a href="https://github.com/Aniket-lodh/veyra/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/Aniket-lodh/veyra?style=social" /></a>
 </p>
 
 ---
 
 Veyra coordinates jobs, leases, retries, dead letters, and completion callbacks in a single PostgreSQL database. Workers claim jobs using `SELECT ... FOR UPDATE SKIP LOCKED`, renew their leases through heartbeats, and report execution results. An operator console streams live system state over SSE. There is no separate message broker or orchestrator to deploy or maintain.
 
-Every queue state transition is formally specified in [`packages/queue-core/SPEC.md`](packages/queue-core/SPEC.md).
+> [!IMPORTANT]
+> **Spec-First Queue Semantics**
+> Unlike ad-hoc queue implementations, every queue state transition, lease heartbeat, retry backoff calculation, and dead-letter routing rule in Veyra is formally specified and verified in [`packages/queue-core/SPEC.md`](packages/queue-core/SPEC.md).
 
 ## Features
 
@@ -28,9 +36,22 @@ Every queue state transition is formally specified in [`packages/queue-core/SPEC
 - **Completion Webhooks:** Outbound webhook dispatch on terminal job events (`succeeded`, `failed`, `dead_lettered`, `cancelled`) with configurable timeouts, retries, and HMAC-SHA256 payload signing.
 - **Queue Controls:** Operational pause/resume per queue, bulk Dead Letter Queue (DLQ) replaying, and cancellation of in-flight or queued jobs.
 - **Fleet Management:** Worker heartbeat tracking, active lease inspection, operator-initiated lease force-release, draining, cordoning, and safe deregistration.
-- **First-Class TypeScript SDK (`@veyra/sdk`):** Zero-dependency TypeScript and Node.js client and worker engine with concurrency control, automatic lease renewals, and abort signals.
+- **First-Class TypeScript SDK (`@aniket-lodh/veyra-sdk`):** Zero-dependency TypeScript and Node.js client and worker engine with concurrency control, automatic lease renewals, and abort signals.
 - **Built-in Go Worker Handlers:** `http_request` for outbound webhooks with response captures, `send_email` for SMTP delivery, and `noop` for load testing.
 - **Live Operator Console:** React dashboard with zero-polling live updates powered by Postgres `NOTIFY` and Server-Sent Events (SSE) invalidation.
+
+---
+
+## Why Veyra?
+
+| Dimension | Veyra | Redis Queues (BullMQ / Celery) | Dedicated Brokers (Kafka / RabbitMQ) |
+|---|---|---|---|
+| **Primary Datastore** | **Pure PostgreSQL** (Zero extra brokers) | In-memory Redis (risk of dual-state desync) | Complex multi-node clusters |
+| **Transactional Enqueue** | ✅ Atomic with your business DB transaction | ❌ Dual-write problem (requires Outbox) | ❌ Distributed transactions required |
+| **Lease & Heartbeat Model** | ✅ `SKIP LOCKED` + Active periodic renewal | ⚠️ Visibility timeouts / complex Lua scripts | ⚠️ Consumer group rebalances |
+| **Dead-Letter & Webhooks** | ✅ Built-in HMAC-SHA256 webhooks + DLQ | ⚠️ Manual DLQ routing & custom webhooks | ⚠️ External webhook service needed |
+| **Fleet Observability** | ✅ Live SSE Operator Console + Cordoning | ⚠️ Third-party / basic dashboard | ⚠️ Enterprise monitoring tooling |
+| **Worker Ecosystem** | ✅ Go workers + TypeScript SDK | Language-locked (Node or Python) | Language-dependent clients |
 
 ---
 
@@ -59,7 +80,7 @@ Every queue state transition is formally specified in [`packages/queue-core/SPEC
                 │ pgx                                      │ HTTP Worker Protocol
  ┌──────────────┴──────────────┐            ┌──────────────┴──────────────┐
  │        Go Workers           │            │  TypeScript SDK Workers     │
- │  (apps/worker)              │            │  (@veyra/sdk)               │
+ │  (apps/worker)              │            │  (@aniket-lodh/veyra-sdk)   │
  │  - http_request, send_email │            │  - Custom handlers          │
  │  - Heartbeats & leases      │            │  - Lease renewals & signals │
  └─────────────────────────────┘            └─────────────────────────────┘
@@ -68,7 +89,7 @@ Every queue state transition is formally specified in [`packages/queue-core/SPEC
 - **`packages/queue-core`**: Core domain model, SQL queries, and queue primitives (claim, succeed, fail, cancel, pause/resume, DLQ replay, reclaim).
 - **`apps/api`**: Public REST API, operator endpoints, SSE live notifications, and background engines (sweeper, retry scheduler, reclaim driver, callback dispatcher).
 - **`apps/worker`**: Compiled Go worker executing built-in handlers (`http_request`, `send_email`, `noop`).
-- **`packages/sdk-ts` (`@veyra/sdk`)**: TypeScript/Node.js SDK providing both a client for job management and a worker engine for custom business logic.
+- **`packages/sdk-ts` (`@aniket-lodh/veyra-sdk`)**: TypeScript/Node.js SDK providing both a client for job management and a worker engine for custom business logic.
 - **`apps/frontend/app`**: Operator console for inspecting queues, jobs, attempts, workers, and metrics.
 
 ---
@@ -82,7 +103,7 @@ apps/
   frontend/app/     React + Vite operator console
 packages/
   queue-core/       Queue semantics, database models, and SQL primitives
-  sdk-ts/           Zero-dependency TypeScript SDK (@veyra/sdk)
+  sdk-ts/           Zero-dependency TypeScript SDK (@aniket-lodh/veyra-sdk)
 deployments/
   compose/          Docker Compose manifests and environment examples
   docker/           Dockerfiles (API, worker) and nginx configuration
@@ -162,18 +183,22 @@ Configuration is loaded from environment variables. Refer to the corresponding `
 
 ## TypeScript SDK & Worker Protocol
 
-The `@veyra/sdk` package interacts with Veyra over HTTP without requiring direct database access.
+The [`@aniket-lodh/veyra-sdk`](https://www.npmjs.com/package/@aniket-lodh/veyra-sdk) package interacts with Veyra over HTTP without requiring direct database access.
 
 ### Installation
 
 ```bash
-pnpm add @veyra/sdk
+pnpm add @aniket-lodh/veyra-sdk
+# or
+npm install @aniket-lodh/veyra-sdk
+# or
+yarn add @aniket-lodh/veyra-sdk
 ```
 
 ### 1. Enqueueing Jobs with Completion Webhooks
 
 ```typescript
-import { VeyraClient } from '@veyra/sdk';
+import { VeyraClient } from '@aniket-lodh/veyra-sdk';
 
 const client = new VeyraClient({
   baseUrl: process.env.VEYRA_API_URL || 'http://localhost:8080',
@@ -198,7 +223,7 @@ console.log('Enqueued job ID:', job.id);
 ### 2. Running Custom Worker Handlers
 
 ```typescript
-import { VeyraClient, NonRetryableError } from '@veyra/sdk';
+import { VeyraClient, NonRetryableError } from '@aniket-lodh/veyra-sdk';
 
 const client = new VeyraClient({
   baseUrl: process.env.VEYRA_API_URL || 'http://localhost:8080',
@@ -326,4 +351,4 @@ docker build -f deployments/docker/worker.Dockerfile -t veyra-worker:local .
 
 ## License
 
-Veyra is distributed under the terms of the [GNU Affero General Public License v3.0](LICENSE). The TypeScript SDK (`@veyra/sdk`) is distributed under the [Apache-2.0 License](packages/sdk-ts/LICENSE).
+Veyra is distributed under the terms of the [GNU Affero General Public License v3.0](LICENSE). The TypeScript SDK (`@aniket-lodh/veyra-sdk`) is distributed under the [Apache-2.0 License](packages/sdk-ts/LICENSE).

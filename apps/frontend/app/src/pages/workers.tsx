@@ -1657,7 +1657,9 @@ export function WorkersPage() {
             <DialogDescription className="text-text-muted text-xs">
               Run distributed workers directly from your Node.js or TypeScript
               services using{' '}
-              <code className="text-text-primary font-mono">@veyra/sdk</code>{' '}
+              <code className="text-text-primary font-mono">
+                @aniket-lodh/veyra-sdk
+              </code>{' '}
               without direct PostgreSQL database credentials.
             </DialogDescription>
           </DialogHeader>
@@ -1668,7 +1670,7 @@ export function WorkersPage() {
                 1. Install the SDK
               </span>
               <div className="border-border-subtle bg-surface-elevated rounded-md border p-2 font-mono text-[0.75rem]">
-                pnpm add @veyra/sdk
+                pnpm add @aniket-lodh/veyra-sdk
               </div>
             </div>
 
