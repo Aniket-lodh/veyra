@@ -21,6 +21,12 @@ and this project does not yet follow semantic versioning. It is pre-1.0.
 - Retryable versus permanent failure classification (SPEC §7). Handlers can mark
   a failure permanent so it dead-letters without consuming retries.
 - Per-app `.env.example` files documenting every configuration variable.
+- `@aniket-lodh/veyra-sdk` now types the built-in `http_request`, `send_email` handlers end to end, plus custom handlers through `defineHandler`.
+  Payloads and results are checked on `enqueue`, `getJob`, `worker.register`, and
+  `parseWebhook`. `staticSchema<T>()` gives the same types with zero runtime cost,
+  and any Standard Schema v1 library (Zod, Valibot, ArkType) can validate instead.
+- The SDK ships both ESM and CommonJS builds with per-format type declarations,
+  and every export carries TSDoc for hover docs.
 
 ### Changed
 

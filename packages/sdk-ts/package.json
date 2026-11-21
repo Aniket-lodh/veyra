@@ -1,15 +1,24 @@
 {
   "name": "@aniket-lodh/veyra-sdk",
   "version": "0.1.1",
-  "description": "Lightweight TypeScript and Node.js SDK for Veyra Distributed Execution Platform",
+  "description": "Lightweight, zero-dependency TypeScript and Node.js SDK for the Veyra Distributed Execution Platform",
   "type": "module",
-  "main": "./dist/index.js",
+  "sideEffects": false,
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    }
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/cjs/index.d.ts",
+        "default": "./dist/cjs/index.js"
+      }
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",
@@ -21,17 +30,18 @@
     "registry": "https://registry.npmjs.org/"
   },
   "scripts": {
-    "build": "tsc",
-    "typecheck": "tsc --noEmit",
-    "test": "tsc && node --experimental-strip-types --test test/*.test.ts",
-    "prepublishOnly": "tsc"
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "tsc && tsc -p tsconfig.cjs.json && node scripts/write-cjs-package.mjs",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
+    "test": "tsc && tsc -p tsconfig.cjs.json && node scripts/write-cjs-package.mjs && tsc -p tsconfig.test.json && node --experimental-strip-types --test test/*.test.ts",
+    "prepublishOnly": "npm run clean && npm run build"
   },
   "devDependencies": {
     "@types/node": "^24.12.3",
     "typescript": "^5.8.0"
   },
   "keywords": [
-    "veyra",
+    "veyra-sdk",
     "queue",
     "distributed-systems",
     "job-queue",

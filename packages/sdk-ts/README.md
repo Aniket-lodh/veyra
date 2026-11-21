@@ -2,18 +2,18 @@
 
 Lightweight, zero-dependency TypeScript & Node.js SDK for the [Veyra](https://github.com/Aniket-lodh/veyra) Distributed Execution Platform.
 
-Built directly on top of Veyra's REST API and HTTP Worker Protocol. Uses native web and Node 18+ standards (`fetch`, `AbortController`, `crypto`). No native binary bindings or direct database connections required.
+Built on Veyra's REST API and HTTP worker protocol using only native web and Node 18+ standards (`fetch`, `AbortController`, Web Crypto). No runtime dependencies, no native bindings, no direct database access.
 
 ---
 
 ## Features
 
-- **Client Methods:** `enqueue()`, `getJob()`, `cancelJob()`, `retryJob()`
-- **Robust Worker Engine:** Automatic worker registration, background heartbeats, empty queue backoff (`204 No Content`), and transparent `404` recovery/re-registration.
-- **Concurrency & Leases:** Tunable concurrency pool, automatic periodic lease renewals during execution, and instant lease termination with `AbortSignal` triggering on `409 Conflict` (lease expired or reclaimed).
-- **Completion Webhooks & HMAC Verification:** Supports enqueueing jobs with `callbackUrl` and provides guidance/helpers for verifying HMAC-SHA256 signatures (`X-Veyra-Signature`).
-- **Failures & Dead-Lettering:** Automatic error formatting, stack trace capture, and immediate dead-lettering via `NonRetryableError`.
-- **Graceful Shutdown:** Drains in-flight jobs within a configurable timeout, cancels timers, and cleanly deregisters from the fleet.
+- **End-to-end types:** built-in handler payloads/results, custom `defineHandler` contracts, and typed enqueue → retrieve → execute → webhook flows.
+- **Standard Schema validation:** works with Zod, Valibot, ArkType, or any Standard Schema v1 library. `staticSchema<T>()` gives the same types with zero runtime validation.
+- **Robust worker engine:** registration, heartbeats, `204` backoff, and transparent `404` re-registration.
+- **Leases:** automatic renewal, `AbortSignal` on `409` lease loss, and graceful drain.
+- **Typed webhooks:** HMAC-SHA256 verification and result validation for `callbackUrl` deliveries.
+- **Backwards compatible:** existing string-based `enqueue` and `registerHandler` calls keep working.
 
 ---
 
@@ -23,177 +23,266 @@ Built directly on top of Veyra's REST API and HTTP Worker Protocol. Uses native 
 npm install @aniket-lodh/veyra-sdk
 # or
 pnpm add @aniket-lodh/veyra-sdk
-# or
-yarn add @aniket-lodh/veyra-sdk
+```
+
+The package ships both module formats from one install: `import` resolves to the ESM build, `require` resolves to the CommonJS build, and each entry point carries its own type declarations. Node 18+ is required.
+
+```ts
+// ESM
+import { VeyraClient, defineHandler } from '@aniket-lodh/veyra-sdk';
+
+// CommonJS
+const { VeyraClient, defineHandler } = require('@aniket-lodh/veyra-sdk');
 ```
 
 ---
 
-## Client Usage
+## Client
 
-### 1. Initialize Client & Enqueue a Job
-
-```typescript
+```ts
 import { VeyraClient } from '@aniket-lodh/veyra-sdk';
 
 const client = new VeyraClient({
-  baseUrl: process.env.VEYRA_API_URL || 'http://localhost:8008',
-  apiKey: process.env.VEYRA_API_KEY || 'veyra_...',
+  baseUrl: process.env.VEYRA_API_URL ?? 'http://localhost:8008',
+  apiKey: process.env.VEYRA_API_KEY ?? 'veyra_...',
   defaultQueue: 'default',
 });
-
-// Enqueue a job with priority, backoff, and completion webhook
-const job = await client.enqueue({
-  queue: 'default',
-  handler: 'sync_inventory',
-  payload: {
-    sku: 'SKU-8921',
-    warehouseId: 'wh_west_1',
-    quantity: 140,
-  },
-  priority: 7, // 0 (lowest) to 9 (highest)
-  maxAttempts: 3,
-  backoff: {
-    kind: 'exponential',
-    baseSeconds: 30,
-    capSeconds: 3600,
-  },
-  idempotencyKey: 'inv-sync-2026-11-20-001',
-  callbackUrl: 'https://api.example.com/webhooks/veyra-completion',
-});
-
-console.log('Enqueued job:', job.id, job.status);
 ```
 
-### 2. Inspect, Cancel, or Retry Jobs
+### Built-in handlers
 
-```typescript
-// Fetch job status and attempt history
-const job = await client.getJob('job_01JC...XYZ');
+The Go worker ships `http_request`, `send_email`. Their payloads and results are typed automatically:
 
-// Cancel an active or queued job
-await client.cancelJob('job_01JC...XYZ');
+```ts
+const job = await client.enqueue({
+  handler: 'http_request',
+  payload: {
+    url: 'https://api.example.com/sync',
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: { sku: 'SKU-8921' },
+    timeoutSeconds: 15,
+  },
+});
 
-// Retry a failed, cancelled, or dead-lettered job
-await client.retryJob('job_01JC...XYZ');
+// job is Job<HttpRequestPayload, HttpRequestResult>
+console.log(job.result?.statusCode, job.result?.durationMs);
+```
+
+```ts
+await client.enqueue({
+  handler: 'send_email',
+  payload: {
+    to: 'user@example.com',
+    subject: 'Welcome',
+    text: 'Thanks for signing up.',
+  },
+});
+```
+
+### Inspect, cancel, retry
+
+```ts
+const job = await client.getJob('01JC...XYZ');
+await client.cancelJob('01JC...XYZ');
+await client.retryJob('01JC...XYZ');
 ```
 
 ---
 
-## Distributed Worker Usage
+## Typed custom handlers
 
-### Running Custom Handlers with Concurrency & Leases
+Define a handler once and reuse it on producers, workers, and webhook consumers.
 
-```typescript
+### Compile-time only (`staticSchema`)
+
+```ts
+import { defineHandler, staticSchema } from '@aniket-lodh/veyra-sdk';
+
+const sendEmail = defineHandler({
+  name: 'send_email',
+  queue: 'emails',
+  payload: staticSchema<{ to: string; subject: string }>(),
+  result: staticSchema<{ messageId: string }>(),
+});
+
+// Producer: payload is checked, result is typed.
+const job = await client.enqueue(sendEmail, {
+  to: 'user@example.com',
+  subject: 'Welcome',
+});
+// Or using the object form:
+// await client.enqueue({ handler: sendEmail, payload: { to: 'user@example.com', subject: 'Welcome' } });
+job.result?.messageId; // string | null
+```
+
+### Runtime validation (Standard Schema / Zod)
+
+```ts
+import { z } from 'zod';
+import { defineHandler } from '@aniket-lodh/veyra-sdk';
+
+const sendEmail = defineHandler({
+  name: 'send_email',
+  queue: 'emails',
+  payload: z.object({ to: z.string().email(), subject: z.string() }),
+  result: z.object({ messageId: z.string() }),
+});
+
+// Invalid payloads throw VeyraValidationError before the HTTP request.
+await client.enqueue(sendEmail, { to: 'not-an-email', subject: 'Hi' });
+```
+
+### Minimal typing without schemas
+
+```ts
+const syncInventory = defineHandler<{ sku: string; quantity: number }, { updated: boolean }>({
+  name: 'sync_inventory',
+});
+```
+
+---
+
+## Worker
+
+```ts
 import { VeyraClient, NonRetryableError } from '@aniket-lodh/veyra-sdk';
 
-const client = new VeyraClient({
-  baseUrl: process.env.VEYRA_API_URL || 'http://localhost:8008',
-  apiKey: process.env.VEYRA_API_KEY || 'veyra_...',
-});
-
-// Create managed worker
+const client = new VeyraClient({ baseUrl, apiKey });
 const worker = client.createWorker({
-  queues: ['default', 'inventory'],
-  concurrency: 5, // Concurrent jobs executed in parallel
-  pollIntervalMs: 1_000, // Backoff when queue is empty (204 No Content)
-  heartbeatIntervalMs: 10_000, // Worker health heartbeat
-  leaseHeartbeatIntervalMs: 10_000, // In-flight lease renewal cadence
+  queues: ['default', 'emails'],
+  concurrency: 5,
+  pollIntervalMs: 1_000,
+  heartbeatIntervalMs: 10_000,
+  leaseHeartbeatIntervalMs: 10_000,
 });
 
-// Register custom handler
-worker.registerHandler('sync_inventory', async (job, ctx) => {
-  console.log(`Processing job ${job.id} (attempt ${ctx.attempt})`);
+worker.register(sendEmail, async (job, ctx) => {
+  // job.payload is { to: string; subject: string }
+  if (ctx.signal.aborted) throw new Error('lease lost');
+  if (!job.payload.to) throw new NonRetryableError('missing recipient');
 
-  // Check abort signal: aborted if another worker reclaimed or lease expired
-  if (ctx.signal.aborted) {
-    throw new Error('Execution aborted: lease lost or expired');
-  }
-
-  const { sku, quantity } = job.payload as { sku: string; quantity: number };
-
-  if (!sku) {
-    // Throw NonRetryableError to dead-letter immediately without retries
-    throw new NonRetryableError('SKU is required');
-  }
-
-  // Execute task...
-  return { updated: true, sku, quantity, processedAt: new Date().toISOString() };
+  return { messageId: await deliver(job.payload) }; // must satisfy { messageId: string }
 });
 
-// Start claiming and processing jobs
 await worker.start();
-console.log(`Worker ${worker.workerId} active and polling...`);
 
-// Handle graceful shutdown
-const shutdown = async () => {
-  console.log('Draining worker and shutting down...');
+process.on('SIGINT', async () => {
   await worker.stop({ timeoutMs: 15_000 });
   process.exit(0);
-};
-
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
+});
 ```
+
+- Payload schemas run before the callback; result schemas run before completion is reported.
+- Both failures raise `VeyraValidationError` (permanent, dead-lettered immediately).
+- String registration remains available: `worker.register('send_invoice', async (job) => ...)` or `worker.registerHandler(...)`.
 
 ---
 
-## Completion Webhooks & HMAC Verification
+## Shared handler registry
 
-When jobs are enqueued with a `callbackUrl`, Veyra delivers an HTTP POST notification upon reaching a terminal state (`succeeded`, `failed`, `dead_lettered`, or `cancelled`).
+When producer and consumer live in different services, type the client/worker once:
 
-### Webhook Headers & Payload Structure
+```ts
+import { VeyraClient, VeyraWorker } from '@aniket-lodh/veyra-sdk';
 
-Veyra includes the following headers with each webhook dispatch:
-
-- `Content-Type: application/json`
-- `X-Veyra-Event: job.completed`
-- `X-Veyra-Job-Id: <job_id>`
-- `X-Veyra-Status: <status>`
-- `X-Veyra-Attempt: <attempt_number>`
-- `X-Veyra-Delivery-Attempt: <callback_attempt>`
-- `X-Veyra-Timestamp: <iso_timestamp>`
-- `X-Veyra-Signature: sha256=<hex_hmac>` (when `VEYRA_CALLBACK_SECRET` is configured on API)
-
-### Verifying HMAC Signatures (Node.js / Express)
-
-```typescript
-import crypto from 'node:crypto';
-
-export function verifyVeyraWebhook(
-  rawBody: Buffer | string,
-  signatureHeader: string | undefined,
-  secret: string
-): boolean {
-  if (!signatureHeader || !signatureHeader.startsWith('sha256=')) {
-    return false;
-  }
-
-  const expectedSignature = signatureHeader.slice('sha256='.length);
-  const hmac = crypto.createHmac('sha256', secret);
-  hmac.update(rawBody);
-  const actualSignature = hmac.digest('hex');
-
-  return crypto.timingSafeEqual(
-    Buffer.from(actualSignature, 'hex'),
-    Buffer.from(expectedSignature, 'hex')
-  );
+interface MyHandlers {
+  send_email: {
+    payload: { to: string; subject: string };
+    result: { messageId: string };
+  };
 }
+
+const client = new VeyraClient<MyHandlers>({ baseUrl, apiKey });
+const job = await client.enqueue({
+  handler: 'send_email', // autocompletes
+  payload: { to: 'user@example.com', subject: 'Welcome' },
+});
+job.result?.messageId; // string | null
+
+const worker = new VeyraWorker<MyHandlers>(client, { queues: ['emails'] });
 ```
+
+Built-ins are always merged in. Unknown string handler names fall back to inferred payloads and `unknown` results.
 
 ---
 
-## Development & Testing
+## Completion webhooks
+
+Enqueue with `callbackUrl` to receive a POST when a job reaches `succeeded`, `dead_lettered`, or `cancelled`:
+
+```ts
+await client.enqueue(sendEmail, payload, {
+  callbackUrl: 'https://api.example.com/webhooks/veyra',
+});
+```
+
+Veyra signs the raw body with HMAC-SHA256 when `VEYRA_CALLBACK_SECRET` is configured:
+
+```
+X-Veyra-Signature: sha256=<hex>
+X-Veyra-Event: job.completed
+X-Veyra-Job-Id: <jobId>
+X-Veyra-Status: <status>
+X-Veyra-Attempt: <attempt>
+X-Veyra-Delivery-Attempt: <callbackAttempts>
+X-Veyra-Timestamp: <RFC3339>
+```
+
+### Express
+
+```ts
+import express from 'express';
+import { parseWebhook, verifyWebhookSignature } from '@aniket-lodh/veyra-sdk';
+
+const app = express();
+
+app.post(
+  '/webhooks/veyra',
+  express.raw({ type: 'application/json' }),
+  async (req, res) => {
+    const rawBody = req.body as Buffer;
+    const signature = req.header('x-veyra-signature');
+
+    if (!(await verifyWebhookSignature(rawBody, signature, process.env.VEYRA_CALLBACK_SECRET!))) {
+      return res.status(401).send('invalid signature');
+    }
+
+    const event = await parseWebhook(rawBody, sendEmail, {
+      secret: process.env.VEYRA_CALLBACK_SECRET,
+      signature,
+    });
+
+    console.log(event.status, event.result?.messageId);
+    res.sendStatus(204);
+  }
+);
+```
+
+Pass the exact raw request bytes. Re-serializing the JSON breaks the signature.
+
+---
+
+## Error handling
+
+| Error | Meaning |
+| --- | --- |
+| `VeyraApiError` | Non-2xx response; `status`, `statusText`, `body` |
+| `VeyraAuthError` | `401` / `403` |
+| `VeyraNotFoundError` | `404` |
+| `VeyraConflictError` | `409` |
+| `LeaseLostError` | `409` caused by an expired/reclaimed lease |
+| `VeyraValidationError` | Standard Schema failure; `issues`, permanent |
+| `NonRetryableError` | Throw from a handler to dead-letter immediately |
+
+---
+
+## Development
 
 ```bash
-# Typecheck
-pnpm typecheck
-
-# Run unit tests
-pnpm test
-
-# Build bundle and declaration files
-pnpm build
+pnpm typecheck   # source + type-level tests
+pnpm build       # dist/*.js + dist/*.d.ts
+pnpm test        # build, typecheck tests, run unit tests
 ```
 
 ---

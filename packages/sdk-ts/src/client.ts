@@ -1,5 +1,5 @@
 /**
- * Veyra HTTP Client
+ * Veyra HTTP client.
  */
 
 import {
@@ -10,16 +10,34 @@ import {
   VeyraError,
   VeyraNotFoundError,
 } from './errors.js';
+import { isHandlerDefinition } from './handlers.js';
+import type {
+  BuiltInHandlers,
+  DefinitionPayload,
+  DefinitionResult,
+  HandlerDefinition,
+  HandlerName,
+  HandlerPayload,
+  HandlerResult,
+  ResolvedHandlers,
+} from './handlers.js';
+import { validateWithSchema } from './standard-schema.js';
 import type {
   ClaimParams,
   CompleteJobResponse,
+  DefinitionEnqueueInput,
+  DeregisterWorkerResponse,
   EnqueueJobInput,
+  EnqueueOptions,
   FailJobParams,
   FailJobResponse,
   HeartbeatResponse,
   Job,
   JobClaim,
   RenewLeaseResponse,
+  TypedEnqueueInput,
+  TypedEnqueuePayload,
+  TypedEnqueueResult,
   VeyraClientConfig,
   VeyraWorkerOptions,
   WorkerRecord,
@@ -27,13 +45,37 @@ import type {
 } from './types.js';
 import { VeyraWorker } from './worker.js';
 
-export class VeyraClient {
+/**
+ * Typed client for the Veyra REST API.
+ *
+ * @typeParam THandlers - Extra handler contracts merged over {@link BuiltInHandlers}.
+ * Register handlers here to get autocomplete and payload/result checking on
+ * string-based `enqueue` calls shared across services.
+ *
+ * @example
+ * ```ts
+ * interface MyHandlers {
+ *   send_email: { payload: { to: string }; result: { messageId: string } };
+ * }
+ * const client = new VeyraClient<MyHandlers>({ baseUrl, apiKey });
+ * const job = await client.enqueue({ handler: 'send_email', payload: { to: 'a@b.c' } });
+ * job.result?.messageId; // string
+ * ```
+ */
+export class VeyraClient<THandlers extends object = BuiltInHandlers> {
+  /** API origin without a trailing slash. */
   readonly baseUrl: string;
+  /** Bearer API key. */
   readonly apiKey: string;
+  /** Queue used when `enqueue` omits `queue`. */
   readonly defaultQueue: string;
   private readonly customFetch?: typeof fetch;
   private readonly defaultTimeoutMs: number;
 
+  /**
+   * @param config - API origin, API key, and optional transport settings.
+   * @throws {VeyraError} When `baseUrl` or `apiKey` is missing.
+   */
   constructor(config: VeyraClientConfig) {
     if (!config?.baseUrl) {
       throw new VeyraError('VeyraClient: baseUrl is required');
@@ -50,11 +92,119 @@ export class VeyraClient {
   }
 
   /**
-   * Enqueues a job into Veyra's queue.
+   * Enqueues a job from a {@link HandlerDefinition}. The payload is validated
+   * against the definition's schema before the request is sent.
+   *
+   * @param handler - Definition created with `defineHandler`.
+   * @param payload - Payload matching the definition.
+   * @param options - Per-call overrides. `options.queue` wins over the definition's queue.
+   * @returns The created (or idempotently replayed) job.
+   * @throws {VeyraValidationError} When the payload fails schema validation.
+   *
+   * @example
+   * ```ts
+   * await client.enqueue(sendEmail, { to: 'a@b.c', subject: 'Hi' });
+   * ```
    */
-  async enqueue<TPayload = unknown, TResult = unknown>(
-    input: EnqueueJobInput<TPayload>
-  ): Promise<Job<TPayload, TResult>> {
+  async enqueue<
+    TName extends string,
+    TPayload,
+    TResult,
+    TQueue extends string | undefined
+  >(
+    handler: HandlerDefinition<TName, TPayload, TResult, TQueue>,
+    payload: TPayload,
+    options?: EnqueueOptions
+  ): Promise<Job<TPayload, TResult>>;
+
+  /**
+   * Enqueues a job using an object containing a {@link HandlerDefinition}.
+   * The payload is validated against the definition's schema before sending.
+   *
+   * @param input - Definition handler, payload, and optional enqueue options.
+   * @returns The created (or idempotently replayed) job.
+   * @throws {VeyraValidationError} When the payload fails schema validation.
+   *
+   * @example
+   * ```ts
+   * await client.enqueue({ handler: sendEmail, payload: { to: 'a@b.c', subject: 'Hi' } });
+   * ```
+   */
+  async enqueue<
+    TDefinition extends HandlerDefinition<any, any, any, any>
+  >(
+    input: DefinitionEnqueueInput<TDefinition>
+  ): Promise<Job<DefinitionPayload<TDefinition>, DefinitionResult<TDefinition>>>;
+
+  /**
+   * Enqueues a job using the object form.
+   *
+   * Known handler names (built-ins plus `THandlers`) autocomplete and constrain
+   * `payload` and type `result`; unknown string names fall back to the supplied generics.
+   *
+   * @param input - Handler name, payload, and optional enqueue options.
+   * @returns The created (or idempotently replayed) job.
+   * @throws {VeyraApiError} When the API rejects the request.
+   *
+   * @example
+   * ```ts
+   * await client.enqueue({ handler: 'http_request', payload: { url: 'https://example.com' } });
+   * ```
+   */
+  async enqueue<
+    TPayload = unknown,
+    TResult = unknown,
+    const TName extends HandlerName<ResolvedHandlers<THandlers>> | (string & {}) =
+      | HandlerName<ResolvedHandlers<THandlers>>
+      | (string & {})
+  >(
+    input: TypedEnqueueInput<ResolvedHandlers<THandlers>, TName, TPayload>
+  ): Promise<
+    Job<
+      TypedEnqueuePayload<ResolvedHandlers<THandlers>, TName, TPayload>,
+      TypedEnqueueResult<ResolvedHandlers<THandlers>, TName, TResult>
+    >
+  >;
+
+  async enqueue(
+    inputOrHandler: EnqueueJobInput | DefinitionEnqueueInput<any> | HandlerDefinition,
+    payload?: unknown,
+    options?: EnqueueOptions
+  ): Promise<Job> {
+    let input: EnqueueJobInput;
+    if (isHandlerDefinition(inputOrHandler)) {
+      const definition = inputOrHandler;
+      const validated = await validateWithSchema(
+        definition.payload,
+        payload,
+        `enqueue('${definition.name}') payload`
+      );
+      input = { ...(options ?? {}), handler: definition.name, payload: validated };
+      if (input.queue === undefined && definition.queue !== undefined) {
+        input.queue = definition.queue;
+      }
+    } else if (
+      typeof inputOrHandler === 'object' &&
+      inputOrHandler !== null &&
+      'handler' in inputOrHandler &&
+      isHandlerDefinition((inputOrHandler as { handler?: unknown }).handler)
+    ) {
+      const defInput = inputOrHandler as unknown as DefinitionEnqueueInput<any>;
+      const definition = defInput.handler;
+      const validated = await validateWithSchema(
+        definition.payload,
+        defInput.payload,
+        `enqueue('${definition.name}') payload`
+      );
+      const { handler: _ignored, ...rest } = defInput;
+      input = { ...rest, handler: definition.name, payload: validated };
+      if (input.queue === undefined && definition.queue !== undefined) {
+        input.queue = definition.queue;
+      }
+    } else {
+      input = inputOrHandler as EnqueueJobInput;
+    }
+
     const queue = input.queue?.trim() || this.defaultQueue;
     const handler = input.handler?.trim();
     if (!handler) {
@@ -80,15 +230,12 @@ export class VeyraClient {
       body.backoff = input.backoff;
     }
     if (input.scheduledFor !== undefined) {
-      body.scheduledFor =
-        input.scheduledFor instanceof Date
-          ? input.scheduledFor.toISOString()
-          : input.scheduledFor;
+      body.scheduledFor = input.scheduledFor;
     }
-    if (input.idempotencyKey) {
+    if (input.idempotencyKey !== undefined) {
       body.idempotencyKey = input.idempotencyKey.trim();
     }
-    if (input.callbackUrl) {
+    if (input.callbackUrl !== undefined) {
       body.callbackUrl = input.callbackUrl.trim();
     }
 
@@ -97,14 +244,11 @@ export class VeyraClient {
       headers['Idempotency-Key'] = input.idempotencyKey.trim();
     }
 
-    const { data, headers: resHeaders } = await this.request<Job<TPayload, TResult>>(
-      '/jobs',
-      {
-        method: 'POST',
-        headers,
-        body,
-      }
-    );
+    const { data, headers: resHeaders } = await this.request<Job>('/jobs', {
+      method: 'POST',
+      headers,
+      body,
+    });
 
     if (resHeaders.get('idempotent-replay') === 'true') {
       data.isReplay = true;
@@ -114,23 +258,90 @@ export class VeyraClient {
   }
 
   /**
-   * Retrieves a job by ID.
+   * Fetches a job and validates its result with the definition's schema.
+   *
+   * @param jobId - Job ULID.
+   * @param handler - Definition whose result schema should validate `job.result`.
+   * @returns The job with `result` typed as the definition's result.
+   *
+   * @example
+   * ```ts
+   * const job = await client.getJob(jobId, sendEmail);
+   * ```
    */
+  async getJob<
+    TName extends string,
+    TPayload,
+    TResult,
+    TQueue extends string | undefined
+  >(
+    jobId: string,
+    handler: HandlerDefinition<TName, TPayload, TResult, TQueue>
+  ): Promise<Job<TPayload, TResult>>;
+
+  /**
+   * Fetches a job for a known built-in or registered handler name.
+   *
+   * @param jobId - Job ULID.
+   * @param handler - Known handler name string.
+   * @returns The job with `payload` and `result` typed according to the handler contract.
+   *
+   * @example
+   * ```ts
+   * const job = await client.getJob(jobId, 'http_request');
+   * job.result?.statusCode; // number | undefined
+   * ```
+   */
+  async getJob<const TName extends HandlerName<ResolvedHandlers<THandlers>>>(
+    jobId: string,
+    handler: TName
+  ): Promise<
+    Job<
+      HandlerPayload<ResolvedHandlers<THandlers>, TName>,
+      HandlerResult<ResolvedHandlers<THandlers>, TName>
+    >
+  >;
+
+  /**
+   * Fetches a job with only the result type specified.
+   *
+   * @param jobId - Job ULID.
+   * @returns The job with `result` typed as `TResult`.
+   */
+  async getJob<TResult = unknown>(jobId: string): Promise<Job<unknown, TResult>>;
+
+  /** @deprecated Prefer `getJob<TResult>(jobId)` or `getJob(jobId, handler)`. */
   async getJob<TPayload = unknown, TResult = unknown>(
     jobId: string
-  ): Promise<Job<TPayload, TResult>> {
+  ): Promise<Job<TPayload, TResult>>;
+
+  async getJob(
+    jobId: string,
+    handler?: HandlerDefinition | string
+  ): Promise<Job> {
     if (!jobId?.trim()) {
       throw new VeyraError('getJob: jobId is required');
     }
-    const { data } = await this.request<Job<TPayload, TResult>>(
+    const { data } = await this.request<Job>(
       `/jobs/${encodeURIComponent(jobId.trim())}`,
       { method: 'GET' }
     );
+    if (isHandlerDefinition(handler) && handler.result && data.result !== null) {
+      data.result = await validateWithSchema(
+        handler.result,
+        data.result,
+        `getJob('${handler.name}') result`
+      );
+    }
     return data;
   }
 
   /**
-   * Cancels a job by ID.
+   * Cancels a queued, scheduled, failed, or running job.
+   *
+   * @param jobId - Job ULID.
+   * @returns The cancelled job.
+   * @throws {VeyraConflictError} When the job already succeeded or was dead-lettered.
    */
   async cancelJob(jobId: string): Promise<Job> {
     if (!jobId?.trim()) {
@@ -145,6 +356,10 @@ export class VeyraClient {
 
   /**
    * Retries a failed, cancelled, or dead-lettered job.
+   *
+   * @param jobId - Job ULID.
+   * @returns The retried job.
+   * @throws {VeyraConflictError} When the job is not in a retryable state.
    */
   async retryJob(jobId: string): Promise<Job> {
     if (!jobId?.trim()) {
@@ -158,7 +373,10 @@ export class VeyraClient {
   }
 
   /**
-   * Registers a worker in the Veyra cluster.
+   * Registers a worker with the cluster.
+   *
+   * @param params - Identity, queues, handlers, and concurrency.
+   * @returns The stored worker record.
    */
   async registerWorker(params: WorkerRegisterParams): Promise<WorkerRecord> {
     const { data } = await this.request<WorkerRecord>('/workers/register', {
@@ -170,6 +388,10 @@ export class VeyraClient {
 
   /**
    * Sends a worker-level heartbeat.
+   *
+   * @param workerId - Worker id.
+   * @returns The worker's current state and heartbeat timestamp.
+   * @throws {VeyraNotFoundError} When the worker no longer exists.
    */
   async heartbeatWorker(workerId: string): Promise<HeartbeatResponse> {
     const { data } = await this.request<HeartbeatResponse>(
@@ -180,7 +402,11 @@ export class VeyraClient {
   }
 
   /**
-   * Claims a job for execution. Returns null if queue is empty (204 No Content).
+   * Claims the next runnable job for a worker.
+   *
+   * @param workerId - Worker id.
+   * @param params - Optional queue/handler filter.
+   * @returns The claimed job, or `null` on `204 No Content`.
    */
   async claimJob<TPayload = unknown>(
     workerId: string,
@@ -202,6 +428,11 @@ export class VeyraClient {
 
   /**
    * Renews the lease for an in-flight job.
+   *
+   * @param workerId - Worker id.
+   * @param jobId - Job ULID.
+   * @returns The renewed lease.
+   * @throws {LeaseLostError} When the lease expired or was reassigned.
    */
   async renewJobLease(
     workerId: string,
@@ -217,7 +448,13 @@ export class VeyraClient {
   }
 
   /**
-   * Marks a job as completed with optional result payload.
+   * Marks a job as completed with an optional result payload.
+   *
+   * @param workerId - Worker id.
+   * @param jobId - Job ULID.
+   * @param result - JSON result recorded on the job.
+   * @returns The completion acknowledgement.
+   * @throws {LeaseLostError} When the lease expired or was reassigned.
    */
   async completeJob(
     workerId: string,
@@ -243,6 +480,11 @@ export class VeyraClient {
 
   /**
    * Reports a job execution failure.
+   *
+   * @param workerId - Worker id.
+   * @param jobId - Job ULID.
+   * @param params - Error class, message, stack trace, and permanence.
+   * @returns The failure acknowledgement.
    */
   async failJob(
     workerId: string,
@@ -262,7 +504,10 @@ export class VeyraClient {
   }
 
   /**
-   * Transitions worker state to draining.
+   * Transitions a worker to `draining` so it stops claiming new jobs.
+   *
+   * @param workerId - Worker id.
+   * @returns The updated worker record.
    */
   async drainWorker(workerId: string): Promise<WorkerRecord> {
     const { data } = await this.request<WorkerRecord>(
@@ -274,11 +519,13 @@ export class VeyraClient {
 
   /**
    * Deregisters a worker from the active fleet.
+   *
+   * @param workerId - Worker id.
+   * @returns The deregistration acknowledgement.
+   * @throws {VeyraConflictError} When the worker still holds active leases.
    */
-  async deregisterWorker(
-    workerId: string
-  ): Promise<{ deregistered: boolean; workerId: string }> {
-    const { data } = await this.request<{ deregistered: boolean; workerId: string }>(
+  async deregisterWorker(workerId: string): Promise<DeregisterWorkerResponse> {
+    const { data } = await this.request<DeregisterWorkerResponse>(
       `/workers/${encodeURIComponent(workerId)}/deregister`,
       { method: 'POST' }
     );
@@ -286,10 +533,13 @@ export class VeyraClient {
   }
 
   /**
-   * Creates a VeyraWorker managed instance tied to this client.
+   * Creates a managed {@link VeyraWorker} bound to this client.
+   *
+   * @param options - Queues, concurrency, and lifecycle callbacks.
+   * @returns A worker that inherits this client's handler map.
    */
-  createWorker(options: VeyraWorkerOptions): VeyraWorker {
-    return new VeyraWorker(this, options);
+  createWorker(options: VeyraWorkerOptions): VeyraWorker<THandlers> {
+    return new VeyraWorker<THandlers>(this, options);
   }
 
   private async request<T>(
@@ -335,9 +585,13 @@ export class VeyraClient {
     } catch (err) {
       clearTimeout(timeout);
       if ((err as Error)?.name === 'AbortError') {
-        throw new VeyraError(`Request timed out after ${this.defaultTimeoutMs}ms: ${url}`);
+        throw new VeyraError(
+          `Request timed out after ${this.defaultTimeoutMs}ms: ${url}`
+        );
       }
-      throw new VeyraError(`Network error while fetching ${url}: ${(err as Error).message}`);
+      throw new VeyraError(
+        `Network error while fetching ${url}: ${(err as Error).message}`
+      );
     } finally {
       clearTimeout(timeout);
     }

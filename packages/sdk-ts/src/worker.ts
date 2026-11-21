@@ -1,5 +1,5 @@
 /**
- * Veyra HTTP Worker Engine
+ * Veyra HTTP worker engine.
  */
 
 import type { VeyraClient } from './client.js';
@@ -11,6 +11,15 @@ import {
   VeyraNotFoundError,
 } from './errors.js';
 import type {
+  BuiltInHandlers,
+  HandlerDefinition,
+  HandlerName,
+  HandlerPayloadFor,
+  HandlerResultFor,
+  ResolvedHandlers,
+} from './handlers.js';
+import { validateWithSchema } from './standard-schema.js';
+import type {
   HandlerFn,
   JobClaim,
   JobContext,
@@ -19,23 +28,61 @@ import type {
   WorkerRecord,
 } from './types.js';
 
-export class VeyraWorker {
-  readonly client: VeyraClient;
+/**
+ * A timer handle. Browsers return `number`; Node returns a `Timeout` object
+ * with `unref()`. Kept opaque so one build serves both runtimes.
+ */
+type TimerHandle = ReturnType<typeof setTimeout>;
+
+/**
+ * Detaches a timer so it cannot keep a Node process alive. No-op in browsers
+ * and in other runtimes whose timer handles have no `unref`.
+ */
+function unrefTimer(timer: TimerHandle | undefined): void {
+  const maybe = timer as unknown as { unref?: () => void } | undefined;
+  if (typeof maybe?.unref === 'function') {
+    maybe.unref();
+  }
+}
+
+/**
+ * Long-polling worker that registers with Veyra, claims jobs, renews leases,
+ * executes handlers, and reports outcomes.
+ *
+ * @typeParam THandlers - Extra handler contracts merged over {@link BuiltInHandlers}.
+ *
+ * @example
+ * ```ts
+ * const worker = client.createWorker({ queues: ['default'] });
+ * worker.register(sendEmail, async (job) => ({ messageId: await send(job.payload) }));
+ * await worker.start();
+ * ```
+ */
+export class VeyraWorker<THandlers extends object = BuiltInHandlers> {
+  /** Client used for every API call. */
+  readonly client: VeyraClient<THandlers>;
+  /** Resolved worker options, including defaults. */
   readonly options: VeyraWorkerOptions;
+  /** Registered handler callbacks, keyed by handler name. */
   readonly handlers: Map<string, HandlerFn<any, any>> = new Map();
 
   private _workerId: string;
   private _state: 'stopped' | 'running' | 'draining' = 'stopped';
   private _inFlight = 0;
-  private readonly _activeLeaseTimers = new Map<string, any>();
+  private readonly _activeLeaseTimers = new Map<string, TimerHandle>();
   private readonly _activeAbortControllers = new Map<string, AbortController>();
 
-  private _heartbeatTimer?: any;
-  private _pollTimeout?: any;
+  private _heartbeatTimer?: TimerHandle;
+  private _pollTimeout?: TimerHandle;
   private _drainResolver?: () => void;
   private _isRegistering = false;
 
-  constructor(client: VeyraClient, options: VeyraWorkerOptions) {
+  /**
+   * @param client - Client used for API calls.
+   * @param options - Queues, concurrency, timings, and lifecycle callbacks.
+   * @throws {VeyraError} When no queue is supplied.
+   */
+  constructor(client: VeyraClient<THandlers>, options: VeyraWorkerOptions) {
     this.client = client;
     this.options = {
       concurrency: 5,
@@ -54,36 +101,111 @@ export class VeyraWorker {
       `worker-${Math.random().toString(36).substring(2, 10)}`;
   }
 
+  /** Worker id used on every worker-protocol call. */
   get workerId(): string {
     return this._workerId;
   }
 
+  /** Current lifecycle state. */
   get state(): 'stopped' | 'running' | 'draining' {
     return this._state;
   }
 
+  /** Number of jobs currently executing. */
   get inFlight(): number {
     return this._inFlight;
   }
 
   /**
-   * Registers a handler for a given job handler name.
+   * Registers a typed handler definition.
+   *
+   * The payload is validated before the callback runs; the returned value is
+   * validated before completion is reported to Veyra. Both failures raise
+   * {@link VeyraValidationError}, which is permanent.
+   *
+   * @param definition - Definition created with `defineHandler`.
+   * @param handler - Callback receiving a typed payload and returning the result.
+   *
+   * @example
+   * ```ts
+   * worker.register(sendEmail, async (job) => ({ messageId: await send(job.payload) }));
+   * ```
+   */
+  register<
+    TName extends string,
+    TPayload,
+    TResult,
+    TQueue extends string | undefined
+  >(
+    definition: HandlerDefinition<TName, TPayload, TResult, TQueue>,
+    handler: (job: JobClaim<TPayload>, ctx: JobContext) => TResult | Promise<TResult>
+  ): this;
+
+  /**
+   * Registers a handler by name.
+   *
+   * Built-in and `THandlers` names get typed payload/result; arbitrary string
+   * names fall back to the supplied generics.
+   *
+   * @param name - Handler name matched against claimed jobs.
+   * @param handler - Callback receiving the claimed job and context.
+   */
+  register<
+    TPayload = unknown,
+    TResult = unknown,
+    const TName extends HandlerName<ResolvedHandlers<THandlers>> | (string & {}) =
+      | HandlerName<ResolvedHandlers<THandlers>>
+      | (string & {})
+  >(
+    name: TName,
+    handler: HandlerFn<
+      HandlerPayloadFor<ResolvedHandlers<THandlers>, TName, TPayload>,
+      HandlerResultFor<ResolvedHandlers<THandlers>, TName, TResult>
+    >
+  ): this;
+
+  register(
+    nameOrDefinition: string | HandlerDefinition,
+    handler: HandlerFn<any, any>
+  ): this {
+    if (typeof nameOrDefinition === 'string') {
+      return this.setHandler(nameOrDefinition, handler);
+    }
+
+    const definition = nameOrDefinition;
+    const wrapped: HandlerFn<any, any> = async (job, ctx) => {
+      const payload = await validateWithSchema(
+        definition.payload,
+        job.payload,
+        `handler '${definition.name}' payload`
+      );
+      const result = await handler({ ...job, payload }, ctx);
+      return validateWithSchema(
+        definition.result,
+        result,
+        `handler '${definition.name}' result`
+      );
+    };
+    return this.setHandler(definition.name, wrapped);
+  }
+
+  /**
+   * Registers a handler by name without a definition. Prefer {@link register}
+   * with a `defineHandler` definition for payload/result typing.
+   *
+   * @param name - Handler name matched against claimed jobs.
+   * @param handler - Callback receiving the claimed job and context.
    */
   registerHandler<TPayload = unknown, TResult = unknown>(
     name: string,
     handler: HandlerFn<TPayload, TResult>
   ): this {
-    const trimmed = name.trim();
-    if (!trimmed) {
-      throw new VeyraError('registerHandler: name must not be empty');
-    }
-    this.handlers.set(trimmed, handler);
-    return this;
+    return this.setHandler(name, handler);
   }
 
   /**
-   * Returns the list of handlers to subscribe to.
-   * If `options.handlers` is omitted or empty, defaults to all registered handler names.
+   * Returns the handler names advertised at registration.
+   * Defaults to every registered handler when `options.handlers` is empty.
    */
   getEffectiveHandlers(): string[] {
     if (this.options.handlers && this.options.handlers.length > 0) {
@@ -93,8 +215,10 @@ export class VeyraWorker {
   }
 
   /**
-   * Starts the worker: registers with Veyra API, initiates worker heartbeats,
-   * and starts the claim polling loop.
+   * Registers with Veyra, starts heartbeats, and begins claiming jobs.
+   *
+   * @returns The worker record stored by the API.
+   * @throws {VeyraError} When already running or no handlers are registered.
    */
   async start(): Promise<WorkerRecord> {
     if (this._state === 'running') {
@@ -104,13 +228,13 @@ export class VeyraWorker {
     const effectiveHandlers = this.getEffectiveHandlers();
     if (effectiveHandlers.length === 0) {
       throw new VeyraError(
-        'VeyraWorker: No handlers registered. Call registerHandler() or pass handlers in options before starting.'
+        'VeyraWorker: No handlers registered. Call register() or registerHandler() before starting.'
       );
     }
 
     this._state = 'running';
 
-    const record = await this.register();
+    const record = await this.registerWorkerRecord();
     this.startWorkerHeartbeatLoop();
     this.triggerClaimLoop();
 
@@ -118,8 +242,9 @@ export class VeyraWorker {
   }
 
   /**
-   * Stops the worker: stops claiming new jobs, transitions state to draining,
-   * waits for active in-flight jobs to finish, cancels timers, and deregisters.
+   * Stops claiming, drains in-flight jobs, cancels timers, and deregisters.
+   *
+   * @param options.timeoutMs - Maximum drain wait. Defaults to `30000`.
    */
   async stop(options?: { timeoutMs?: number }): Promise<void> {
     if (this._state === 'stopped') {
@@ -182,10 +307,16 @@ export class VeyraWorker {
     this._drainResolver = undefined;
   }
 
-  /**
-   * Registers or re-registers the worker with the Veyra API.
-   */
-  private async register(): Promise<WorkerRecord> {
+  private setHandler(name: string, handler: HandlerFn<any, any>): this {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      throw new VeyraError('register: name must not be empty');
+    }
+    this.handlers.set(trimmed, handler);
+    return this;
+  }
+
+  private async registerWorkerRecord(): Promise<WorkerRecord> {
     if (this._isRegistering) {
       return {} as WorkerRecord;
     }
@@ -219,10 +350,6 @@ export class VeyraWorker {
     }
   }
 
-  /**
-   * Starts periodic worker-level heartbeats. If a 404 is encountered (e.g. server evicted worker),
-   * transparently re-registers.
-   */
   private startWorkerHeartbeatLoop(): void {
     if (this._heartbeatTimer) {
       clearInterval(this._heartbeatTimer);
@@ -238,9 +365,8 @@ export class VeyraWorker {
         await this.client.heartbeatWorker(this._workerId);
       } catch (err) {
         if (err instanceof VeyraNotFoundError) {
-          // Worker was pruned/evicted from server; re-register!
           try {
-            await this.register();
+            await this.registerWorkerRecord();
           } catch (regErr) {
             this.options.onError?.(regErr);
           }
@@ -250,15 +376,9 @@ export class VeyraWorker {
       }
     }, interval);
 
-    // Prevent blocking Node.js event loop shutdown if unref exists
-    if (typeof (this._heartbeatTimer as any)?.unref === 'function') {
-      (this._heartbeatTimer as any).unref();
-    }
+    unrefTimer(this._heartbeatTimer);
   }
 
-  /**
-   * Schedules next claim check.
-   */
   private triggerClaimLoop(delayMs = 0): void {
     if (this._state !== 'running') {
       return;
@@ -273,14 +393,9 @@ export class VeyraWorker {
       void this.claimAndDispatch();
     }, delayMs);
 
-    if (typeof (this._pollTimeout as any)?.unref === 'function') {
-      (this._pollTimeout as any).unref();
-    }
+    unrefTimer(this._pollTimeout);
   }
 
-  /**
-   * Claims and dispatches available jobs up to the configured concurrency limit.
-   */
   private async claimAndDispatch(): Promise<void> {
     if (this._state !== 'running') {
       return;
@@ -301,9 +416,8 @@ export class VeyraWorker {
       });
     } catch (err) {
       if (err instanceof VeyraNotFoundError) {
-        // Worker record lost on server; re-register and retry
         try {
-          await this.register();
+          await this.registerWorkerRecord();
           this.triggerClaimLoop(100);
           return;
         } catch (regErr) {
@@ -313,7 +427,6 @@ export class VeyraWorker {
         this.options.onError?.(err);
       }
 
-      // On error, back off before next poll
       this.triggerClaimLoop(this.options.pollIntervalMs ?? 1_000);
       return;
     }
@@ -340,10 +453,6 @@ export class VeyraWorker {
     }
   }
 
-  /**
-   * Executes a claimed job: establishes background lease renewal, calls the registered handler,
-   * handles 409 lease expiration abort signals, and reports completion or failure.
-   */
   private async executeJob(job: JobClaim): Promise<void> {
     const abortController = new AbortController();
     this._activeAbortControllers.set(job.id, abortController);
@@ -407,10 +516,6 @@ export class VeyraWorker {
     }
   }
 
-  /**
-   * Starts periodic lease heartbeats for an in-flight job.
-   * If a 409 Conflict is returned, lease renewal stops immediately and the job's signal is aborted.
-   */
   private startJobLeaseRenewal(
     jobId: string,
     abortController: AbortController
@@ -421,7 +526,6 @@ export class VeyraWorker {
       try {
         await this.client.renewJobLease(this._workerId, jobId);
       } catch (err) {
-        // If 409 Conflict or LeaseLostError: STOP renewing lease immediately!
         if (
           err instanceof LeaseLostError ||
           err instanceof VeyraConflictError ||
@@ -436,10 +540,9 @@ export class VeyraWorker {
           return;
         }
 
-        // If worker was evicted, re-register
         if (err instanceof VeyraNotFoundError) {
           try {
-            await this.register();
+            await this.registerWorkerRecord();
           } catch (regErr) {
             this.options.onError?.(regErr);
           }
@@ -449,16 +552,11 @@ export class VeyraWorker {
       }
     }, interval);
 
-    if (typeof (timer as any)?.unref === 'function') {
-      (timer as any).unref();
-    }
+    unrefTimer(timer);
 
     this._activeLeaseTimers.set(jobId, timer);
   }
 
-  /**
-   * Stops renewing a job's lease.
-   */
   private stopJobLeaseRenewal(jobId: string): void {
     const timer = this._activeLeaseTimers.get(jobId);
     if (timer) {
