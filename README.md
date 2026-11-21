@@ -25,9 +25,7 @@
 
 Veyra coordinates jobs, leases, retries, dead letters, and completion callbacks in a single PostgreSQL database. Workers claim jobs using `SELECT ... FOR UPDATE SKIP LOCKED`, renew their leases through heartbeats, and report execution results. An operator console streams live system state over SSE. There is no separate message broker or orchestrator to deploy or maintain.
 
-> [!IMPORTANT]
-> **Spec-First Queue Semantics**
-> Unlike ad-hoc queue implementations, every queue state transition, lease heartbeat, retry backoff calculation, and dead-letter routing rule in Veyra is formally specified and verified in [`packages/queue-core/SPEC.md`](packages/queue-core/SPEC.md).
+Every queue state transition is formally specified in [`packages/queue-core/SPEC.md`](packages/queue-core/SPEC.md).
 
 ## Features
 
