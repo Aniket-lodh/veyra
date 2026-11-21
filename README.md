@@ -363,9 +363,6 @@ Configuration is loaded from environment variables. Refer to the corresponding `
 | **Worker** | `apps/worker/.env.example` | `VEYRA_WORKER_QUEUES`, `VEYRA_WORKER_MAX_CONCURRENCY`, `VEYRA_SMTP_*` |
 | **Frontend** | `apps/frontend/app/.env.example` | `VITE_API_PROXY_TARGET`, `VITE_STATUS_PAGE_URL` |
 
-> [!IMPORTANT]
-> Never commit `.env` files to source control. Always update `.env.example` when introducing configuration settings.
-
 ---
 
 ## TypeScript SDK & Worker Protocol
