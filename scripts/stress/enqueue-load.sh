@@ -5,7 +5,7 @@ set -euo pipefail
 
 N="${1:-200}"
 QUEUE="${2:-default}"
-API="${VEYRA_API_URL:-http://localhost:8008}"
+API="${VEYRA_API_URL:-http://localhost:8080}"
 
 echo "enqueueing $N jobs to $API queue=$QUEUE" >&2
 

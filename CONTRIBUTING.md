@@ -41,7 +41,7 @@ Run the frontend against a local API:
 ```bash
 cd apps/frontend/app
 pnpm install
-VITE_API_PROXY_TARGET=http://localhost:8008 pnpm dev
+VITE_API_PROXY_TARGET=http://localhost:8080 pnpm dev
 ```
 
 ## Checks to run before pushing

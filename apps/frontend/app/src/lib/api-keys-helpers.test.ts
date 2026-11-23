@@ -305,15 +305,15 @@ describe('api-keys-helpers', () => {
   describe('generateCurlSnippet', () => {
     it('formats curl with bearer token and target URL', () => {
       const token = 'sample-token';
-      const snippet = generateCurlSnippet(token, 'http://localhost:8008');
+      const snippet = generateCurlSnippet(token, 'http://localhost:8080');
       assert.equal(snippet.includes(token), true);
-      assert.equal(snippet.includes('http://localhost:8008/queue/stats'), true);
+      assert.equal(snippet.includes('http://localhost:8080/queue/stats'), true);
       assert.equal(snippet.startsWith('curl -s -i -H'), true);
     });
 
-    it('defaults to http://localhost:8008 when origin is omitted', () => {
+    it('defaults to http://localhost:8080 when origin is omitted', () => {
       const snippet = generateCurlSnippet('sample-token');
-      assert.equal(snippet.includes('http://localhost:8008/queue/stats'), true);
+      assert.equal(snippet.includes('http://localhost:8080/queue/stats'), true);
     });
   });
 });

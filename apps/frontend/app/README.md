@@ -8,7 +8,7 @@ rules that apply to this app.
 
 ```bash
 pnpm install
-VITE_API_PROXY_TARGET=http://localhost:8008 pnpm dev
+VITE_API_PROXY_TARGET=http://localhost:8080 pnpm dev
 ```
 
 Copy `.env.example` to `.env.local` to keep these settings. Dev requests to `/jobs`,

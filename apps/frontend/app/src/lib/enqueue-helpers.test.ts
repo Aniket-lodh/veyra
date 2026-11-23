@@ -493,10 +493,10 @@ describe('enqueue-helpers', () => {
           callbackUrl: 'https://api.my-service.com/webhook',
           payload: { url: 'https://example.com' },
         },
-        'http://localhost:8008',
+        'http://localhost:8080',
       );
 
-      assert.match(curl, /curl -X POST "http:\/\/localhost:8008\/jobs"/);
+      assert.match(curl, /curl -X POST "http:\/\/localhost:8080\/jobs"/);
       assert.match(curl, /-H "Content-Type: application\/json"/);
       assert.match(curl, /-H "Idempotency-Key: test-key-99"/);
       assert.match(curl, /"handler": "http_request"/);
@@ -562,7 +562,7 @@ describe('enqueue-helpers', () => {
       const snippet = generateWorkerSnippet(
         'sync_inventory',
         'warehouse',
-        'http://localhost:8008',
+        'http://localhost:8080',
       );
 
       assert.match(
@@ -571,7 +571,7 @@ describe('enqueue-helpers', () => {
       );
       assert.match(
         snippet,
-        /baseUrl: process\.env\.VEYRA_API_URL \|\| 'http:\/\/localhost:8008'/,
+        /baseUrl: process\.env\.VEYRA_API_URL \|\| 'http:\/\/localhost:8080'/,
       );
       assert.match(snippet, /queues: \['warehouse'\]/);
       assert.match(
