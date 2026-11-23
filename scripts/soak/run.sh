@@ -14,7 +14,7 @@ CHAOS_KINDS="${CHAOS_KINDS:-worker_term worker_kill api_restart pg_restart}"
 SNAPSHOT_INTERVAL="${SNAPSHOT_INTERVAL:-60}"
 # Parse CHAOS_KINDS into an array up front; the loop dispatches into chaos_action_<kind> by index.
 read -ra CHAOS_ACTIONS <<< "$CHAOS_KINDS"
-VEYRA_API_URL="${VEYRA_API_URL:-http://localhost:8008}"
+VEYRA_API_URL="${VEYRA_API_URL:-http://localhost:8080}"
 DOCKER_COMPOSE_FILES="${DOCKER_COMPOSE_FILES:--f $REPO_ROOT/deployments/compose/docker-compose.yml}"
 LOG_DIR="${LOG_DIR:-$REPO_ROOT/soak-logs}"
 export DOCKER_COMPOSE_FILES  # snapshot.sh picks this up too

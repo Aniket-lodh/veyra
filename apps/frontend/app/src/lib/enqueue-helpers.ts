@@ -798,7 +798,7 @@ export function generateWorkerSnippet(
   queueName = 'default',
   apiOrigin = typeof window !== 'undefined' && window?.location?.origin
     ? window.location.origin
-    : 'http://localhost:8008',
+    : 'http://localhost:8080',
 ): string {
   const handler = handlerName.trim() || 'my_custom_task';
   const queue = queueName.trim() || 'default';

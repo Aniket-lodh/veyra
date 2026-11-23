@@ -246,6 +246,6 @@ export function validateCreateKeyInput(input: {
  * Generates an operator curl command snippet to verify a minted secret.
  */
 export function generateCurlSnippet(secret: string, origin?: string): string {
-  const base = origin || 'http://localhost:8008';
+  const base = origin || 'http://localhost:8080';
   return `curl -s -i -H "Authorization: Bearer ${secret}" "${base}/queue/stats"`;
 }

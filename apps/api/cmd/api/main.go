@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -44,11 +45,30 @@ func main() {
 
 	cfg := config.Load()
 
+	portNum, err := config.ValidatePort(cfg.Port)
+	if err != nil {
+		slog.Error("service.config.invalid_port", "port", cfg.Port, "err", err.Error())
+		exitFatal("service.config.invalid_port", fmt.Errorf("invalid PORT %q: %w", cfg.Port, err))
+	}
+
+	addr := fmt.Sprintf(":%d", portNum)
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		slog.Error("service.http.bind_failed",
+			"service", serviceName,
+			"addr", addr,
+			"port", portNum,
+			"err", err.Error(),
+		)
+		exitFatal("service.http.bind_failed", fmt.Errorf("failed to bind strictly to address %s (port %d): %w", addr, portNum, err))
+	}
+	defer ln.Close()
+
 	logger := logging.Setup(cfg.AppEnv, os.Getenv("LOG_LEVEL"))
 	logger.Info("service.starting",
 		"service", serviceName,
 		"env", cfg.AppEnv,
-		"port", cfg.Port,
+		"port", portNum,
 		"envFileMissing", envMissing,
 	)
 
@@ -161,13 +181,11 @@ func main() {
 		}
 	}()
 
-	addr := fmt.Sprintf(":%s", cfg.Port)
-
 	// Listen on a goroutine so the main goroutine can wait on signals AND the listener error in a single select.
 	listenErr := make(chan error, 1)
 	go func() {
-		slog.Info("service.http.listening", "addr", addr, "service", serviceName)
-		listenErr <- app.Listen(addr)
+		slog.Info("service.http.listening", "addr", addr, "port", portNum, "service", serviceName)
+		listenErr <- app.Listener(ln)
 	}()
 
 	select {

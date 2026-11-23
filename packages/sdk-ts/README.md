@@ -43,7 +43,7 @@ const { VeyraClient, defineHandler } = require('@aniket-lodh/veyra-sdk');
 import { VeyraClient } from '@aniket-lodh/veyra-sdk';
 
 const client = new VeyraClient({
-  baseUrl: process.env.VEYRA_API_URL ?? 'http://localhost:8008',
+  baseUrl: process.env.VEYRA_API_URL ?? 'http://localhost:8080',
   apiKey: process.env.VEYRA_API_KEY ?? 'veyra_...',
   defaultQueue: 'default',
 });

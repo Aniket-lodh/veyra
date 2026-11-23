@@ -131,7 +131,7 @@ cd veyra
 # Prepare environment configuration
 cp deployments/compose/.env.example deployments/compose/.env
 
-# Launch Postgres, API (on port 8008), and 2 Go workers
+# Launch Postgres, API (on port 8080), and 2 Go workers
 scripts/dev/up.sh 2
 ```
 
@@ -281,7 +281,7 @@ Configure Nginx (or Caddy / Cloudflare) to front the API and serve the static fr
 
 ```nginx
 upstream veyra_backend {
-    server 127.0.0.1:8008;
+    server 127.0.0.1:8080;
     keepalive 32;
 }
 
@@ -336,7 +336,7 @@ Before booting in production, review and update the following settings:
 | Variable | Default (Dev) | Production Target | Why It Must Change |
 |---|---|---|---|
 | `APP_ENV` | `development` | `production` | **Disables Swagger UI (`/docs`)**, disables debug endpoints, and enables JSON structured logs. |
-| `PORT` | `8008` | `8008` (or custom) | HTTP port for the API daemon (defaults to `8008`). |
+| `PORT` | `8080` | `8080` (or custom) | HTTP port for the API daemon (defaults to `8080`). |
 | `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_NAME` | `localhost` / `veyra` | Cloud / Dedicated host | Point to hardened, backed-up PostgreSQL 16+ instance. |
 | `DB_PASSWORD` | `veyra` | Strong secret | Replace default credentials. |
 | `DB_SSLMODE` | `disable` | `require` or `verify-full` | Enforces encrypted TLS connections to PostgreSQL over networks. |
@@ -383,7 +383,7 @@ yarn add @aniket-lodh/veyra-sdk
 import { VeyraClient } from '@aniket-lodh/veyra-sdk';
 
 const client = new VeyraClient({
-  baseUrl: process.env.VEYRA_API_URL || 'http://localhost:8008',
+  baseUrl: process.env.VEYRA_API_URL || 'http://localhost:8080',
   apiKey: process.env.VEYRA_API_KEY || 'veyra_...',
   defaultQueue: 'default',
 });
@@ -408,7 +408,7 @@ console.log('Enqueued job ID:', job.id);
 import { VeyraClient, NonRetryableError } from '@aniket-lodh/veyra-sdk';
 
 const client = new VeyraClient({
-  baseUrl: process.env.VEYRA_API_URL || 'http://localhost:8008',
+  baseUrl: process.env.VEYRA_API_URL || 'http://localhost:8080',
   apiKey: process.env.VEYRA_API_KEY || 'veyra_...',
 });
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"math/rand/v2"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -26,13 +27,25 @@ type config struct {
 
 func main() {
 	cfg := loadConfig()
-	log.Printf("unstable-receiver.start port=%s rates=2xx:%d/4xx:%d/5xx:%d delayMs=%d hangRate=%.2f hangMs=%d",
-		cfg.port, cfg.rate2xx, cfg.rate4xx, cfg.rate5xx, cfg.delayMs, cfg.hangRate, cfg.hangMs)
+
+	portNum, err := strconv.Atoi(strings.TrimSpace(cfg.port))
+	if err != nil || portNum < 1 || portNum > 65535 {
+		log.Fatalf("unstable-receiver.invalid_port: port must be an integer between 1 and 65535, got %q", cfg.port)
+	}
+
+	log.Printf("unstable-receiver.start port=%d rates=2xx:%d/4xx:%d/5xx:%d delayMs=%d hangRate=%.2f hangMs=%d",
+		portNum, cfg.rate2xx, cfg.rate4xx, cfg.rate5xx, cfg.delayMs, cfg.hangRate, cfg.hangMs)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", cfg.handle)
 
-	srv := &http.Server{Addr: ":" + cfg.port, Handler: mux}
+	addr := fmt.Sprintf(":%d", portNum)
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Fatalf("unstable-receiver.bind_failed: failed to bind strictly to address %s (port %d): %v", addr, portNum, err)
+	}
+
+	srv := &http.Server{Addr: addr, Handler: mux}
 
 	// Graceful shutdown on SIGTERM/SIGINT (compose stop, Ctrl-C).
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -45,7 +58,7 @@ func main() {
 		_ = srv.Shutdown(shutCtx)
 	}()
 
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("unstable-receiver.listen_failed: %v", err)
 	}
 	log.Print("unstable-receiver.stopped")

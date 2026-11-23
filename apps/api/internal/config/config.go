@@ -36,7 +36,7 @@ type Config struct {
 func Load() Config {
 	c := Config{
 		AppEnv: getEnv("APP_ENV", "development"),
-		Port:   getEnv("PORT", "8008"),
+		Port:   getEnv("PORT", "8080"),
 
 		DBHost:     getEnv("DB_HOST", "localhost"),
 		DBPort:     getEnv("DB_PORT", "5432"),
@@ -85,6 +85,23 @@ func (c Config) DatabaseURL() string {
 	q.Set("sslmode", c.DBSSLMode)
 	u.RawQuery = q.Encode()
 	return u.String()
+}
+
+// ValidatePort validates that the port string represents a valid TCP port (1-65535).
+// Port 0 is rejected to enforce deterministic strict port binding.
+func ValidatePort(portStr string) (int, error) {
+	s := strings.TrimSpace(portStr)
+	if s == "" {
+		return 0, fmt.Errorf("port must not be empty")
+	}
+	p, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, fmt.Errorf("port must be an integer, got %q", portStr)
+	}
+	if p < 1 || p > 65535 {
+		return 0, fmt.Errorf("port must be between 1 and 65535, got %d", p)
+	}
+	return p, nil
 }
 
 func getEnv(key, fallback string) string {

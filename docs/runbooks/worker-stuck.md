@@ -122,7 +122,7 @@ a bad config or a SQL error. Check `docker compose logs api | tail -80`.
 
 If `worker.sweeper.tick_failed` appears repeatedly, the DB connection is
 unhealthy from the api's perspective. Check `docker compose exec api
-sh -c 'wget --spider --quiet http://127.0.0.1:8008/health'`. If degraded,
+sh -c 'wget --spider --quiet http://127.0.0.1:8080/health'`. If degraded,
 follow the `postgres-restart.md` runbook (TBD).
 
 ### What about the jobs that worker was holding?

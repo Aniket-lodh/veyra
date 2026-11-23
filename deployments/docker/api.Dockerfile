@@ -40,10 +40,10 @@ USER veyra
 
 # Conservative defaults. Real values come from compose env / .env files.
 ENV APP_ENV=production \
-    PORT=8008 \
+    PORT=8080 \
     LOG_LEVEL=info
 
-EXPOSE 8008
+EXPOSE 8080
 
 # tini as PID 1 — see comment on apk add tini.
 ENTRYPOINT ["/sbin/tini", "--", "/app/api"]
