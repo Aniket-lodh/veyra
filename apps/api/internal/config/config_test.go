@@ -69,7 +69,7 @@ func TestValidatePort(t *testing.T) {
 	invalid := []string{
 		"",
 		"   ",
-		"0",        // 0 rejected to enforce deterministic binding
+		"0", // 0 rejected to enforce deterministic binding
 		"-1",
 		"-8080",
 		"65536",
