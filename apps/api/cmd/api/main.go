@@ -62,7 +62,7 @@ func main() {
 		)
 		exitFatal("service.http.bind_failed", fmt.Errorf("failed to bind strictly to address %s (port %d): %w", addr, portNum, err))
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	logger := logging.Setup(cfg.AppEnv, os.Getenv("LOG_LEVEL"))
 	logger.Info("service.starting",
